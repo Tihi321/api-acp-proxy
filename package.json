@@ -1,0 +1,32 @@
+{
+  "name": "codex-subscription-openai-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "example:basic": "node examples/basic.js",
+    "example:streaming": "node examples/streaming.js",
+    "example:chatbot": "node examples/chatbot.js"
+  },
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "^1.12.0",
+    "@agentclientprotocol/sdk": "^1.4.0",
+    "openai": "^7.20.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
