@@ -3,3 +3,5 @@ dist/
 .env
 coverage/
 .codex/temp/
+release/
+.claude/temp/

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:">
+  <meta name="color-scheme" content="light dark">
+  <title>ACP Proxy</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>ACP Proxy</h1>
+      <p class="muted">OpenAI-compatible API in front of your agent subscriptions.</p>
+    </div>
+    <div class="top-status"><span id="top-badge" class="badge">-</span> <span id="top-url" class="mono"></span></div>
+  </header>
+
+  <main>
+    <section class="card" id="card-server">
+      <div class="card-head">
+        <h2>Server</h2>
+        <span id="server-badge" class="badge">-</span>
+      </div>
+      <div class="status-line">
+        <span id="server-url" class="mono muted">Not running</span>
+        <button id="copy-url" class="small" type="button" hidden>Copy</button>
+      </div>
+      <p id="server-error" class="error" hidden></p>
+      <div class="grid">
+        <label class="field"><span>Host</span><input id="server.host" type="text" autocomplete="off" spellcheck="false"><small data-note-for="server.host"></small><small class="error" data-error-for="server.host"></small></label>
+        <label class="field"><span>Port</span><input id="server.port" type="number" min="0" max="65535"><small data-note-for="server.port"></small><small class="error" data-error-for="server.port"></small></label>
+        <label class="field wide"><span>API key <em class="muted">(optional; clients send it as a Bearer token)</em></span>
+          <div class="row"><input id="server.apiKey" type="password" autocomplete="off" spellcheck="false"><button id="server-key-show" class="small" type="button">Show</button><button id="server-key-gen" class="small" type="button">Generate</button></div>
+          <small data-note-for="server.apiKey"></small><small class="error" data-error-for="server.apiKey"></small></label>
+        <label class="field"><span>Request timeout (ms)</span><input id="server.timeoutMs" type="number" min="1"><small data-note-for="server.timeoutMs"></small><small class="error" data-error-for="server.timeoutMs"></small></label>
+        <label class="field"><span>Max body (bytes)</span><input id="server.maxBodyBytes" type="number" min="1"><small data-note-for="server.maxBodyBytes"></small><small class="error" data-error-for="server.maxBodyBytes"></small></label>
+        <label class="field"><span>Models wait (ms)</span><input id="server.modelsWaitMs" type="number" min="1"><small data-note-for="server.modelsWaitMs"></small><small class="error" data-error-for="server.modelsWaitMs"></small></label>
+        <label class="check"><input id="server.launchAtLogin" type="checkbox"><span>Launch at login</span></label>
+      </div>
+      <div class="actions">
+        <button id="server-save" class="primary" type="button">Save and restart</button>
+        <button id="server-toggle" type="button">Stop</button>
+        <span class="muted hint">Saving restarts the server; in-flight requests will be dropped after 5 s.</span>
+      </div>
+      <p class="msg" id="server-msg" role="status"></p>
+      <p class="error" id="server-general-error" hidden></p>
+    </section>
+
+    <section class="card provider" data-provider="codex" id="card-codex">
+      <div class="card-head">
+        <h2>Codex</h2>
+        <span class="badge" data-role="badge">-</span>
+        <span class="muted mono" data-role="version"></span>
+        <label class="switch"><input id="providers.codex.enabled" type="checkbox"><span>Enabled</span></label>
+      </div>
+      <small data-note-for="providers.codex.enabled"></small>
+      <p class="error" data-role="error" hidden></p>
+      <div class="row auth-row">
+        <label class="field"><span>Sign-in method</span><select id="providers.codex.authMethodId"></select><small data-note-for="providers.codex.authMethodId"></small></label>
+        <button type="button" data-role="login">Log in</button>
+      </div>
+      <div class="login-link" data-role="login-link" hidden><span class="muted">Open this link to sign in:</span> <a href="#" data-role="login-url" class="mono"></a> <button type="button" class="small" data-role="copy-login">Copy link</button></div>
+      <div class="models">
+        <div class="row between"><strong>Models <span class="muted" data-role="model-count"></span></strong><button type="button" class="small" data-role="refresh">Refresh</button></div>
+        <ul class="chips" data-role="models"></ul>
+      </div>
+      <div class="actions"><button type="button" class="primary" data-role="save">Save and restart</button></div>
+      <p class="msg" data-role="msg" role="status"></p>
+      <p class="error" data-role="general-error" hidden></p>
+    </section>
+
+    <section class="card provider" data-provider="antigravity" id="card-antigravity">
+      <div class="card-head">
+        <h2>Google Antigravity</h2>
+        <span class="badge" data-role="badge">-</span>
+        <span class="muted mono" data-role="version"></span>
+        <label class="switch"><input id="providers.antigravity.enabled" type="checkbox"><span>Enabled</span></label>
+      </div>
+      <small data-note-for="providers.antigravity.enabled"></small>
+      <p class="error" data-role="error" hidden></p>
+      <div class="row auth-row">
+        <label class="field"><span>Sign-in method</span><select id="providers.antigravity.authMethodId"></select><small data-note-for="providers.antigravity.authMethodId"></small></label>
+        <button type="button" data-role="login">Log in</button>
+      </div>
+      <div class="login-link" data-role="login-link" hidden><span class="muted">Open this link to sign in:</span> <a href="#" data-role="login-url" class="mono"></a> <button type="button" class="small" data-role="copy-login">Copy link</button></div>
+
+      <fieldset class="sub">
+        <legend>Agent</legend>
+        <label class="field"><span>Executable path</span>
+          <div class="row"><input id="providers.antigravity.executablePath" type="text" autocomplete="off" spellcheck="false" placeholder="Leave empty to use the downloaded agent"><button type="button" class="small" id="browse-exe">Browse…</button></div>
+          <small data-note-for="providers.antigravity.executablePath"></small><small class="error" data-error-for="providers.antigravity.executablePath"></small></label>
+        <div class="row install-row">
+          <button type="button" id="install-agy">Download from registry</button>
+          <progress id="install-progress" max="100" hidden></progress>
+          <span class="muted" id="install-text"></span>
+        </div>
+        <p class="muted mono small-text" id="install-info"></p>
+      </fieldset>
+
+      <fieldset class="sub">
+        <legend>Credentials and data</legend>
+        <label class="field"><span>GEMINI_API_KEY <em class="muted">(only for the "Gemini API key" method)</em></span>
+          <div class="row"><input id="providers.antigravity.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="agy-key-show">Show</button></div>
+          <small data-note-for="providers.antigravity.apiKey"></small><small class="error" data-error-for="providers.antigravity.apiKey"></small></label>
+        <label class="field"><span>GEMINI_HOME <em class="muted">(default: ~/.gemini)</em></span><input id="providers.antigravity.geminiHome" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.antigravity.geminiHome"></small></label>
+        <label class="check"><input id="providers.antigravity.purgeSessions" type="checkbox"><span>Purge proxy sessions after each request</span></label>
+      </fieldset>
+
+      <div class="models">
+        <div class="row between"><strong>Models <span class="muted" data-role="model-count"></span></strong><button type="button" class="small" data-role="refresh">Refresh</button></div>
+        <ul class="chips" data-role="models"></ul>
+      </div>
+      <div class="actions"><button type="button" class="primary" data-role="save">Save and restart</button></div>
+      <p class="msg" data-role="msg" role="status"></p>
+      <p class="error" data-role="general-error" hidden></p>
+    </section>
+  </main>
+
+  <footer class="foot muted">
+    <span>Settings: <span id="settings-path" class="mono"></span></span>
+    <span id="secrets-note"></span>
+    <button type="button" class="small" id="open-logs">Open logs folder</button>
+  </footer>
+
+  <dialog id="terms-dialog">
+    <h2>Before you enable Antigravity</h2>
+    <p>Google's Antigravity Terms (clause 6) prohibit using third-party software to access the service. Routing an OpenAI-compatible API through Antigravity may be treated as powering a non-Antigravity product, and accounts have been suspended for this.</p>
+    <p>This app uses the official Antigravity ACP server, but you use it at your own risk.</p>
+    <p><a href="#" id="terms-link">Read Google's Antigravity terms</a></p>
+    <div class="actions end">
+      <button type="button" id="terms-cancel">Cancel</button>
+      <button type="button" id="terms-accept" class="primary">I understand</button>
+    </div>
+  </dialog>
+
+  <script type="module" src="settings.js"></script>
+</body>
+</html>
