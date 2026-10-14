@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MODEL_IDS, type ModelId } from "./config.js";
+import { MODEL_IDS } from "./config.js";
 
 const textPartSchema = z.object({ type: z.literal("text"), text: z.string() }).strict();
 const messageContentSchema = z.union([z.string(), z.array(textPartSchema).min(1)]);
@@ -55,35 +55,38 @@ export function asText(content: string | Array<{ type: "text"; text: string }>):
   return typeof content === "string" ? content : content.map((part) => part.text).join("");
 }
 
-export function validateModel(model: string): asserts model is (typeof MODEL_IDS)[number] {
-  if (!(MODEL_IDS as readonly string[]).includes(model)) throw new ApiError(404, "model_not_found", `The model '${model}' does not exist.`, "model");
+export type ModelCheck = (model: string) => boolean;
+const defaultIsKnownModel: ModelCheck = (model) => (MODEL_IDS as readonly string[]).includes(model);
+
+export function validateModel(model: string, isKnownModel: ModelCheck = defaultIsKnownModel): void {
+  if (!isKnownModel(model)) throw new ApiError(404, "model_not_found", `The model '${model}' does not exist.`, "model");
 }
 
 function rejectUnsupported(obj: Record<string, unknown>, fields: readonly string[]): void {
   for (const field of fields) if (obj[field] !== undefined && obj[field] !== false && obj[field] !== null) throw new ApiError(400, "unsupported_parameter", `Parameter '${field}' is not supported by this proxy.`, field);
 }
 
-export function normalizeChat(raw: unknown): Omit<ChatRequest, "model"> & { model: ModelId; textMessages: TextMessage[] } {
+export function normalizeChat(raw: unknown, isKnownModel?: ModelCheck): Omit<ChatRequest, "model"> & { model: string; textMessages: TextMessage[] } {
   const parsed = chatRequestSchema.safeParse(raw);
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.");
   rejectUnsupported(parsed.data, unsupportedChatFields);
   if (parsed.data.max_tokens !== undefined && parsed.data.max_completion_tokens !== undefined) throw new ApiError(400, "invalid_request", "Only one of max_tokens and max_completion_tokens may be provided.");
-  validateModel(parsed.data.model);
-  return { ...parsed.data, model: parsed.data.model as ModelId, textMessages: parsed.data.messages.map((message) => ({ role: message.role, content: asText(message.content) })) };
+  validateModel(parsed.data.model, isKnownModel);
+  return { ...parsed.data, model: parsed.data.model, textMessages: parsed.data.messages.map((message) => ({ role: message.role, content: asText(message.content) })) };
 }
 
-export function normalizeResponses(raw: unknown): Omit<ResponsesRequest, "model"> & { model: ModelId; textMessages: TextMessage[] } {
+export function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck): Omit<ResponsesRequest, "model"> & { model: string; textMessages: TextMessage[] } {
   const parsed = responsesRequestSchema.safeParse(raw);
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.");
   rejectUnsupported(parsed.data, unsupportedResponseFields);
   if (parsed.data.store === true) throw new ApiError(400, "unsupported_parameter", "Stored responses are not supported.", "store");
   if (parsed.data.previous_response_id !== undefined) throw new ApiError(400, "unsupported_parameter", "Persistent conversations are not supported.", "previous_response_id");
-  validateModel(parsed.data.model);
+  validateModel(parsed.data.model, isKnownModel);
   const textMessages: TextMessage[] = [];
   if (parsed.data.instructions) textMessages.push({ role: "system", content: parsed.data.instructions });
   if (typeof parsed.data.input === "string") textMessages.push({ role: "user", content: parsed.data.input });
   else textMessages.push(...parsed.data.input.map((message) => ({ role: message.role, content: asText(message.content) })));
-  return { ...parsed.data, model: parsed.data.model as ModelId, textMessages };
+  return { ...parsed.data, model: parsed.data.model, textMessages };
 }
 
 export function serializePrompt(messages: TextMessage[]): string {

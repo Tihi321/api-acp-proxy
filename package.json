@@ -1,6 +1,8 @@
 {
   "name": "codex-subscription-openai-proxy",
   "version": "0.1.0",
+  "description": "OpenAI-compatible proxy for Codex and Google Antigravity via ACP",
+  "author": "Tihomir Selak",
   "private": true,
   "type": "module",
   "engines": {
@@ -9,10 +11,17 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit",
-    "build": "tsc",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.renderer.json",
+    "build": "tsc && tsc -p tsconfig.renderer.json && node scripts/copy-static.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
+    "app:dev": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --win --x64 --config electron-builder.config.cjs && node scripts/verify-package.mjs",
+    "dist:dir": "npm run build && electron-builder --win --dir --x64 --config electron-builder.config.cjs",
+    "verify:package": "node scripts/verify-package.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "probe": "node scripts/acp-probe.mjs",
+    "antigravity:install": "node scripts/antigravity-install.mjs",
     "example:basic": "node examples/basic.js",
     "example:streaming": "node examples/streaming.js",
     "example:chatbot": "node examples/chatbot.js"
@@ -20,13 +29,17 @@
   "dependencies": {
     "@agentclientprotocol/codex-acp": "^1.12.0",
     "@agentclientprotocol/sdk": "^1.4.0",
+    "fflate": "^0.8.3",
     "openai": "^7.20.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "electron": "^44.7.2",
+    "electron-builder": "^26.15.3",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
-  }
+  },
+  "main": "dist/electron/main.js"
 }

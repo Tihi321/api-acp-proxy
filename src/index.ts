@@ -1,19 +1,25 @@
-import { createProxyServer } from "./server.js";
-import { AcpBridge } from "./acp.js";
-import { loadConfig } from "./config.js";
+import { ProxyController } from "./controller.js";
 
-const config = loadConfig();
-const bridge = new AcpBridge(config);
-const server = createProxyServer(config, bridge);
-server.listen(config.port, config.host, () => console.log(`Codex subscription proxy listening on http://${config.host}:${config.port}`));
-
-let shuttingDown = false;
-async function shutdown(signal: string): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`Received ${signal}; shutting down.`);
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  await bridge.close();
+const controller = new ProxyController();
+const announcedLoginUrls = new Map<string, string>();
+controller.on("status", (status: ReturnType<ProxyController["status"]>) => {
+  for (const provider of status.providers) {
+    if (!provider.loginUrl) { announcedLoginUrls.delete(provider.id); continue; }
+    if (announcedLoginUrls.get(provider.id) === provider.loginUrl) continue;
+    announcedLoginUrls.set(provider.id, provider.loginUrl);
+    console.log(`[${provider.id}] Login URL (open it in a browser only if ${provider.name} reports that login is required): ${provider.loginUrl}`);
+  }
+});
+const status = await controller.start();
+if (status.server.state === "error") { console.error(`Unable to start: ${status.server.error?.message}`); process.exitCode = 1; await controller.stop(); }
+else {
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`Received ${signal}; shutting down.`);
+    await controller.stop();
+  };
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
-process.once("SIGINT", () => void shutdown("SIGINT"));
-process.once("SIGTERM", () => void shutdown("SIGTERM"));

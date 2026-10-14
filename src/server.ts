@@ -4,7 +4,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { AcpLike, GenerationResult } from "./acp.js";
 import { AcpUnavailableError } from "./acp.js";
 import { MODEL_IDS, type ProxyConfig } from "./config.js";
-import { ApiError, errorEnvelope, normalizeChat, normalizeResponses } from "./api.js";
+import { ApiError, errorEnvelope, normalizeChat, normalizeResponses, type ModelCheck } from "./api.js";
 import { beginSse, endSse, writeSse } from "./sse.js";
 
 const startedAt = Date.now();
@@ -37,6 +37,8 @@ async function readBody(request: IncomingMessage, limit: number): Promise<unknow
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new ApiError(400, "invalid_request", "Request body must be valid JSON."); }
 }
 
+function modelCheck(bridge: AcpLike): ModelCheck | undefined { return bridge.hasModel ? (model) => bridge.hasModel!(model) : undefined; }
+
 function id(prefix: string): string { return `${prefix}-${randomUUID().replaceAll("-", "")}`; }
 
 export function mapStopReason(stopReason: GenerationResult["stopReason"]): { chat: string | null; responseStatus: string } {
@@ -59,7 +61,7 @@ function chatUsage(result: GenerationResult): Record<string, number> | undefined
 }
 
 async function handleChat(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike): Promise<void> {
-  const parsed = normalizeChat(await readBody(request, config.maxBodyBytes));
+  const parsed = normalizeChat(await readBody(request, config.maxBodyBytes), modelCheck(bridge));
   const chatId = id("chatcmpl");
   const created = Math.floor(Date.now() / 1000);
   const abortController = new AbortController();
@@ -93,7 +95,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
 }
 
 async function handleResponses(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike): Promise<void> {
-  const parsed = normalizeResponses(await readBody(request, config.maxBodyBytes));
+  const parsed = normalizeResponses(await readBody(request, config.maxBodyBytes), modelCheck(bridge));
   const responseId = id("resp");
   const messageId = id("msg");
   const created = Math.floor(Date.now() / 1000);
@@ -139,14 +141,14 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike): Server 
       const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
       if (method === "GET" && url.pathname === "/healthz") { json(response, 200, { status: "ok", uptime_seconds: Math.floor((Date.now() - startedAt) / 1000) }); return; }
       if (!authenticated(request, config)) { json(response, 401, { error: { message: "Invalid or missing bearer token.", type: "invalid_request_error", code: "invalid_api_key", param: null } }); return; }
-      if (method === "GET" && url.pathname === "/v1/models") { json(response, 200, { object: "list", data: MODEL_IDS.map((model) => ({ id: model, object: "model", created: 0, owned_by: "openai" })) }); return; }
+      if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : MODEL_IDS.map((model) => ({ id: model, ownedBy: "openai" })); json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai" })) }); return; }
       if (method === "POST" && url.pathname === "/v1/chat/completions") { await handleChat(request, response, config, bridge); return; }
       if (method === "POST" && url.pathname === "/v1/responses") { await handleResponses(request, response, config, bridge); return; }
       json(response, 404, { error: { message: "Not found.", type: "invalid_request_error", code: "not_found", param: null } });
     } catch (error) {
       if (response.headersSent) { response.end(); return; }
       if (error instanceof ApiError) { json(response, error.status, errorEnvelope(error)); return; }
-      if (error instanceof AcpUnavailableError) { json(response, 503, { error: { message: error.message, type: "server_error", code: "backend_unavailable", param: null } }); return; }
+      if (error instanceof AcpUnavailableError) { json(response, 503, { error: { message: error.message, type: "server_error", code: error.code ?? "backend_unavailable", param: null } }); return; }
       json(response, 500, errorEnvelope(error instanceof Error ? error : new Error(String(error))));
     }
   });

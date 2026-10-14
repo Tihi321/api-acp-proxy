@@ -20,7 +20,7 @@ The examples use these environment variables:
 | --- | --- | --- |
 | `PROXY_URL` | `http://127.0.0.1:8787` | Proxy origin, including a non-default port when needed |
 | `PROXY_API_KEY` | `local` | Bearer token sent to the proxy |
-| `PROXY_MODEL` | `gpt-5.6-sol` | Model used by the examples |
+| `PROXY_MODEL` | `gpt-5.6-sol` | Model used by the examples. May be a provider-prefixed id, e.g. `codex/gpt-5.6-sol` or `antigravity/gemini-3.8-flash-low` (see `GET /v1/models`) |
 
 `basic.js` checks health, lists models, and makes non-streaming Chat Completions and Responses requests. `streaming.js` makes both streaming requests and prints received text deltas as they arrive.
 
