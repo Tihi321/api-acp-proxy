@@ -82,4 +82,4 @@ Summary: added a third backend, `claude`, built on the bundled `@agentclientprot
 - The adapter is pinned exactly at 0.91.0, so upgrades are manual.
 
 ### Commit status
-Uncommitted on `AAP-04_claude-anthropic-provider`.
+Committed as 737f031 on `AAP-04_claude-anthropic-provider` (not pushed).
