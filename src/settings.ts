@@ -38,6 +38,15 @@ export const settingsSchema = z.object({
       /** Auth method of the last successful login (written by the provider, not the UI). */
       lastAuthMethodId: z.string().optional(),
     }).default({}),
+    claude: z.object({
+      enabled: z.boolean().default(false),
+      apiKey: z.string().optional(),
+      oauthToken: z.string().optional(),
+      configDir: z.string().optional(),
+      executablePath: z.string().optional(),
+      authMethodId: z.string().optional(),
+      termsAcknowledgedAt: z.string().optional(),
+    }).default({}),
   }).default({}),
 });
 
@@ -78,10 +87,12 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
 
 function mapSecrets(settings: Settings, map: (value: string) => string | undefined): Settings {
   const copy = structuredClone(settings);
-  for (const holder of [copy.server, copy.providers.antigravity] as Array<{ apiKey?: string }>) {
-    if (holder.apiKey === undefined) continue;
-    const mapped = map(holder.apiKey);
-    if (mapped === undefined) delete holder.apiKey; else holder.apiKey = mapped;
+  const holders: Array<[Record<string, unknown>, string]> = [[copy.server, "apiKey"], [copy.providers.antigravity, "apiKey"], [copy.providers.claude, "apiKey"], [copy.providers.claude, "oauthToken"]];
+  for (const [holder, key] of holders) {
+    const value = holder[key];
+    if (typeof value !== "string") continue;
+    const mapped = map(value);
+    if (mapped === undefined) delete holder[key]; else holder[key] = mapped;
   }
   return copy;
 }
@@ -178,6 +189,9 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
   apply("providers.antigravity.enabled", parseBool(env.PROXY_ANTIGRAVITY_ENABLED), (v) => { providers.antigravity.enabled = v; });
   apply("providers.antigravity.executablePath", env.PROXY_ANTIGRAVITY_COMMAND || undefined, (v) => { providers.antigravity.executablePath = v; });
   apply("providers.antigravity.termsAcknowledgedAt", parseBool(env.PROXY_ANTIGRAVITY_ACCEPT_TERMS) ? providers.antigravity.termsAcknowledgedAt ?? new Date().toISOString() : undefined, (v) => { providers.antigravity.termsAcknowledgedAt = v; });
+  apply("providers.claude.enabled", parseBool(env.PROXY_CLAUDE_ENABLED), (v) => { providers.claude.enabled = v; });
+  apply("providers.claude.executablePath", env.PROXY_CLAUDE_EXECUTABLE || undefined, (v) => { providers.claude.executablePath = v; });
+  apply("providers.claude.termsAcknowledgedAt", parseBool(env.PROXY_CLAUDE_ACCEPT_TERMS) ? providers.claude.termsAcknowledgedAt ?? new Date().toISOString() : undefined, (v) => { providers.claude.termsAcknowledgedAt = v; });
   const config: ProxyConfig = {
     host: server.host,
     port: server.port,

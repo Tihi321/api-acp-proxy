@@ -7,6 +7,7 @@ import { ProviderRouter } from "./router.js";
 import { createProxyServer } from "./server.js";
 import { codexRegistration } from "./providers/codex.js";
 import { antigravityRegistration } from "./providers/antigravity.js";
+import { claudeRegistration } from "./providers/claude.js";
 import { defaultRuntimeContext } from "./provider.js";
 import type { ModelInfo, Provider, ProviderStatus, RuntimeContext } from "./provider.js";
 import { defaultSettingsPath, mergeSettings, resolveConfig, SettingsStore } from "./settings.js";
@@ -72,7 +73,7 @@ export class ProxyController extends EventEmitter {
     this.logger = options.logger ?? createLogger();
     const settingsPath = options.settingsPath ?? defaultSettingsPath(this.env);
     this.store = new SettingsStore(settingsPath, options.secretCodec, this.logger);
-    this.registry = [...(options.registry ?? [codexRegistration, antigravityRegistration])];
+    this.registry = [...(options.registry ?? [codexRegistration, antigravityRegistration, claudeRegistration])];
     this.drainMs = options.drainMs ?? 5000;
     this.dataDir = options.ctx?.dataDir ?? path.dirname(settingsPath);
     this.ctx = defaultRuntimeContext({ ...options.ctx, logger: this.logger, dataDir: this.dataDir });

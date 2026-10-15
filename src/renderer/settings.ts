@@ -1,10 +1,32 @@
 import type { InstallProgressView, ProviderStatusView, SaveResult, SettingsPatchView, StateView } from "../shared/ipc.js";
 
-type Scope = "server" | "codex" | "antigravity";
+type Scope = "server" | "codex" | "antigravity" | "claude";
 interface FieldSpec { path: string; kind: "text" | "number" | "bool" | "select"; scope: Scope; optional?: boolean }
 
 const api = window.proxyApi;
-const TERMS_URL = "https://antigravity.google/terms";
+type TermsProvider = "antigravity" | "claude";
+/** Terms dialog content per provider (rendered with textContent only). */
+const termsText: Record<TermsProvider, { title: string; paragraphs: string[]; url: string; link: string }> = {
+  antigravity: {
+    title: "Before you enable Antigravity",
+    paragraphs: [
+      "Google's Antigravity Terms (clause 6) prohibit using third-party software to access the service. Routing an OpenAI-compatible API through Antigravity may be treated as powering a non-Antigravity product, and accounts have been suspended for this.",
+      "This app uses the official Antigravity ACP server, but you use it at your own risk.",
+    ],
+    url: "https://antigravity.google/terms",
+    link: "Read Google's Antigravity terms",
+  },
+  claude: {
+    title: "Before you enable Claude",
+    paragraphs: [
+      "Using a Claude subscription through third-party tooling may conflict with Anthropic's Consumer Terms and usage policy. Routing an OpenAI-compatible API through your subscription could put your account at risk.",
+      "This app uses Anthropic's official Claude Agent SDK via the ACP adapter, but you use it at your own risk.",
+    ],
+    url: "https://www.anthropic.com/legal/consumer-terms",
+    link: "Read Anthropic's Consumer Terms",
+  },
+};
+let termsUrl = "";
 
 const fields: FieldSpec[] = [
   { path: "server.host", kind: "text", scope: "server" },
@@ -22,14 +44,21 @@ const fields: FieldSpec[] = [
   { path: "providers.antigravity.apiKey", kind: "text", scope: "antigravity", optional: true },
   { path: "providers.antigravity.geminiHome", kind: "text", scope: "antigravity", optional: true },
   { path: "providers.antigravity.purgeSessions", kind: "bool", scope: "antigravity" },
+  { path: "providers.claude.enabled", kind: "bool", scope: "claude" },
+  { path: "providers.claude.authMethodId", kind: "select", scope: "claude", optional: true },
+  { path: "providers.claude.apiKey", kind: "text", scope: "claude", optional: true },
+  { path: "providers.claude.oauthToken", kind: "text", scope: "claude", optional: true },
+  { path: "providers.claude.configDir", kind: "text", scope: "claude", optional: true },
+  { path: "providers.claude.executablePath", kind: "text", scope: "claude", optional: true },
 ];
 
 /** Shown before the provider has reported its methods (it is not running yet). */
 const fallbackAuth: Record<string, Array<{ id: string; name: string }>> = {
   codex: [{ id: "chat-gpt", name: "ChatGPT account" }, { id: "api-key", name: "API key" }],
   antigravity: [{ id: "oauth-personal", name: "Log in with Google" }, { id: "oauth-business", name: "Log in with Gemini Enterprise" }, { id: "gemini-api-key", name: "Gemini API key" }, { id: "agent-platform", name: "Gemini Enterprise Agent Platform" }],
+  claude: [{ id: "claude-ai-login", name: "Claude subscription" }, { id: "console-login", name: "Anthropic Console (API billing)" }],
 };
-const defaultAuth: Record<string, string> = { antigravity: "oauth-personal" };
+const defaultAuth: Record<string, string> = { antigravity: "oauth-personal", claude: "claude-ai-login" };
 
 const badgeClass: Record<string, string> = {
   running: "ok", ready: "ok", starting: "info", needs_login: "warn", terms_required: "warn", not_installed: "warn", error: "err", stopped: "", disabled: "",
@@ -37,7 +66,7 @@ const badgeClass: Record<string, string> = {
 const badgeText: Record<string, string> = { needs_login: "needs login", not_installed: "not installed", terms_required: "terms required" };
 
 let state: StateView | undefined;
-const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false };
+const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, claude: false };
 const loggingIn = new Set<string>();
 let installing = false;
 
@@ -112,6 +141,9 @@ function renderProvider(provider: string, current: StateView): void {
   login.textContent = loggingIn.has(provider) ? "Waiting for login…" : "Log in";
   login.title = unavailable ? "Enable and save the provider (and start the server) first." : "";
 
+  const accountNode = root.querySelector<HTMLElement>('[data-role="account"]');
+  if (accountNode) { accountNode.textContent = status?.account ? `Signed in as ${status.account}` : ""; accountNode.hidden = !status?.account; }
+
   const link = role<HTMLElement>(root, "login-link");
   const url = status?.loginUrl;
   link.hidden = !url;
@@ -149,6 +181,7 @@ function render(current: StateView): void {
   renderFields("server", current);
   renderProvider("codex", current);
   renderProvider("antigravity", current);
+  renderProvider("claude", current);
   renderInstall(current);
   el("settings-path").textContent = current.settingsPath;
   el("secrets-note").textContent = current.secretsEncrypted ? "Secrets are encrypted with the OS keychain." : "OS secret storage unavailable: secrets are stored as plain text.";
@@ -196,7 +229,10 @@ async function saveScope(scope: Scope): Promise<void> {
   const msg = scope === "server" ? el("server-msg") : role<HTMLElement>(root, "msg");
   const button = scope === "server" ? el<HTMLButtonElement>("server-save") : role<HTMLButtonElement>(root, "save");
   flash(msg, "");
-  if (scope === "antigravity" && (field("providers.antigravity.enabled") as HTMLInputElement).checked && !await ensureTerms()) { (field("providers.antigravity.enabled") as HTMLInputElement).checked = false; return; }
+  if (scope === "antigravity" || scope === "claude") {
+    const enabled = field(`providers.${scope}.enabled`) as HTMLInputElement;
+    if (enabled.checked && !await ensureTerms(scope)) { enabled.checked = false; return; }
+  }
   const { patch, errors } = collectPatch(scope);
   showErrors(scope, errors);
   if (errors.length || !patch) return;
@@ -210,9 +246,14 @@ async function saveScope(scope: Scope): Promise<void> {
 }
 
 // Terms modal
-function ensureTerms(): Promise<boolean> {
-  if (state?.effective.providers.antigravity.termsAcknowledgedAt) return Promise.resolve(true);
+function ensureTerms(provider: TermsProvider): Promise<boolean> {
+  if (state?.effective.providers[provider].termsAcknowledgedAt) return Promise.resolve(true);
   const dialog = el<HTMLDialogElement>("terms-dialog");
+  const text = termsText[provider];
+  el("terms-title").textContent = text.title;
+  el("terms-body").replaceChildren(...text.paragraphs.map((paragraph) => Object.assign(document.createElement("p"), { textContent: paragraph })));
+  el("terms-link").textContent = text.link;
+  termsUrl = text.url;
   return new Promise((resolve) => {
     const finish = (accepted: boolean): void => {
       el("terms-accept").onclick = null; el("terms-cancel").onclick = null; dialog.oncancel = null;
@@ -220,8 +261,8 @@ function ensureTerms(): Promise<boolean> {
       resolve(accepted);
     };
     el("terms-accept").onclick = () => {
-      void api.acknowledgeAntigravityTerms().then(async (result) => {
-        if (!result.ok) { flash(role(card("antigravity"), "msg"), result.message, true); finish(false); return; }
+      void api.acknowledgeTerms(provider).then(async (result) => {
+        if (!result.ok) { flash(role(card(provider), "msg"), result.message, true); finish(false); return; }
         await refresh();
         finish(true);
       });
@@ -266,10 +307,20 @@ function wire(): void {
     input.type = input.type === "password" ? "text" : "password";
     el("agy-key-show").textContent = input.type === "password" ? "Show" : "Hide";
   };
+  el("claude-key-show").onclick = () => {
+    const input = field("providers.claude.apiKey") as HTMLInputElement;
+    input.type = input.type === "password" ? "text" : "password";
+    el("claude-key-show").textContent = input.type === "password" ? "Show" : "Hide";
+  };
+  el("claude-token-show").onclick = () => {
+    const input = field("providers.claude.oauthToken") as HTMLInputElement;
+    input.type = input.type === "password" ? "text" : "password";
+    el("claude-token-show").textContent = input.type === "password" ? "Show" : "Hide";
+  };
   el("open-logs").onclick = () => void api.openLogs();
-  el("terms-link").onclick = (event) => { event.preventDefault(); void openExternal(TERMS_URL); };
+  el("terms-link").onclick = (event) => { event.preventDefault(); if (termsUrl) void openExternal(termsUrl); };
 
-  for (const provider of ["codex", "antigravity"] as const) {
+  for (const provider of ["codex", "antigravity", "claude"] as const) {
     const root = card(provider);
     const msg = role<HTMLElement>(root, "msg");
     role(root, "save").onclick = () => void saveScope(provider);
@@ -278,7 +329,7 @@ function wire(): void {
       if (!result.ok) flash(msg, result.message, true);
     };
     role(root, "login").onclick = async () => {
-      loggingIn.add(provider); flash(msg, ""); if (state) renderProvider(provider, state);
+      loggingIn.add(provider); flash(msg, provider === "claude" ? "Complete the login in the console window…" : ""); if (state) renderProvider(provider, state);
       try {
         const methodId = (field(`providers.${provider}.authMethodId`) as HTMLSelectElement).value || undefined;
         const result = await api.login(provider, methodId);
@@ -289,14 +340,20 @@ function wire(): void {
     role(root, "copy-login").onclick = () => { const url = role<HTMLElement>(root, "login-url").dataset.url; if (url) void api.copyText(url).then(() => flash(msg, "Link copied.")); };
   }
 
-  (field("providers.antigravity.enabled") as HTMLInputElement).addEventListener("change", async (event) => {
-    const input = event.currentTarget as HTMLInputElement;
-    if (input.checked && !await ensureTerms()) input.checked = false;
-  });
+  for (const provider of ["antigravity", "claude"] as const) {
+    (field(`providers.${provider}.enabled`) as HTMLInputElement).addEventListener("change", async (event) => {
+      const input = event.currentTarget as HTMLInputElement;
+      if (input.checked && !await ensureTerms(provider)) input.checked = false;
+    });
+  }
 
   el("browse-exe").onclick = async () => {
     const result = await api.pickExecutable();
     if (result.path) { (field("providers.antigravity.executablePath") as HTMLInputElement).value = result.path; dirty.antigravity = true; }
+  };
+  el("browse-claude-exe").onclick = async () => {
+    const result = await api.pickExecutable();
+    if (result.path) { (field("providers.claude.executablePath") as HTMLInputElement).value = result.path; dirty.claude = true; }
   };
   el("install-agy").onclick = async () => {
     installing = true; el("install-text").textContent = "Starting…"; showError(role(card("antigravity"), "general-error"), undefined);

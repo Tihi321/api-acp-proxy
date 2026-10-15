@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ProxyController } from "../controller.js";
 import type { ControllerStatus } from "../controller.js";
 import { createLogger } from "../logger.js";
+import { claudeRegistration } from "../providers/claude.js";
 import { codexRegistration } from "../providers/codex.js";
 import { defaultSettingsPath } from "../settings.js";
 import type { SecretCodec, SettingsPatch } from "../settings.js";
@@ -82,7 +83,7 @@ async function main(): Promise<void> {
     settingsPath,
     logger,
     ...(secretCodec ? { secretCodec } : {}),
-    registry: [codexRegistration, antigravityRegistration],
+    registry: [codexRegistration, antigravityRegistration, claudeRegistration],
     ctx: {
       dataDir,
       nodeRuntime: { command: process.execPath, argsPrefix: ["--require", hideWindows], env: { ELECTRON_RUN_AS_NODE: "1" } },
@@ -176,7 +177,7 @@ async function main(): Promise<void> {
   });
   handle("proxy:pickExecutable", async () => {
     const parent = win.browserWindow;
-    const options: Electron.OpenDialogOptions = { title: "Select the Antigravity ACP server", properties: ["openFile"], filters: [{ name: "Executables", extensions: ["exe"] }, { name: "All files", extensions: ["*"] }] };
+    const options: Electron.OpenDialogOptions = { title: "Select the agent executable", properties: ["openFile"], filters: [{ name: "Executables", extensions: ["exe"] }, { name: "All files", extensions: ["*"] }] };
     const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
     return result.canceled || !result.filePaths[0] ? {} : { path: result.filePaths[0] };
   });
@@ -192,14 +193,20 @@ async function main(): Promise<void> {
       return failure(error);
     } finally { installing = false; }
   });
-  handle("proxy:acknowledgeAntigravityTerms", () => action(() => proxy.applySettings({ providers: { antigravity: { termsAcknowledgedAt: new Date().toISOString() } } })));
+  handle("proxy:acknowledgeTerms", (providerId: unknown): Promise<ActionResult> | ActionResult => {
+    if (providerId !== "antigravity" && providerId !== "claude") return { ok: false, message: "Invalid provider" };
+    return action(() => proxy.applySettings({ providers: { [providerId]: { termsAcknowledgedAt: new Date().toISOString() } } }));
+  });
   handle("proxy:openLogs", async () => { await shell.openPath(logsDir); });
   handle("proxy:copyText", (text: unknown) => { if (typeof text === "string" && text.length <= 10_000) clipboard.writeText(text); });
   handle("proxy:openExternal", async (url: unknown): Promise<ActionResult> => {
     if (typeof url !== "string") return { ok: false, message: "Invalid URL" };
     let parsed: URL;
     try { parsed = new URL(url); } catch { return { ok: false, message: "Invalid URL" }; }
-    const allowed = parsed.protocol === "https:" && ((parsed.origin === "https://antigravity.google" && parsed.pathname === "/terms") || parsed.origin === "https://accounts.google.com");
+    const allowed = parsed.protocol === "https:" && (
+      (parsed.origin === "https://antigravity.google" && parsed.pathname === "/terms")
+      || (parsed.origin === "https://www.anthropic.com" && parsed.pathname === "/legal/consumer-terms")
+      || parsed.origin === "https://accounts.google.com");
     if (!allowed) return { ok: false, message: "This link is not allowed." };
     return action(() => shell.openExternal(parsed.href));
   });

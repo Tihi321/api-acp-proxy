@@ -24,7 +24,7 @@ export interface ModelInfo { id: string; name?: string; }
 /** "terminal" methods cannot be passed to authenticate. */
 export interface AuthMethodInfo { id: string; name: string; description?: string; type?: string; }
 export type ProviderState = "disabled" | "stopped" | "starting" | "ready" | "needs_login" | "not_installed" | "terms_required" | "error";
-export interface ProviderStatus { id: string; name: string; state: ProviderState; error?: string; authMethods: AuthMethodInfo[]; models: ModelInfo[]; /** Browser URL printed by the agent for an interactive login (present while a login may be pending). */ loginUrl?: string; /** Version reported by the agent in initialize.agentInfo. */ agentVersion?: string; }
+export interface ProviderStatus { id: string; name: string; state: ProviderState; error?: string; authMethods: AuthMethodInfo[]; models: ModelInfo[]; /** Browser URL printed by the agent for an interactive login (present while a login may be pending). */ loginUrl?: string; /** Version reported by the agent in initialize.agentInfo. */ agentVersion?: string; /** Signed-in account label pushed by the agent (e.g. via _auth/status_update). */ account?: string; }
 
 /** How to run an agent process. Under Electron this is process.execPath + ELECTRON_RUN_AS_NODE=1. */
 export interface NodeRuntime { command: string; argsPrefix: string[]; env: Record<string, string>; }
@@ -83,8 +83,16 @@ export interface ProviderDescriptor {
   afterStop?(ctx: RuntimeContext): Promise<void> | void;
   /** Called with the id of every session the provider creates. */
   onSessionCreated?(sessionId: string): void;
+  /** Called after a session was disposed, with its working directory (cleanup of agent-side leftovers). */
+  onSessionDisposed?(cwd: string): Promise<void> | void;
   /** Called after a successful user-initiated login with the method that was used. */
   onLoginSuccess?(methodId: string): void;
+  /** Sent as `_meta` on session/new (agent-specific session options). */
+  sessionMeta?: Record<string, unknown>;
+  /** Login methods shown in status().authMethods when the agent advertises none. */
+  loginMethods?: AuthMethodInfo[];
+  /** When present, login() runs this (e.g. a console window) instead of ACP authenticate; on success the agent is restarted. */
+  externalLogin?(ctx: RuntimeContext, methodId: string): Promise<void>;
   /** Translates a backend error into a proxy error (e.g. an ApiError 403). */
   mapError?(error: unknown, model: string): Error | undefined;
 }

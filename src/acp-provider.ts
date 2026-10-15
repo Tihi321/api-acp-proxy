@@ -61,6 +61,9 @@ export class AcpProvider implements Provider {
   private state: ProviderState = "stopped";
   private error?: string;
   private agentVersion?: string;
+  private account?: string;
+  /** The agent reported (via _auth/status_update) that nobody is signed in. */
+  private loggedOut = false;
   private loginUrl?: string;
   private loginUrlAt = 0;
   private openedUrl?: string;
@@ -88,7 +91,7 @@ export class AcpProvider implements Provider {
   }
 
   status(): ProviderStatus {
-    return { id: this.id, name: this.displayName, state: this.state, ...(this.error ? { error: this.error } : {}), authMethods: this.authMethods, models: this.staticModels ?? this.discovered ?? [], ...(this.loginUrl ? { loginUrl: this.loginUrl } : {}), ...(this.agentVersion ? { agentVersion: this.agentVersion } : {}) };
+    return { id: this.id, name: this.displayName, state: this.state, ...(this.error ? { error: this.error } : {}), authMethods: this.authMethods, models: this.staticModels ?? this.discovered ?? [], ...(this.loginUrl ? { loginUrl: this.loginUrl } : {}), ...(this.agentVersion ? { agentVersion: this.agentVersion } : {}), ...(this.account ? { account: this.account } : {}) };
   }
 
   onStatus(listener: (status: ProviderStatus) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
@@ -211,17 +214,20 @@ export class AcpProvider implements Provider {
     const spec = await descriptor.launch(this.ctx);
     const child = spawn(spec.command, spec.args, { stdio: ["pipe", "pipe", "pipe"], env: spec.env ?? process.env, cwd: spec.cwd, windowsHide: true, detached: process.platform !== "win32" });
     this.child = child;
-    this.loginUrl = undefined; this.openedUrl = undefined; this.agentVersion = undefined; this.authInflight = undefined; this.authBlock = undefined; this.stderrBuffer = "";
+    this.loginUrl = undefined; this.openedUrl = undefined; this.agentVersion = undefined; this.authInflight = undefined; this.authBlock = undefined; this.stderrBuffer = ""; this.account = undefined; this.loggedOut = false;
     const childFailure = new Promise<never>((_, reject) => child.once("error", reject));
     childFailure.catch(() => undefined);
     child.stderr.on("data", (chunk) => this.onStderr(chunk));
     const stream = ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>);
+    const agentRef: { current?: ClientContext } = {};
     const app = client({ name: "api-acp-proxy" });
     app.onRequest(methods.client.session.requestPermission, async () => ({ outcome: { outcome: "cancelled" } }));
     app.onNotification(methods.client.session.update, ({ params }) => { this.handlers.get(params.sessionId)?.(params.update); });
+    app.onNotification("_auth/status_update", (params: unknown) => params as { authStatus?: { kind?: string; label?: string } }, ({ params }) => { if (this.agent === agentRef.current) this.onAuthStatus(params.authStatus); });
     const connection = app.connect(stream);
     this.connection = connection;
     this.agent = connection.agent;
+    agentRef.current = connection.agent;
     child.once("exit", () => {
       if (this.child !== child) return;
       this.connection = undefined; this.agent = undefined; this.child = undefined;
@@ -234,6 +240,7 @@ export class AcpProvider implements Provider {
     try {
       const initialized = await Promise.race([this.agent.request(methods.agent.initialize, { protocolVersion: 1, clientInfo: { name: "api-acp-proxy", version: "0.1.0" }, clientCapabilities: {} }), childFailure]);
       this.authMethods = (initialized.authMethods ?? []).map((method) => ({ id: method.id, name: method.name, ...(method.description ? { description: method.description } : {}), ...("type" in method && method.type ? { type: String(method.type) } : {}) }));
+      if (!this.authMethods.length && descriptor.loginMethods) this.authMethods = descriptor.loginMethods;
       const version = initialized.agentInfo?.version;
       if (version) { this.agentVersion = version; this.emitStatus(); }
       if (descriptor.authMode === "eager") {
@@ -247,7 +254,7 @@ export class AcpProvider implements Provider {
           }
         }
       }
-      this.setState("ready");
+      if (this.loggedOut) this.setState("needs_login", "Not logged in."); else this.setState("ready");
     } catch (error) {
       connection.close(error);
       void killProcessTree(child);
@@ -258,6 +265,15 @@ export class AcpProvider implements Provider {
       if (authStep) throw new ProviderAuthRequiredError(message, error);
       throw missing ? new ProviderNotInstalledError(message, error) : new AcpUnavailableError(message, error);
     }
+  }
+
+  /** Handles the agent's _auth/status_update push: kind "none" means logged out, anything else carries the account label. */
+  private onAuthStatus(status: { kind?: string; label?: string } | undefined): void {
+    if (!status || typeof status.kind !== "string") return;
+    if (status.kind === "none") { this.account = undefined; this.loggedOut = true; this.setState("needs_login", "Not logged in."); return; }
+    this.loggedOut = false;
+    this.account = typeof status.label === "string" && status.label ? status.label : undefined;
+    if (this.state === "needs_login" && !this.authInflight && !this.authBlock) this.setState("ready"); else this.emitStatus();
   }
 
   private dropWarm(): void {
@@ -298,8 +314,8 @@ export class AcpProvider implements Provider {
   private async createSession(agent: ClientContext): Promise<PreparedSession> {
     const cwd = await mkdtemp(path.join(this.options.workRoot, "request-"));
     try {
-      const session = await this.withAuth(agent, () => withTimeout(agent.request(methods.agent.session.new, { cwd, mcpServers: [] }), this.descriptor.sessionTimeoutMs, `${this.displayName} session creation timed out.`));
-      if (this.state === "needs_login") this.setState("ready");
+      const session = await this.withAuth(agent, () => withTimeout(agent.request(methods.agent.session.new, { cwd, mcpServers: [], ...(this.descriptor.sessionMeta ? { _meta: this.descriptor.sessionMeta } : {}) }), this.descriptor.sessionTimeoutMs, `${this.displayName} session creation timed out.`));
+      if (this.state === "needs_login" && !this.loggedOut) this.setState("ready");
       this.authBlock = undefined;
       this.descriptor.onSessionCreated?.(session.sessionId);
       const modelOption = (session.configOptions || []).find((option) => option.category === "model" || option.id.toLowerCase().includes("model"));
@@ -322,6 +338,7 @@ export class AcpProvider implements Provider {
     this.handlers.delete(session.sessionId);
     try { await agent.request(methods.agent.session.delete, { sessionId: session.sessionId }); } catch { /* best effort cleanup */ }
     await rm(session.cwd, { recursive: true, force: true }).catch(() => undefined);
+    try { await this.descriptor.onSessionDisposed?.(session.cwd); } catch { /* best effort cleanup */ }
   }
 
   private refillWarm(): void {
@@ -352,7 +369,25 @@ export class AcpProvider implements Provider {
     return this.modelsInflight;
   }
 
+  /** Runs descriptor.externalLogin (e.g. a console window), then restarts the agent so a fresh initialize re-probes authentication. */
+  private async externalLogin(methodId: string | undefined): Promise<void> {
+    const descriptor = this.descriptor;
+    const chosen = methodId ?? descriptor.chooseAuth(this.authMethods, process.env) ?? descriptor.loginMethods?.[0]?.id;
+    if (!chosen) throw new AcpUnavailableError(`${this.displayName} has no login method.`);
+    this.userLogins++;
+    try {
+      await withTimeout(descriptor.externalLogin!(this.ctx, chosen), descriptor.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS, `${this.displayName} login did not complete within ${Math.round((descriptor.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS) / 1000)}s.`);
+    } catch (error) {
+      this.setState("needs_login", error instanceof Error ? error.message : String(error));
+      throw new ProviderAuthRequiredError(`${this.displayName} login failed.`, error);
+    } finally { this.userLogins--; }
+    await this.stop();
+    await this.connect();
+    try { descriptor.onLoginSuccess?.(chosen); } catch (error) { this.log.warn(`Login hook failed: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
   async login(methodId?: string): Promise<void> {
+    if (this.descriptor.externalLogin) return this.externalLogin(methodId);
     const agent = await this.connect();
     const usable = this.authMethods.filter((method) => method.type !== "terminal");
     const chosen = methodId ?? this.descriptor.chooseAuth(this.authMethods, process.env) ?? usable[0]?.id;
@@ -370,6 +405,15 @@ export class AcpProvider implements Provider {
     this.clearLoginUrl();
     this.setState("ready");
     try { this.descriptor.onLoginSuccess?.(chosen); } catch (error) { this.log.warn(`Login hook failed: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  /** An auth_required error from the agent means the user must log in: surface it as ProviderAuthRequiredError. */
+  private async authGuard<T>(run: () => Promise<T>): Promise<T> {
+    try { return await run(); } catch (error) {
+      if (!isAuthRequired(error)) throw error;
+      this.setState("needs_login", "Login required.");
+      throw new ProviderAuthRequiredError(`${this.displayName} requires login.`, error);
+    }
   }
 
   async generate(model: string, messages: TextMessage[], callbacks: GenerationCallbacks = {}, signal?: AbortSignal): Promise<GenerationResult> {
@@ -399,14 +443,14 @@ export class AcpProvider implements Provider {
         }
       });
       if (!session.modelOptionId) throw new AcpUnavailableError(`The ${this.displayName} ACP backend did not advertise a model configuration option.`);
-      await agent.request(methods.agent.session.setConfigOption, { sessionId: sid, configId: session.modelOptionId, value: model });
+      await this.authGuard(() => agent!.request(methods.agent.session.setConfigOption, { sessionId: sid, configId: session!.modelOptionId!, value: model }));
       if (aborted) return cancelled();
       if (session.readOnlyModeId) await agent.request(methods.agent.session.setMode, { sessionId: sid, modeId: session.readOnlyModeId });
       else if (this.descriptor.readOnlyMode === "required") throw new AcpUnavailableError(`The ${this.displayName} ACP backend did not advertise a read-only mode.`);
       else if (!this.warnedNoReadOnly) { this.warnedNoReadOnly = true; this.log.warn("No read-only mode advertised; relying on cancelled permissions and the text-only prompt."); }
       if (aborted) return cancelled();
       promptSent = true;
-      const result = await agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: serializePrompt(messages) }] });
+      const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: serializePrompt(messages) }] }));
       return { text, stopReason: result.stopReason, usage: result.usage ?? null };
     } catch (error) {
       if (aborted && !promptSent) return cancelled();

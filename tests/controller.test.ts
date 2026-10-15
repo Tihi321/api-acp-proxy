@@ -54,7 +54,7 @@ describe("ProxyController", () => {
     const status = await controller.start();
     expect(status.server.state).toBe("running");
     expect(status.server.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
-    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", "stopped"], ["antigravity", "disabled"]]);
+    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", "stopped"], ["antigravity", "disabled"], ["claude", "disabled"]]);
     expect(((await get(`${status.server.baseUrl}/models`)).data ?? []).map((model) => model.id)).toContain("gpt-5.6-sol");
     const chat = await fetch(`${status.server.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-5.6-sol", messages: [{ role: "user", content: "hi" }] }) });
     expect(((await chat.json()) as { choices: Array<{ message: { content: string } }> }).choices[0]?.message.content).toBe("fake response");

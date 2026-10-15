@@ -19,6 +19,7 @@ describe("SettingsStore", () => {
     expect(settings).toEqual(defaultSettings());
     expect(settings.providers.codex.enabled).toBe(true);
     expect(settings.providers.antigravity.enabled).toBe(false);
+    expect(settings.providers.claude).toEqual({ enabled: false });
     expect(JSON.parse(readFileSync(file, "utf8")).version).toBe(1);
   });
 
@@ -49,13 +50,17 @@ describe("SettingsStore", () => {
     const file = fresh();
     const codec: SecretCodec = { encode: (plain) => Buffer.from(plain).toString("base64"), decode: (stored) => Buffer.from(stored, "base64").toString() };
     const store = new SettingsStore(file, codec);
-    await store.save(mergeSettings(defaultSettings(), { server: { apiKey: "sekret" }, providers: { antigravity: { apiKey: "gem" } } }));
+    await store.save(mergeSettings(defaultSettings(), { server: { apiKey: "sekret" }, providers: { antigravity: { apiKey: "gem" }, claude: { apiKey: "sk-ant-key", oauthToken: "oauth-tok" } } }));
     const onDisk = readFileSync(file, "utf8");
     expect(onDisk).not.toContain("sekret");
+    expect(onDisk).not.toContain("sk-ant-key");
+    expect(onDisk).not.toContain("oauth-tok");
     expect(onDisk).toContain("enc:");
     const loaded = await store.load();
     expect(loaded.server.apiKey).toBe("sekret");
     expect(loaded.providers.antigravity.apiKey).toBe("gem");
+    expect(loaded.providers.claude.apiKey).toBe("sk-ant-key");
+    expect(loaded.providers.claude.oauthToken).toBe("oauth-tok");
     expect((await new SettingsStore(file, undefined, logger).load()).server.apiKey).toBeUndefined();
   });
 });
@@ -81,6 +86,13 @@ describe("resolveConfig", () => {
     expect(settings.providers.antigravity.termsAcknowledgedAt).toBeTruthy();
     expect(settings.providers.antigravity.executablePath).toBe("C:\\agy.exe");
     expect(overridden).toContain("providers.antigravity.termsAcknowledgedAt");
+  });
+
+  it("applies the Claude environment overrides", () => {
+    const { settings, overridden } = resolveConfig(defaultSettings(), { PROXY_CLAUDE_ENABLED: "1", PROXY_CLAUDE_ACCEPT_TERMS: "true", PROXY_CLAUDE_EXECUTABLE: "C:\claude.exe" });
+    expect(settings.providers.claude).toMatchObject({ enabled: true, executablePath: "C:\claude.exe" });
+    expect(settings.providers.claude.termsAcknowledgedAt).toBeTruthy();
+    expect([...overridden].sort()).toEqual(["providers.claude.enabled", "providers.claude.executablePath", "providers.claude.termsAcknowledgedAt"]);
   });
 
   it("keeps loadConfig backward compatible", () => {

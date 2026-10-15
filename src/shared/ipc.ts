@@ -15,6 +15,8 @@ export interface ProviderStatusView {
   models: ModelView[];
   loginUrl?: string;
   agentVersion?: string;
+  /** Signed-in identity label, when the agent reports one. */
+  account?: string;
 }
 export interface StatusView {
   server: { state: ServerState; host: string; port: number; baseUrl?: string; error?: { code?: string; message: string } };
@@ -34,6 +36,10 @@ export interface SettingsView {
       enabled: boolean; executablePath?: string; geminiHome?: string; apiKey?: string; authMethodId?: string;
       termsAcknowledgedAt?: string; purgeSessions?: boolean; lastAuthMethodId?: string;
     };
+    claude: {
+      enabled: boolean; apiKey?: string; oauthToken?: string; configDir?: string; executablePath?: string; authMethodId?: string;
+      termsAcknowledgedAt?: string;
+    };
   };
 }
 /** Deep partial; `null` clears an optional field (same contract as the core SettingsPatch). */
@@ -42,6 +48,7 @@ export type SettingsPatchView = {
   providers?: {
     codex?: { [K in keyof SettingsView["providers"]["codex"]]?: SettingsView["providers"]["codex"][K] | null };
     antigravity?: { [K in keyof SettingsView["providers"]["antigravity"]]?: SettingsView["providers"]["antigravity"][K] | null };
+    claude?: { [K in keyof SettingsView["providers"]["claude"]]?: SettingsView["providers"]["claude"][K] | null };
   };
 };
 
@@ -80,7 +87,7 @@ export interface ProxyApi {
   pickExecutable(): Promise<PickResult>;
   installAntigravity(): Promise<InstallResult>;
   onInstallProgress(callback: (progress: InstallProgressView) => void): () => void;
-  acknowledgeAntigravityTerms(): Promise<ActionResult>;
+  acknowledgeTerms(providerId: "antigravity" | "claude"): Promise<ActionResult>;
   openLogs(): Promise<void>;
   copyText(text: string): Promise<void>;
   openExternal(url: string): Promise<ActionResult>;
