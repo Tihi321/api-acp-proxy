@@ -23,7 +23,6 @@ function png(size, rgba) {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", zlib.deflateSync(raw, { level: 9 })), chunk("IEND", Buffer.alloc(0))]);
 }
 
-const clamp = (v) => Math.max(0, Math.min(1, v));
 /** Renders with 4x4 supersampling; `shade(x, y)` takes unit coordinates (0..1) and returns [r,g,b,a(0..1)] or null. */
 function render(size, shade) {
   const out = Buffer.alloc(size * size * 4);
@@ -48,15 +47,38 @@ function trayShade(color) {
     return [...color, 1];
   };
 }
+// App icon: a 16x16 pixel sprite (client block -> proxy lanes -> agent block), scaled nearest-neighbour.
+const SPRITE_COLORS = {
+  K: [0x1a, 0x1c, 0x2c],
+  D: [0x33, 0x3c, 0x57],
+  G: [0x38, 0xb7, 0x64],
+  B: [0x41, 0xa6, 0xf6],
+  Y: [0xff, 0xcd, 0x75],
+  R: [0xef, 0x7d, 0x57],
+  W: [0xf4, 0xf4, 0xf4],
+};
+const SPRITE = [
+  "..KKKKKKKKKKKK..",
+  ".KDDDDDDDDDDDDK.",
+  "KDDDDDDDDDDDDDDK",
+  "KDGGGDDDYDDBBBDK",
+  "KDGWGDDDDYDBWBDK",
+  "KDGGGYYYYYYBBBDK",
+  "KDGGGDDDDYDBBBDK",
+  "KDGGGDDDYDDBBBDK",
+  "KDGGGDDRDDDBBBDK",
+  "KDGGGDRDDDDBBBDK",
+  "KDGGGRRRRRRBBBDK",
+  "KDGGGDRDDDDBBBDK",
+  "KDGGGDDRDDDBBBDK",
+  "KDDDDDDDDDDDDDDK",
+  ".KDDDDDDDDDDDDK.",
+  "..KKKKKKKKKKKK..",
+];
 function appShade(x, y) {
-  // Rounded square, blue gradient, white "bridge" ring with a centre dot.
-  const dx = Math.abs(x - 0.5) - 0.34, dy = Math.abs(y - 0.5) - 0.34;
-  const inside = Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) + Math.min(Math.max(dx, dy), 0) < 0.14;
-  if (!inside) return null;
-  const d = Math.hypot(x - 0.5, y - 0.5);
-  if (Math.abs(d - 0.27) < 0.045 || d < 0.085) return [255, 255, 255, 1];
-  const t = clamp(y);
-  return [Math.round(38 + 20 * t), Math.round(99 + 30 * t), Math.round(235 - 40 * t), 1];
+  const n = SPRITE.length;
+  const color = SPRITE_COLORS[SPRITE[Math.min(n - 1, Math.floor(y * n))][Math.min(n - 1, Math.floor(x * n))]];
+  return color ? [...color, 1] : null;
 }
 
 const colors = { idle: [128, 134, 145], running: [34, 197, 94], error: [239, 68, 68] };
@@ -68,7 +90,8 @@ for (const [name, color] of Object.entries(colors)) {
 }
 fs.writeFileSync(path.join(root, "assets", "icon.png"), png(256, render(256, appShade)));
 
-const sizes = [16, 24, 32, 48, 64, 128, 256];
+// Integer multiples of the 16px sprite only, so every size stays pixel-crisp.
+const sizes = [16, 32, 48, 64, 128, 256];
 const images = sizes.map((s) => png(s, render(s, appShade)));
 const dir = Buffer.alloc(6 + 16 * sizes.length);
 dir.writeUInt16LE(0, 0); dir.writeUInt16LE(1, 2); dir.writeUInt16LE(sizes.length, 4);

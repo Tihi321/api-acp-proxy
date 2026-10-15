@@ -15,6 +15,9 @@ Build the installers with `npm run dist` (see [Development](#development)); they
 | --- | --- |
 | `ACP-Proxy-Setup-<version>-x64.exe` | NSIS installer |
 | `ACP-Proxy-Portable-<version>-x64.exe` | Portable single exe, no install |
+| `win-unpacked/ACP Proxy.exe` | Unpacked app, runs as-is |
+
+`npm run dist:installer` or `npm run dist:portable` builds only one of them.
 
 The build is **unsigned**, so Windows SmartScreen shows "Windows protected your PC". Choose "More info", then "Run anyway". Antivirus heuristics may also flag unsigned Electron apps.
 
@@ -143,11 +146,13 @@ npm test               # vitest; deterministic, uses fake ACP agents on loopback
 npm run build          # tsc (core, Electron, renderer) + copy static assets
 npm run app:dev        # build and start the desktop app from source
 npm run dist           # build, package NSIS + portable into release/, then verify-package
+npm run dist:installer # only release/ACP-Proxy-Setup-<version>-x64.exe, then verify-package
+npm run dist:portable  # only release/ACP-Proxy-Portable-<version>-x64.exe, then verify-package
 npm run dist:dir       # unpacked build only (release/win-unpacked)
 npm run verify:package # check release/win-unpacked (codex-acp handshake under ELECTRON_RUN_AS_NODE)
 npm run probe -- <cmd> [args]   # print an ACP agent's initialize authMethods, modes, config options
 npm run antigravity:install
-npm run icons          # regenerate assets/ and build/icon.ico
+npm run icons          # regenerate assets/ and build/icon.ico (app icon is the pixel sprite in scripts/make-icons.mjs)
 ```
 
 Runnable JavaScript examples (health, models, both API styles, streaming, a terminal chatbot) are in [examples/README.md](examples/README.md).
