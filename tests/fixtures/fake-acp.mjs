@@ -16,6 +16,9 @@ import { appendFileSync, writeFileSync } from "node:fs";
 //   FAKE_ACP_AGY=1                   mimic agy_acp_server: modes default/auto_edit/yolo (no read-only), agentInfo 1.3.0, no delete capability,
 //                                    session/delete -> -32601, -32000 errors carry a data object, authenticate prints the login URL to stderr
 //   FAKE_ACP_AUTH_DELAY_MS=<n>       delay the authenticate response (simulates a pending interactive OAuth flow)
+//   FAKE_ACP_CLAUDE=1                mimic claude-agent-acp: modes default/acceptEdits/plan/auto/bypassPermissions (no read-only), no authMethods
+//   FAKE_ACP_PROMPT_AUTH=1           session/prompt fails with -32000 (not logged in)
+//   FAKE_ACP_AUTH_STATUS=<kind>      push an _auth/status_update notification {authStatus:{kind,label}} right after initialize (label "Fake account" unless kind is none)
 //   FAKE_ACP_LOG=<file>              append every request as a JSON line {method, params}
 const env = process.env;
 const pending = new Map();
@@ -24,6 +27,7 @@ let sessionCount = 0;
 let authedWith;
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const agy = env.FAKE_ACP_AGY === "1";
+const claude = env.FAKE_ACP_CLAUDE === "1";
 const fail = (id, code, message, data) => send({ jsonrpc: "2.0", id, error: { code, message, ...(data ? { data } : {}) } });
 const finish = (id, reason = "end_turn") => send({ jsonrpc: "2.0", id, result: { stopReason: reason, usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 } } });
 const promptDone = (sessionId, id) => {
@@ -38,7 +42,7 @@ if (env.FAKE_ACP_GRANDCHILD) {
 const defaultModels = [{ value: "gpt-5.6-sol" }, { value: "gpt-5.6-terra" }, { value: "gpt-5.6-luna" }];
 const newSession = (id) => {
   const sessionId = sessionCount++ === 0 ? "fake-session" : `fake-session-${sessionCount}`;
-  const modes = agy ? { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "auto_edit", name: "Auto edit" }, { id: "yolo", name: "Yolo" }] } : env.FAKE_ACP_NO_READONLY === "1" ? { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }] } : { currentModeId: "read-only", availableModes: [{ id: "read-only", name: "Read only" }] };
+  const modes = claude ? { currentModeId: "default", availableModes: ["default", "acceptEdits", "plan", "auto", "bypassPermissions"].map((id) => ({ id, name: id })) } : agy ? { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "auto_edit", name: "Auto edit" }, { id: "yolo", name: "Yolo" }] } : env.FAKE_ACP_NO_READONLY === "1" ? { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }] } : { currentModeId: "read-only", availableModes: [{ id: "read-only", name: "Read only" }] };
   const options = env.FAKE_ACP_MODELS ? JSON.parse(env.FAKE_ACP_MODELS) : defaultModels;
   const respond = () => send({ jsonrpc: "2.0", id, result: { sessionId, modes, configOptions: [{ id: "model", name: "Model", category: "model", type: "select", currentValue: "gpt-5.6-sol", options }] } });
   const delay = Number(env.FAKE_ACP_SESSION_DELAY_MS || 0);
@@ -48,7 +52,11 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line); const { id, method, params = {} } = message;
   if (!method) return;
   if (env.FAKE_ACP_LOG) appendFileSync(env.FAKE_ACP_LOG, JSON.stringify({ method, params }) + "\n");
-  if (method === "initialize") send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { sessionCapabilities: agy ? { list: {}, resume: {} } : { delete: true } }, agentInfo: agy ? { name: "antigravity-acp", title: "Google Antigravity", version: "1.3.0" } : { name: "fake", version: "1" }, ...(env.FAKE_ACP_AUTH_METHODS ? { authMethods: JSON.parse(env.FAKE_ACP_AUTH_METHODS) } : {}) } });
+  if (method === "initialize") {
+    send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { sessionCapabilities: agy ? { list: {}, resume: {} } : { delete: true } }, agentInfo: agy ? { name: "antigravity-acp", title: "Google Antigravity", version: "1.3.0" } : { name: "fake", version: "1" }, ...(env.FAKE_ACP_AUTH_METHODS ? { authMethods: JSON.parse(env.FAKE_ACP_AUTH_METHODS) } : {}) } });
+    const kind = env.FAKE_ACP_AUTH_STATUS;
+    if (kind) send({ jsonrpc: "2.0", method: "_auth/status_update", params: { authStatus: { kind, label: kind === "none" ? "Not logged in" : "Fake account" } } });
+  }
   else if (method === "authenticate") {
     if (agy || env.FAKE_ACP_AUTH_URL === "1") process.stderr.write("Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?client_id=fake&redirect_uri=http%3A%2F%2F127.0.0.1%3A1%2F\n");
     const done = () => { authedWith = params.methodId; send({ jsonrpc: "2.0", id, result: {} }); };
@@ -65,6 +73,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     pending.set(sessionId, id);
     const run = () => {
       if (!pending.has(sessionId)) return;
+      if (env.FAKE_ACP_PROMPT_AUTH === "1") { pending.delete(sessionId); fail(id, -32000, "Authentication required"); return; }
       if (env.FAKE_ACP_ENTITY_NOT_FOUND === "1") { pending.delete(sessionId); fail(id, -32603, "Requested entity was not found"); return; }
       if (env.FAKE_ACP_REQUIRE_PERMISSION === "1") send({ jsonrpc: "2.0", id: 9001, method: "session/request_permission", params: { sessionId, toolCall: { toolCallId: "tool", title: "run command", kind: "execute", status: "pending", content: [] }, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] } });
       setTimeout(() => { if (pending.has(sessionId)) { pending.delete(sessionId); promptDone(sessionId, id); } }, 20);

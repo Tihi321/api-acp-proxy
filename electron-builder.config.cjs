@@ -1,7 +1,7 @@
 "use strict";
 // electron-builder configuration (a .cjs file because the package is ESM).
-// asarUnpack is computed: codex-acp is spawned as a child process under ELECTRON_RUN_AS_NODE, so its entry point,
-// its whole runtime dependency tree and the native codex binary must live on disk, not inside app.asar.
+// asarUnpack is computed: codex-acp and claude-agent-acp are spawned as child processes under ELECTRON_RUN_AS_NODE, so their
+// entry points, whole runtime dependency trees and the native codex / claude binaries must live on disk, not inside app.asar.
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -32,7 +32,7 @@ function runtimeClosure(entryName) {
   return [...seen].map((dir) => path.relative(root, dir).split(path.sep).join("/")).sort();
 }
 
-const codexAcpClosure = runtimeClosure("@agentclientprotocol/codex-acp");
+const agentClosure = ["@agentclientprotocol/codex-acp", "@agentclientprotocol/claude-agent-acp"].flatMap((name) => (findPackage(name, root) ? runtimeClosure(name) : []));
 
 module.exports = {
   appId: "dev.selak.acp-proxy",
@@ -45,8 +45,9 @@ module.exports = {
   asarUnpack: [
     "node_modules/@agentclientprotocol/**",
     "node_modules/@openai/**",
+    "node_modules/@anthropic-ai/**",
     "dist/electron/hide-windows.cjs",
-    ...codexAcpClosure.map((dir) => `${dir}/**`),
+    ...[...new Set(agentClosure)].map((dir) => `${dir}/**`),
   ],
   extraMetadata: { main: "dist/electron/main.js" },
   win: {

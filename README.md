@@ -1,8 +1,9 @@
 # ACP Proxy: OpenAI-compatible local proxy for ACP agents
 
-A localhost service that exposes OpenAI-compatible Models, Chat Completions and Responses endpoints on top of [Agent Client Protocol](https://agentclientprotocol.com) (ACP) agents. Two providers are built in:
+A localhost service that exposes OpenAI-compatible Models, Chat Completions and Responses endpoints on top of [Agent Client Protocol](https://agentclientprotocol.com) (ACP) agents. Three providers are built in:
 
 - **Codex** (OpenAI, through `@agentclientprotocol/codex-acp`), enabled by default.
+- **Claude** (Anthropic, through `@agentclientprotocol/claude-agent-acp`, bundled), disabled by default. See [Claude](#claude).
 - **Google Antigravity** (through Google's official `agy_acp_server`), disabled by default. See [Antigravity](#google-antigravity) and the [terms / risk note](#terms--risk).
 
 It runs either as a **Windows desktop app** (tray icon, settings window, `.exe`) or as a **headless CLI**. Both share one settings file. Requests are text-only and stateless.
@@ -51,9 +52,10 @@ The default address is `http://127.0.0.1:8787`. On first start `settings.json` i
 
 ## Models and providers
 
-Model ids are namespaced as `<provider>/<id>`, for example `codex/gpt-5.6-sol` or `antigravity/gemini-3.8-flash-low`.
+Model ids are namespaced as `<provider>/<id>`, for example `codex/gpt-5.6-sol`, `claude/sonnet` or `antigravity/gemini-3.8-flash-low`.
 
 - Codex models are also exposed **unprefixed** (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`), so existing clients keep working.
+- Claude models are only available prefixed (`claude/<id>`), and are discovered at runtime from the agent.
 - Antigravity models are only available prefixed, and are discovered at runtime from the agent (the list depends on your plan and on the server version).
 - **Collision rule:** if an unprefixed id would be claimed by two providers, the first provider keeps it and the later one is listed only with its prefix; a warning is logged.
 - Only enabled providers are listed. An unknown id returns 404 `model_not_found`.
@@ -75,10 +77,31 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 | `PROXY_WORK_ROOT` | OS temp directory | Parent for disposable session working directories |
 | `PROXY_CODEX_ENABLED` | `true` | Enable the Codex provider (`1/0`, `true/false`, `yes/no`, `on/off`) |
 | `PROXY_ACP_COMMAND` / `PROXY_ACP_ARGS` | dependency-resolved adapter | Custom Codex ACP executable and space-separated arguments |
+| `PROXY_CLAUDE_ENABLED` | `false` | Enable the Claude provider |
+| `PROXY_CLAUDE_EXECUTABLE` | unset | Path to a `claude` binary (sets `CLAUDE_CODE_EXECUTABLE`; overrides the `executablePath` setting) |
+| `PROXY_CLAUDE_ACCEPT_TERMS` | unset | Set to `1` to acknowledge the Claude terms headlessly |
+| `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR` | unset | Passed through to the Claude agent |
 | `PROXY_ANTIGRAVITY_ENABLED` | `false` | Enable the Antigravity provider |
 | `PROXY_ANTIGRAVITY_COMMAND` | unset | Path to `agy_acp_server.exe` (overrides the `executablePath` setting) |
 | `PROXY_ANTIGRAVITY_ACCEPT_TERMS` | unset | Set to `1` to acknowledge the Antigravity terms headlessly |
 | `GEMINI_API_KEY`, `GEMINI_HOME` | unset | Passed through to the Antigravity server |
+
+## Claude
+
+Claude runs through `@agentclientprotocol/claude-agent-acp`, which is bundled together with the native `claude` binary, so nothing needs to be installed.
+
+1. **Acknowledge the terms.** The desktop app shows a warning the first time you enable Claude and stores `termsAcknowledgedAt`. Headless: `PROXY_CLAUDE_ACCEPT_TERMS=1`. Without it the provider reports `terms_required` and does not start.
+2. **Enable it** in the UI, or `PROXY_CLAUDE_ENABLED=1`.
+3. **Credentials.** Any of these works (set only one to avoid ambiguity): the `apiKey` setting (`ANTHROPIC_API_KEY`), the `oauthToken` setting (`CLAUDE_CODE_OAUTH_TOKEN`, from `claude setup-token`), or the login stored in `~/.claude` (or `configDir`, i.e. `CLAUDE_CONFIG_DIR`). Existing environment variables are passed through. `executablePath` points the adapter at another `claude` binary (`CLAUDE_CODE_EXECUTABLE`).
+4. **Log in.** When nobody is signed in the provider shows "needs login" and requests get 503 `provider_auth_required`. The **Log in** button (methods `claude-ai-login` for a subscription and `console-login` for Anthropic Console billing) opens a console window that runs the bundled native `claude auth login` directly; when it finishes the agent restarts and picks up the new login. Headless, run `claude auth login` yourself, or the bundled binary: `node_modules/@anthropic-ai/claude-agent-sdk-<platform>-<arch>/claude auth login --claudeai`.
+
+Model ids are `claude/<id>` (for example `claude/default`, `claude/sonnet`); the list comes from the agent.
+
+**Safety notes.** Sessions are text-only: the built-in tools are disabled, permission requests are answered with "cancelled", the `default` mode is used and `persistSession: false` keeps transcripts out of `~/.claude/projects`. Settings sources are disabled (`settingSources: []`), so hooks, MCP servers, CLAUDE.md, and the `apiKeyHelper` and `env` entries of `~/.claude/settings.json` are ignored for proxy requests; use the API key / OAuth token fields instead. The CLI still leaves an empty `<config>/projects/<cwd>` directory per session; the proxy removes it after each request (one may remain after a hard kill of the proxy).
+
+### Claude terms / risk
+
+Using a Claude subscription through third-party tooling may conflict with Anthropic's [consumer terms](https://www.anthropic.com/legal/consumer-terms). This proxy uses Anthropic's official agent adapter and never reads your credentials itself, but **use Claude here at your own risk**, or prefer an API key. Nothing here is legal advice, and this project is not affiliated with Anthropic.
 
 ## Google Antigravity
 
