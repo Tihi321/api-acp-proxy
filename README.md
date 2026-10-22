@@ -128,6 +128,8 @@ Google's Antigravity terms ([clause 6](https://antigravity.google/terms)) restri
 
 `POST /v1/responses` accepts a string or text-only message-array `input` (including system/developer instructions), optional string `instructions`, `stream`, and `store: false`. Responses are never persisted; `store: true`, `previous_response_id`, token limits, and `stream_options` are rejected. Streaming emits semantic Responses API events followed by `[DONE]`.
 
+**JSON output.** Chat Completions accepts `response_format` (`text`, `json_object`, or `json_schema` with `json_schema: { name, schema, strict, description }`) and Responses accepts `text.format` (the same three types, with `name` / `schema` / `strict` / `description` inline). The agents cannot enforce a schema, so the proxy adds an output-format instruction to the prompt (including the JSON Schema when given) and cleans the answer by stripping Markdown code fences and prose around the JSON. The answer is not validated against the schema: if the agent still returns something that is not valid JSON, the text is returned as is. With a JSON format, streaming sends the cleaned JSON as a single delta once the agent has finished instead of token by token. Other `text` options (such as `verbosity`) are rejected.
+
 Tools, files, images, audio, function calling, persistent conversations, and other behavior-changing options are intentionally rejected. Each request gets a fresh ACP session in an isolated temporary directory (Codex: read-only mode). Permission requests are denied and no client filesystem or terminal capabilities are advertised.
 
 ## curl

@@ -5,6 +5,8 @@ import type { TextMessage } from "./api.js";
 import { silentLogger, type Logger } from "./logger.js";
 
 export interface GenerationResult { text: string; stopReason: StopReason; usage: Usage | null; }
+/** `instructions` is extra prompt text kept out of the client-visible messages. */
+export interface GenerateOptions { instructions?: string; }
 export interface GenerationCallbacks { onText?: (text: string) => void; onUsage?: (usage: Usage) => void; }
 
 export class AcpUnavailableError extends Error {
@@ -103,7 +105,7 @@ export interface Provider {
   readonly ownedBy: string;
   readonly exposeUnprefixed: boolean;
   readonly staticModels?: ModelInfo[];
-  generate(model: string, messages: TextMessage[], callbacks?: GenerationCallbacks, signal?: AbortSignal): Promise<GenerationResult>;
+  generate(model: string, messages: TextMessage[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   listModels(options?: { force?: boolean }): Promise<ModelInfo[]>;
   status(): ProviderStatus;
   login(methodId?: string): Promise<void>;

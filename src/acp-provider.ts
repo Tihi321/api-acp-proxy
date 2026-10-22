@@ -7,7 +7,7 @@ import type { SessionConfigOption, SessionUpdate } from "@agentclientprotocol/sd
 import { serializePrompt, type TextMessage } from "./api.js";
 import { killProcessTree } from "./process-tree.js";
 import { AcpUnavailableError, ProviderAuthRequiredError, ProviderNotInstalledError, ProviderTermsRequiredError } from "./provider.js";
-import type { AuthMethodInfo, GenerationCallbacks, GenerationResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext } from "./provider.js";
+import type { AuthMethodInfo, GenerateOptions, GenerationCallbacks, GenerationResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext } from "./provider.js";
 
 type SessionHandler = (update: SessionUpdate) => void;
 interface PreparedSession { sessionId: string; cwd: string; modelOptionId?: string; readOnlyModeId?: string; }
@@ -416,7 +416,7 @@ export class AcpProvider implements Provider {
     }
   }
 
-  async generate(model: string, messages: TextMessage[], callbacks: GenerationCallbacks = {}, signal?: AbortSignal): Promise<GenerationResult> {
+  async generate(model: string, messages: TextMessage[], callbacks: GenerationCallbacks = {}, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
     let agent: ClientContext | undefined;
     let session: PreparedSession | undefined;
     let aborted = signal?.aborted ?? false;
@@ -450,7 +450,7 @@ export class AcpProvider implements Provider {
       else if (!this.warnedNoReadOnly) { this.warnedNoReadOnly = true; this.log.warn("No read-only mode advertised; relying on cancelled permissions and the text-only prompt."); }
       if (aborted) return cancelled();
       promptSent = true;
-      const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: serializePrompt(messages) }] }));
+      const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: serializePrompt(messages, options?.instructions) }] }));
       return { text, stopReason: result.stopReason, usage: result.usage ?? null };
     } catch (error) {
       if (aborted && !promptSent) return cancelled();
