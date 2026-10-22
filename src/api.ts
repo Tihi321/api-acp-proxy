@@ -8,13 +8,13 @@ const chatMessageSchema = z.object({
   content: messageContentSchema,
 }).strict();
 
-const unsupportedChatFields = ["tools", "tool_choice", "functions", "function_call", "audio", "modalities", "logprobs", "top_logprobs", "prediction", "service_tier", "n", "temperature", "top_p", "stop", "presence_penalty", "frequency_penalty", "seed", "logit_bias", "max_tokens", "max_completion_tokens"] as const;
-const unsupportedResponseFields = ["tools", "tool_choice", "temperature", "top_p", "parallel_tool_calls", "truncation", "reasoning", "include", "background", "max_output_tokens", "stream_options"] as const;
+const unsupportedChatFields = ["tools", "tool_choice", "functions", "function_call", "audio", "modalities", "logprobs", "top_logprobs", "prediction", "service_tier", "n", "temperature", "top_p", "stop", "presence_penalty", "frequency_penalty", "seed", "logit_bias"] as const;
+const unsupportedResponseFields = ["tools", "tool_choice", "temperature", "top_p", "parallel_tool_calls", "truncation", "reasoning", "include", "background", "stream_options"] as const;
 
-// Fields that only tune sampling or length. The agents behind the proxy cannot honour them, so by default they are
+// Fields that only tune sampling. The agents behind the proxy cannot honour them, so by default they are
 // rejected; with `ignoreSampling` they are dropped instead, for clients that send them on every request.
-const ignorableChatFields = ["temperature", "top_p", "presence_penalty", "frequency_penalty", "seed", "max_tokens", "max_completion_tokens"] as const;
-const ignorableResponseFields = ["temperature", "top_p", "max_output_tokens", "stream_options"] as const;
+const ignorableChatFields = ["temperature", "top_p", "presence_penalty", "frequency_penalty", "seed"] as const;
+const ignorableResponseFields = ["temperature", "top_p", "stream_options"] as const;
 export interface NormalizeOptions { ignoreSampling?: boolean }
 
 function withoutFields(raw: unknown, fields: readonly string[], on: boolean | undefined): unknown {
@@ -109,7 +109,7 @@ function rejectUnsupported(obj: Record<string, unknown>, fields: readonly string
   for (const field of fields) if (obj[field] !== undefined && obj[field] !== false && obj[field] !== null) throw new ApiError(400, "unsupported_parameter", `Parameter '${field}' is not supported by this proxy.`, field);
 }
 
-export function normalizeChat(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Omit<ChatRequest, "model"> & { model: string; textMessages: TextMessage[]; format: OutputFormat } {
+export function normalizeChat(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Omit<ChatRequest, "model"> & { model: string; textMessages: TextMessage[]; format: OutputFormat; maxOutputTokens?: number } {
   const parsed = chatRequestSchema.safeParse(withoutFields(raw, ignorableChatFields, options.ignoreSampling));
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.", issueParam(parsed.error.issues[0]));
   rejectUnsupported(parsed.data, unsupportedChatFields);
@@ -117,10 +117,11 @@ export function normalizeChat(raw: unknown, isKnownModel?: ModelCheck, options: 
   validateModel(parsed.data.model, isKnownModel);
   const rf = parsed.data.response_format;
   const format = !rf || rf.type === "text" ? textFormat : jsonFormat(rf.type === "json_object" ? rf : { type: "json_schema", ...rf.json_schema });
-  return { ...parsed.data, model: parsed.data.model, textMessages: parsed.data.messages.map((message) => ({ role: message.role, content: asText(message.content) })), format };
+  const maxOutputTokens = parsed.data.max_completion_tokens ?? parsed.data.max_tokens;
+  return { ...parsed.data, model: parsed.data.model, textMessages: parsed.data.messages.map((message) => ({ role: message.role, content: asText(message.content) })), format, ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}) };
 }
 
-export function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Omit<ResponsesRequest, "model"> & { model: string; textMessages: TextMessage[]; format: OutputFormat } {
+export function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Omit<ResponsesRequest, "model"> & { model: string; textMessages: TextMessage[]; format: OutputFormat; maxOutputTokens?: number } {
   const parsed = responsesRequestSchema.safeParse(withoutFields(raw, ignorableResponseFields, options.ignoreSampling));
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.", issueParam(parsed.error.issues[0]));
   rejectUnsupported(parsed.data, unsupportedResponseFields);
@@ -132,7 +133,7 @@ export function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck, opti
   if (typeof parsed.data.input === "string") textMessages.push({ role: "user", content: parsed.data.input });
   else textMessages.push(...parsed.data.input.map((message) => ({ role: message.role, content: asText(message.content) })));
   const tf = parsed.data.text?.format;
-  return { ...parsed.data, model: parsed.data.model, textMessages, format: !tf || tf.type === "text" ? textFormat : jsonFormat(tf) };
+  return { ...parsed.data, model: parsed.data.model, textMessages, format: !tf || tf.type === "text" ? textFormat : jsonFormat(tf), ...(parsed.data.max_output_tokens !== undefined ? { maxOutputTokens: parsed.data.max_output_tokens } : {}) };
 }
 
 export function formatInstructions(format: OutputFormat): string | undefined {

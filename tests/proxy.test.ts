@@ -3,7 +3,7 @@ import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createProxyServer, mapStopReason } from "../src/server.js";
 import { extractJson, formatInstructions, normalizeChat, normalizeResponses, serializePrompt } from "../src/api.js";
-import type { AcpLike } from "../src/acp.js";
+import type { AcpLike, GenerationResult } from "../src/acp.js";
 import type { ProxyConfig } from "../src/config.js";
 import OpenAI from "openai";
 
@@ -40,13 +40,12 @@ describe("normalization", () => {
     expect(() => normalizeResponses({ model: "nope", input: "x" })).toThrow(/does not exist/);
   });
   it("drops sampling fields with ignoreSampling, and still rejects behaviour-changing ones", () => {
-    const body = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "x" }], temperature: 0.7, max_tokens: 100, stream_options: { include_usage: true } };
+    const body = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "x" }], temperature: 0.7, stream_options: { include_usage: true } };
     const chat = normalizeChat(body, undefined, { ignoreSampling: true });
     expect(chat).not.toHaveProperty("temperature");
-    expect(chat.max_tokens).toBeUndefined();
     expect(() => normalizeChat({ ...body, tools: [{ type: "function" }] }, undefined, { ignoreSampling: true })).toThrow(/tools/);
     expect(normalizeChat({ ...body, response_format: { type: "json_object" } }, undefined, { ignoreSampling: true }).format).toEqual({ type: "json" });
-    expect(normalizeResponses({ model: "gpt-5.6-luna", input: "x", temperature: 1, max_output_tokens: 5 }, undefined, { ignoreSampling: true }).textMessages).toHaveLength(1);
+    expect(normalizeResponses({ model: "gpt-5.6-luna", input: "x", temperature: 1 }, undefined, { ignoreSampling: true }).textMessages).toHaveLength(1);
     expect(() => normalizeChat(body)).toThrow(/temperature/);
   });
   it("maps ACP stop reasons to OpenAI completion semantics", () => {
@@ -134,6 +133,80 @@ describe("JSON output", () => {
       expect(JSON.parse(text.text).choices[0].message.content).toBe('```json\n{"a":1}\n```');
       expect(seen[0]!.instructions).toBeUndefined();
     });
+  });
+});
+
+describe("token limit", () => {
+  const chatBody = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "hi" }] };
+  const dataLines = (text: string) => text.split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)));
+  const chatText = (text: string) => dataLines(text).map((chunk) => chunk.choices?.[0]?.delta?.content).filter((content) => typeof content === "string").join("");
+  const manyChunks = (state: { aborted: boolean }, rejectOnAbort = false): AcpLike => ({
+    async generate(_model, _messages, callbacks, signal) {
+      for (let i = 0; i < 50 && !signal?.aborted; i++) { callbacks?.onText?.("abcdef"); await new Promise((resolve) => setImmediate(resolve)); }
+      state.aborted = !!signal?.aborted;
+      if (signal?.aborted && rejectOnAbort) throw new Error("The request was cancelled.");
+      return { text: "abcdef".repeat(50), stopReason: signal?.aborted ? "cancelled" : "end_turn", usage: { inputTokens: 9, outputTokens: 300, totalTokens: 309 } };
+    },
+  });
+  it("accepts limits by default and with ignoreSampling", () => {
+    expect(normalizeChat({ ...chatBody, max_tokens: 5 }).maxOutputTokens).toBe(5);
+    expect(normalizeChat({ ...chatBody, max_completion_tokens: 6 }, undefined, { ignoreSampling: true }).maxOutputTokens).toBe(6);
+    expect(normalizeChat({ ...chatBody, max_tokens: 5 }, undefined, { ignoreSampling: true }).maxOutputTokens).toBe(5);
+    expect(normalizeChat(chatBody).maxOutputTokens).toBeUndefined();
+    expect(normalizeResponses({ model: "gpt-5.6-sol", input: "x", max_output_tokens: 7 }).maxOutputTokens).toBe(7);
+    expect(normalizeResponses({ model: "gpt-5.6-sol", input: "x" }).maxOutputTokens).toBeUndefined();
+    expect(() => normalizeChat({ ...chatBody, max_tokens: 5, max_completion_tokens: 5 })).toThrow(/Only one of/);
+    expect(() => normalizeChat({ ...chatBody, max_tokens: 0 })).toThrow();
+  });
+  it("cuts a chat stream at the limit and cancels the agent", async () => {
+    const state = { aborted: false };
+    const result = await call("POST", "/v1/chat/completions", { ...chatBody, stream: true, max_tokens: 3, stream_options: { include_usage: true } }, manyChunks(state));
+    expect(result.status).toBe(200); expect(chatText(result.text)).toBe("abcdefabcdef"); expect(state.aborted).toBe(true);
+    const chunks = dataLines(result.text); expect(chunks.at(-2).choices[0].finish_reason).toBe("length");
+    expect(chunks.at(-1).usage).toMatchObject({ completion_tokens: 3 });
+  });
+  it("cuts a non-stream chat answer and still answers 200 when the cancelled agent rejects", async () => {
+    for (const rejectOnAbort of [false, true]) {
+      const state = { aborted: false };
+      const result = await call("POST", "/v1/chat/completions", { ...chatBody, max_completion_tokens: 3 }, manyChunks(state, rejectOnAbort));
+      const body = JSON.parse(result.text);
+      expect(result.status).toBe(200); expect(body.choices[0].message.content).toBe("abcdefabcdef"); expect(body.choices[0].finish_reason).toBe("length"); expect(state.aborted).toBe(true);
+      expect(body.usage.completion_tokens).toBe(3);
+    }
+  });
+  it("cuts mid-chunk on the character budget", async () => {
+    const result = await call("POST", "/v1/chat/completions", { ...chatBody, stream: true, max_tokens: 2 }, manyChunks({ aborted: false }));
+    expect(chatText(result.text)).toBe("abcdefab");
+  });
+  it("leaves answers within the limit and unlimited requests unchanged", async () => {
+    const state = { aborted: false };
+    const short: AcpLike = { async generate(_m, _msgs, callbacks) { callbacks?.onText?.("12345678"); return { text: "12345678", stopReason: "end_turn", usage: null }; } };
+    const within = JSON.parse((await call("POST", "/v1/chat/completions", { ...chatBody, max_tokens: 2 }, short)).text);
+    expect(within.choices[0].message.content).toBe("12345678"); expect(within.choices[0].finish_reason).toBe("stop");
+    const unlimited = JSON.parse((await call("POST", "/v1/chat/completions", chatBody, manyChunks(state))).text);
+    expect(unlimited.choices[0].message.content).toBe("abcdef".repeat(50)); expect(unlimited.choices[0].finish_reason).toBe("stop"); expect(state.aborted).toBe(false);
+  });
+  it("reports an incomplete response with incomplete_details", async () => {
+    const plain = JSON.parse((await call("POST", "/v1/responses", { model: "gpt-5.6-sol", input: "hi", max_output_tokens: 3 }, manyChunks({ aborted: false }))).text);
+    expect(plain.status).toBe("incomplete"); expect(plain.incomplete_details).toEqual({ reason: "max_output_tokens" }); expect(plain.output[0].content[0].text).toBe("abcdefabcdef"); expect(plain.usage.output_tokens).toBe(3);
+    const stream = (await call("POST", "/v1/responses", { model: "gpt-5.6-sol", input: "hi", stream: true, max_output_tokens: 3 }, manyChunks({ aborted: false }, true))).text;
+    const events = dataLines(stream);
+    expect(events.filter((e) => e.type === "response.output_text.delta").map((e) => e.delta).join("")).toBe("abcdefabcdef");
+    expect(events.find((e) => e.type === "response.incomplete").response.incomplete_details).toEqual({ reason: "max_output_tokens" });
+    const done = JSON.parse((await call("POST", "/v1/responses", { model: "gpt-5.6-sol", input: "hi" })).text); expect(done.status).toBe("completed"); expect(done.incomplete_details).toBeNull();
+  });
+  it("applies the limit to the raw answer before JSON extraction", async () => {
+    const state = { aborted: false };
+    const jsonBridge: AcpLike = { async generate(_m, _msgs, callbacks, signal) { for (let i = 0; i < 20 && !signal?.aborted; i++) { callbacks?.onText?.('{"a":"xxxxxxxx'); await new Promise((resolve) => setImmediate(resolve)); } state.aborted = !!signal?.aborted; return { text: "", stopReason: "cancelled", usage: null }; } };
+    const body = JSON.parse((await call("POST", "/v1/chat/completions", { ...chatBody, max_tokens: 4, response_format: { type: "json_object" } }, jsonBridge)).text);
+    expect(state.aborted).toBe(true); expect(body.choices[0].finish_reason).toBe("length"); expect(body.choices[0].message.content.length).toBeLessThanOrEqual(16);
+  });
+  it("still answers 504 on timeout when a limit is set", async () => {
+    const hang: AcpLike = { async generate(_m, _msgs, _cb, signal) { return await new Promise<GenerationResult>((resolve) => { signal?.addEventListener("abort", () => resolve({ text: "", stopReason: "cancelled", usage: null }), { once: true }); }); } };
+    const server = createProxyServer({ ...config, timeoutMs: 50 }, hang); servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, config.host, resolve)); const address = server.address() as AddressInfo;
+    const status = await new Promise<number>((resolve, reject) => { const req = request({ host: config.host, port: address.port, path: "/v1/chat/completions", method: "POST", headers: { authorization: "Bearer secret", "content-type": "application/json" } }, (res) => { res.resume(); res.on("end", () => resolve(res.statusCode || 0)); }); req.on("error", reject); req.end(JSON.stringify({ ...chatBody, max_tokens: 5 })); });
+    expect(status).toBe(504);
   });
 });
 
