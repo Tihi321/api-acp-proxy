@@ -14,6 +14,8 @@ export interface ProxyConfig {
   acpArgs: string[];
   /** How long /v1/models waits for slow providers before answering from cache. */
   modelsWaitMs?: number;
+  /** Drop sampling and length fields (temperature, max_tokens, stream_options...) instead of rejecting the request. */
+  ignoreSampling?: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ProxyConfig {

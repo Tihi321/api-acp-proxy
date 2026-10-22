@@ -11,6 +11,19 @@ const chatMessageSchema = z.object({
 const unsupportedChatFields = ["tools", "tool_choice", "functions", "function_call", "response_format", "audio", "modalities", "logprobs", "top_logprobs", "prediction", "service_tier", "n", "temperature", "top_p", "stop", "presence_penalty", "frequency_penalty", "seed", "logit_bias", "max_tokens", "max_completion_tokens", "stream_options"] as const;
 const unsupportedResponseFields = ["tools", "tool_choice", "temperature", "top_p", "parallel_tool_calls", "truncation", "reasoning", "text", "include", "background", "max_output_tokens", "stream_options"] as const;
 
+// Fields that only tune sampling or length. The agents behind the proxy cannot honour them, so by default they are
+// rejected; with `ignoreSampling` they are dropped instead, for clients that send them on every request.
+const ignorableChatFields = ["temperature", "top_p", "presence_penalty", "frequency_penalty", "seed", "max_tokens", "max_completion_tokens", "stream_options"] as const;
+const ignorableResponseFields = ["temperature", "top_p", "max_output_tokens", "stream_options"] as const;
+export interface NormalizeOptions { ignoreSampling?: boolean }
+
+function withoutFields(raw: unknown, fields: readonly string[], on: boolean | undefined): unknown {
+  if (!on || !raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const copy: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  for (const field of fields) delete copy[field];
+  return copy;
+}
+
 export const chatRequestSchema = z.object({
   model: z.string(),
   messages: z.array(chatMessageSchema).min(1),
@@ -66,8 +79,8 @@ function rejectUnsupported(obj: Record<string, unknown>, fields: readonly string
   for (const field of fields) if (obj[field] !== undefined && obj[field] !== false && obj[field] !== null) throw new ApiError(400, "unsupported_parameter", `Parameter '${field}' is not supported by this proxy.`, field);
 }
 
-export function normalizeChat(raw: unknown, isKnownModel?: ModelCheck): Omit<ChatRequest, "model"> & { model: string; textMessages: TextMessage[] } {
-  const parsed = chatRequestSchema.safeParse(raw);
+export function normalizeChat(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Omit<ChatRequest, "model"> & { model: string; textMessages: TextMessage[] } {
+  const parsed = chatRequestSchema.safeParse(withoutFields(raw, ignorableChatFields, options.ignoreSampling));
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.");
   rejectUnsupported(parsed.data, unsupportedChatFields);
   if (parsed.data.max_tokens !== undefined && parsed.data.max_completion_tokens !== undefined) throw new ApiError(400, "invalid_request", "Only one of max_tokens and max_completion_tokens may be provided.");
@@ -75,8 +88,8 @@ export function normalizeChat(raw: unknown, isKnownModel?: ModelCheck): Omit<Cha
   return { ...parsed.data, model: parsed.data.model, textMessages: parsed.data.messages.map((message) => ({ role: message.role, content: asText(message.content) })) };
 }
 
-export function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck): Omit<ResponsesRequest, "model"> & { model: string; textMessages: TextMessage[] } {
-  const parsed = responsesRequestSchema.safeParse(raw);
+export function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Omit<ResponsesRequest, "model"> & { model: string; textMessages: TextMessage[] } {
+  const parsed = responsesRequestSchema.safeParse(withoutFields(raw, ignorableResponseFields, options.ignoreSampling));
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.");
   rejectUnsupported(parsed.data, unsupportedResponseFields);
   if (parsed.data.store === true) throw new ApiError(400, "unsupported_parameter", "Stored responses are not supported.", "store");

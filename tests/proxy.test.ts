@@ -39,6 +39,16 @@ describe("normalization", () => {
     expect(() => normalizeChat({ model: "gpt-5.6-sol", messages: [{ role: "user", content: "x" }], temperature: 0 })).toThrow(/temperature/);
     expect(() => normalizeResponses({ model: "nope", input: "x" })).toThrow(/does not exist/);
   });
+  it("drops sampling fields with ignoreSampling, and still rejects behaviour-changing ones", () => {
+    const body = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "x" }], temperature: 0.7, max_tokens: 100, stream_options: { include_usage: true } };
+    const chat = normalizeChat(body, undefined, { ignoreSampling: true });
+    expect(chat).not.toHaveProperty("temperature");
+    expect(chat.max_tokens).toBeUndefined();
+    expect(() => normalizeChat({ ...body, tools: [{ type: "function" }] }, undefined, { ignoreSampling: true })).toThrow(/tools/);
+    expect(() => normalizeChat({ ...body, response_format: { type: "json_object" } }, undefined, { ignoreSampling: true })).toThrow(/response_format/);
+    expect(normalizeResponses({ model: "gpt-5.6-luna", input: "x", temperature: 1, max_output_tokens: 5 }, undefined, { ignoreSampling: true }).textMessages).toHaveLength(1);
+    expect(() => normalizeChat(body)).toThrow(/temperature/);
+  });
   it("maps ACP stop reasons to OpenAI completion semantics", () => {
     expect(mapStopReason("end_turn")).toEqual({ chat: "stop", responseStatus: "completed" });
     expect(mapStopReason("max_tokens")).toEqual({ chat: "length", responseStatus: "incomplete" });
