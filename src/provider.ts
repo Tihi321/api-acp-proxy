@@ -5,6 +5,8 @@ import type { TextMessage } from "./api.js";
 import { silentLogger, type Logger } from "./logger.js";
 
 export interface GenerationResult { text: string; stopReason: StopReason; usage: Usage | null; }
+/** `instructions` is extra prompt text kept out of the client-visible messages. */
+export interface GenerateOptions { instructions?: string; }
 export interface GenerationCallbacks { onText?: (text: string) => void; onUsage?: (usage: Usage) => void; }
 
 export class AcpUnavailableError extends Error {
@@ -61,6 +63,8 @@ export interface ProviderDescriptor {
   sessionTimeoutMs?: number;
   /** Number of pre-created sessions kept ready. */
   warmSessions?: number;
+  /** Whether PromptResponse.usage covers only the last turn (default) or the whole session so far. */
+  usageScope?: "turn" | "session";
   preflight?(ctx: RuntimeContext): Promise<PreflightResult | undefined> | PreflightResult | undefined;
   launch(ctx: RuntimeContext): LaunchSpec | Promise<LaunchSpec>;
   /** Returns the auth method id to use without user interaction, or undefined when interactive login is needed. */
@@ -103,7 +107,7 @@ export interface Provider {
   readonly ownedBy: string;
   readonly exposeUnprefixed: boolean;
   readonly staticModels?: ModelInfo[];
-  generate(model: string, messages: TextMessage[], callbacks?: GenerationCallbacks, signal?: AbortSignal): Promise<GenerationResult>;
+  generate(model: string, messages: TextMessage[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   listModels(options?: { force?: boolean }): Promise<ModelInfo[]>;
   status(): ProviderStatus;
   login(methodId?: string): Promise<void>;

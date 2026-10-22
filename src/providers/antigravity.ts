@@ -203,5 +203,5 @@ export function antigravityDescriptor(ctxForHooks: RuntimeContext, options: Anti
 export const antigravityRegistration: ProviderRegistration = {
   id: "antigravity",
   displayName: "Google Antigravity",
-  create: ({ providerSettings, ctx, env, config, saveSettings }) => new AcpProvider(antigravityDescriptor(ctx, { settings: providerSettings as AntigravityOptions["settings"], env, saveSettings }), ctx, { workRoot: config.workRoot }),
+  create: ({ providerSettings, ctx, env, config, saveSettings }) => new AcpProvider(antigravityDescriptor(ctx, { settings: providerSettings as AntigravityOptions["settings"], env, saveSettings }), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions }),
 };

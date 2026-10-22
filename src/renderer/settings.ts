@@ -37,6 +37,7 @@ const fields: FieldSpec[] = [
   { path: "server.modelsWaitMs", kind: "number", scope: "server" },
   { path: "server.launchAtLogin", kind: "bool", scope: "server" },
   { path: "server.ignoreSampling", kind: "bool", scope: "server" },
+  { path: "server.reuseSessions", kind: "bool", scope: "server" },
   { path: "providers.codex.enabled", kind: "bool", scope: "codex" },
   { path: "providers.codex.authMethodId", kind: "select", scope: "codex", optional: true },
   { path: "providers.antigravity.enabled", kind: "bool", scope: "antigravity" },

@@ -1,16 +1,18 @@
 # Roadmap
 
-What is open for the proxy as the creative hub (`C:\projects\Personal\creative-hub`) uses it. Wiring it into Scriptorium and Book Translator is hub ticket HUB-09 (on hold). Finished work is in `.claude/tickets/` (AAP-05 ignore sampling fields). Fix items on a ticket branch (`AAP-NN_<what>`) cut from `master`.
+What is open for the proxy as the creative hub (`C:\projects\Personal\creative-hub`) uses it. Wiring it into Scriptorium and Book Translator is hub ticket HUB-09 (on hold). Finished work is in `.claude/tickets/` (AAP-05 ignore sampling fields, AAP-07 to AAP-10 the limits below). Fix items on a ticket branch (`AAP-NN_<what>`) cut from `master`.
 
-## Where it stands (2026-10-22, master 290285d)
+## Where it stands (2026-10-22)
 
 - **The hub's use:** an `openai-compat` provider for Scriptorium and Book Translator. The hub runs it on port 7461 (its default 8787 clashed with the old flow-mcp panel) with `PROXY_IGNORE_SAMPLING=1`; see the hub's `services.json`, id `acp-proxy`.
-- **AAP-05 merged:** `server.ignoreSampling` / `PROXY_IGNORE_SAMPLING=1` (and a settings checkbox) drops `stream_options`, `max_tokens` and `temperature`, which both apps send and the proxy answered with 400 `unsupported_parameter`. 112 tests pass; not yet tried with a real request (HUB-09).
-- **On hold** (user, 2026-10-22: "no need for now, later if needed").
+- **AAP-05 merged:** `server.ignoreSampling` / `PROXY_IGNORE_SAMPLING=1` (and a settings checkbox) dropped `stream_options`, `max_tokens` and `temperature`, which both apps send and the proxy answered with 400 `unsupported_parameter`. Not yet tried with a real request (HUB-09).
+- **AAP-07 to AAP-10** (stacked branches `AAP-07_json-output` → `AAP-08_stream-usage` → `AAP-09_token-limit` → `AAP-10_session-reuse`, 147 tests pass, not yet tried with a real request). They change what `PROXY_IGNORE_SAMPLING` drops: chat `stream_options` and the token limits are now honoured, so only `temperature`, `top_p`, penalties, `seed` and the Responses `stream_options` are dropped. The apps' `max_tokens` now cuts answers (≈4 characters per token).
+- **HUB-09 on hold** (user, 2026-10-22: "no need for now, later if needed").
 
 ## Limits seen from the hub
 
-- Text only, and no JSON schema (`response_format` is rejected; the apps fall back to their prompt + repair step).
-- No token limit.
-- No usage numbers in the stream, so the apps show a cost of 0.
-- Each request is a fresh agent session.
+- [x] No JSON schema: `response_format` (chat) and `text.format` (Responses) are accepted; the agent is told the format and schema and the answer is cleaned of fences and prose. Not schema-validated, so the apps' repair step still matters. (AAP-07)
+- [x] No token limit: `max_tokens` / `max_completion_tokens` / `max_output_tokens` are honoured with an estimate; the turn is cancelled and the stop is `length` / `incomplete`. (AAP-09)
+- [x] No usage numbers in the stream: `stream_options.include_usage` adds the final usage chunk; usage comes from the agent, or an estimate when it reports none. (AAP-08)
+- [x] Each request is a fresh agent session: opt-in `PROXY_REUSE_SESSIONS` / `server.reuseSessions` continues the session of the same conversation and sends only the new messages. (AAP-10)
+- [ ] Text only: images, audio, files and tools are still rejected. Not needed by the hub's apps.

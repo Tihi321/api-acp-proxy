@@ -1,11 +1,12 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
-import type { AcpLike, GenerationResult } from "./acp.js";
+import type { AcpLike, GenerateOptions, GenerationResult } from "./acp.js";
 import { AcpUnavailableError } from "./acp.js";
 import { MODEL_IDS, type ProxyConfig } from "./config.js";
-import { ApiError, errorEnvelope, normalizeChat, normalizeResponses, type ModelCheck } from "./api.js";
+import { ApiError, errorEnvelope, extractJson, formatInstructions, normalizeChat, normalizeResponses, serializePrompt, type ModelCheck, type OutputFormat, type TextMessage } from "./api.js";
 import { beginSse, endSse, writeSse } from "./sse.js";
+import { CHARS_PER_TOKEN, chatUsage, responsesUsage } from "./usage.js";
 
 const startedAt = Date.now();
 
@@ -50,15 +51,31 @@ export function mapStopReason(stopReason: GenerationResult["stopReason"]): { cha
   }
 }
 
-function responsesUsage(result: GenerationResult): Record<string, number> | null {
-  if (!result.usage) return null;
-  return { input_tokens: result.usage.inputTokens, output_tokens: result.usage.outputTokens, total_tokens: result.usage.totalTokens };
+/** Runs one generation and enforces the client's output limit on the raw text: the part that fits is emitted, the agent turn is cancelled and the result is a "max_tokens" stop with usage left to the estimate. */
+async function runGeneration(bridge: AcpLike, model: string, messages: TextMessage[], options: GenerateOptions, limit: number | undefined, emit: ((text: string) => void) | undefined, signal: AbortSignal): Promise<GenerationResult> {
+  if (limit === undefined && !emit) return await bridge.generate(model, messages, {}, signal, options);
+  const controller = new AbortController();
+  const link = () => controller.abort();
+  if (signal.aborted) link(); else signal.addEventListener("abort", link, { once: true });
+  const budget = limit === undefined ? Infinity : limit * CHARS_PER_TOKEN;
+  let emitted = "";
+  let truncated = false;
+  const onText = (text: string) => {
+    if (truncated) return;
+    const fit = text.length > budget - emitted.length ? text.slice(0, Math.max(0, budget - emitted.length)) : text;
+    if (fit) { emitted += fit; emit?.(fit); }
+    if (fit.length < text.length) { truncated = true; controller.abort(); }
+  };
+  try {
+    const result = await bridge.generate(model, messages, { onText }, controller.signal, options);
+    return truncated ? { text: emitted, stopReason: "max_tokens", usage: null } : result;
+  } catch (error) {
+    if (truncated) return { text: emitted, stopReason: "max_tokens", usage: null };
+    throw error;
+  } finally { signal.removeEventListener("abort", link); }
 }
 
-function chatUsage(result: GenerationResult): Record<string, number> | undefined {
-  if (!result.usage) return undefined;
-  return { prompt_tokens: result.usage.inputTokens, completion_tokens: result.usage.outputTokens, total_tokens: result.usage.totalTokens };
-}
+function finalText(format: OutputFormat, result: GenerationResult): string { return format.type === "json" ? extractJson(result.text) : result.text; }
 
 async function handleChat(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike): Promise<void> {
   const parsed = normalizeChat(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling });
@@ -70,14 +87,23 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   request.once("aborted", () => abortController.abort());
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
+  const options = { instructions: formatInstructions(parsed.format) };
+  const asJson = parsed.format.type === "json";
+  const promptText = serializePrompt(parsed.textMessages, options.instructions);
+  const usageFor = (result: GenerationResult) => chatUsage({ ...result, text: finalText(parsed.format, result) }, promptText);
   if (parsed.stream) {
+    const includeUsage = (parsed.stream_options as { include_usage?: boolean } | null | undefined)?.include_usage === true;
+    const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) => writeSse(response, { id: chatId, object: "chat.completion.chunk", created, model: parsed.model, choices, ...(includeUsage ? { usage: null } : {}), ...extra });
     beginSse(response);
-    writeSse(response, { id: chatId, object: "chat.completion.chunk", created, model: parsed.model, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] });
+    chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }]);
     try {
-      const result = await bridge.generate(parsed.model, parsed.textMessages, { onText: (text) => writeSse(response, { id: chatId, object: "chat.completion.chunk", created, model: parsed.model, choices: [{ index: 0, delta: { content: text }, finish_reason: null }] }) }, abortController.signal);
+      const delta = (text: string) => chunk([{ index: 0, delta: { content: text }, finish_reason: null }]);
+      const result = await runGeneration(bridge, parsed.model, parsed.textMessages, options, parsed.maxOutputTokens, asJson ? undefined : delta, abortController.signal);
       if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
+      if (asJson) delta(finalText(parsed.format, result));
       const reason = mapStopReason(result.stopReason).chat;
-      writeSse(response, { id: chatId, object: "chat.completion.chunk", created, model: parsed.model, choices: [{ index: 0, delta: {}, finish_reason: reason }] });
+      chunk([{ index: 0, delta: {}, finish_reason: reason }]);
+      if (includeUsage) chunk([], { usage: usageFor(result) });
       endSse(response);
     } catch (error) {
       writeSse(response, errorEnvelope(error instanceof Error ? error : new Error(String(error))));
@@ -86,11 +112,10 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
     return;
   }
   try {
-    const result = await bridge.generate(parsed.model, parsed.textMessages, {}, abortController.signal);
+    const result = await runGeneration(bridge, parsed.model, parsed.textMessages, options, parsed.maxOutputTokens, undefined, abortController.signal);
     if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
     const reason = mapStopReason(result.stopReason).chat;
-    const usage = chatUsage(result);
-    json(response, 200, { id: chatId, object: "chat.completion", created, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: result.text }, finish_reason: reason }], ...(usage ? { usage } : {}) });
+    json(response, 200, { id: chatId, object: "chat.completion", created, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: finalText(parsed.format, result) }, finish_reason: reason }], usage: usageFor(result) });
   } finally { clearTimeout(timer); }
 }
 
@@ -105,7 +130,10 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   request.once("aborted", () => abortController.abort());
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
-  const base = (result: GenerationResult, status: string) => ({ id: responseId, object: "response", created_at: created, status, model: parsed.model, output: [{ id: messageId, type: "message", status, role: "assistant", content: [{ type: "output_text", text: result.text, annotations: [] }] }], usage: responsesUsage(result), store: false });
+  const options = { instructions: formatInstructions(parsed.format) };
+  const asJson = parsed.format.type === "json";
+  const promptText = serializePrompt(parsed.textMessages, options.instructions);
+  const base = (result: GenerationResult, status: string) => ({ id: responseId, object: "response", created_at: created, status, model: parsed.model, output: [{ id: messageId, type: "message", status, role: "assistant", content: [{ type: "output_text", text: finalText(parsed.format, result), annotations: [] }] }], incomplete_details: result.stopReason === "max_tokens" ? { reason: "max_output_tokens" } : null, usage: responsesUsage({ ...result, text: finalText(parsed.format, result) }, promptText), store: false });
   if (parsed.stream) {
     let sequenceNumber = 0;
     const event = (type: string, payload: Record<string, unknown>) => writeSse(response, { type, sequence_number: sequenceNumber++, ...payload }, type);
@@ -114,11 +142,14 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
     event("response.output_item.added", { output_index: 0, item: { id: messageId, type: "message", status: "in_progress", role: "assistant", content: [] } });
     event("response.content_part.added", { item_id: messageId, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
     try {
-      const result = await bridge.generate(parsed.model, parsed.textMessages, { onText: (delta) => event("response.output_text.delta", { item_id: messageId, output_index: 0, content_index: 0, delta }) }, abortController.signal);
+      const delta = (text: string) => event("response.output_text.delta", { item_id: messageId, output_index: 0, content_index: 0, delta: text });
+      const result = await runGeneration(bridge, parsed.model, parsed.textMessages, options, parsed.maxOutputTokens, asJson ? undefined : delta, abortController.signal);
       if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
       const status = mapStopReason(result.stopReason).responseStatus;
-      event("response.output_text.done", { item_id: messageId, output_index: 0, content_index: 0, text: result.text });
-      event("response.content_part.done", { item_id: messageId, output_index: 0, content_index: 0, part: { type: "output_text", text: result.text, annotations: [] } });
+      const text = finalText(parsed.format, result);
+      if (asJson) delta(text);
+      event("response.output_text.done", { item_id: messageId, output_index: 0, content_index: 0, text });
+      event("response.content_part.done", { item_id: messageId, output_index: 0, content_index: 0, part: { type: "output_text", text, annotations: [] } });
       event("response.output_item.done", { output_index: 0, item: base(result, status).output[0] });
       const terminalEvent = status === "completed" ? "response.completed" : "response.incomplete";
       event(terminalEvent, { response: base(result, status) });
@@ -128,7 +159,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
     return;
   }
   try {
-    const result = await bridge.generate(parsed.model, parsed.textMessages, {}, abortController.signal);
+    const result = await runGeneration(bridge, parsed.model, parsed.textMessages, options, parsed.maxOutputTokens, undefined, abortController.signal);
     if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
     json(response, 200, base(result, mapStopReason(result.stopReason).responseStatus));
   } finally { clearTimeout(timer); }

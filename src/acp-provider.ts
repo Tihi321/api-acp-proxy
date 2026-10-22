@@ -3,27 +3,40 @@ import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { client, methods, ndJsonStream, type ClientConnection, type ClientContext } from "@agentclientprotocol/sdk";
-import type { SessionConfigOption, SessionUpdate } from "@agentclientprotocol/sdk";
+import type { SessionConfigOption, SessionUpdate, Usage } from "@agentclientprotocol/sdk";
 import { serializePrompt, type TextMessage } from "./api.js";
 import { killProcessTree } from "./process-tree.js";
 import { AcpUnavailableError, ProviderAuthRequiredError, ProviderNotInstalledError, ProviderTermsRequiredError } from "./provider.js";
-import type { AuthMethodInfo, GenerationCallbacks, GenerationResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext } from "./provider.js";
+import type { AuthMethodInfo, GenerateOptions, GenerationCallbacks, GenerationResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext } from "./provider.js";
 
 type SessionHandler = (update: SessionUpdate) => void;
 interface PreparedSession { sessionId: string; cwd: string; modelOptionId?: string; readOnlyModeId?: string; }
+/** A finished turn's session kept for the next request of the same conversation; `transcript` holds the client-visible messages plus each raw answer. */
+interface KeptSession { agent: ClientContext; session: PreparedSession; model: string; transcript: TextMessage[]; usage?: Usage; timer: NodeJS.Timeout; }
 interface AuthInflight { methodId: string; agent: ClientContext; promise: Promise<void>; }
 const DEFAULT_MODE_CANDIDATES = ["read-only", "readonly"] as const;
 const DEFAULT_AUTH_TIMEOUT_MS = 10_000;
 const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_LOGIN_OPEN_DELAY_MS = 3_000;
+const DEFAULT_RETAINED_SESSIONS = 8;
+const DEFAULT_RETAINED_IDLE_MS = 10 * 60_000;
+const USAGE_FIELDS = ["inputTokens", "outputTokens", "totalTokens", "thoughtTokens", "cachedReadTokens", "cachedWriteTokens"] as const;
 
 /** An authenticate call did not finish in time; the request itself is left pending. */
 class AuthTimeoutError extends Error { constructor(message: string) { super(message); this.name = "AuthTimeoutError"; } }
-export interface AcpProviderOptions { workRoot: string; }
+export interface AcpProviderOptions { workRoot: string; /** Keep a session after a completed turn for the next turn of the same conversation. */ reuseSessions?: boolean; /** Most kept sessions at once (default 8). */ retainedSessions?: number; /** A kept session is disposed after this idle time (default 10 minutes). */ retainedIdleMs?: number; }
 
 const AUTH_REQUIRED = -32000;
 
 function isAuthRequired(error: unknown): boolean { return typeof error === "object" && error !== null && (error as { code?: unknown }).code === AUTH_REQUIRED; }
+
+/** This turn's usage when the agent reports cumulative session usage: current minus previous, field by field, never below 0. */
+function usageDelta(current: Usage, previous: Usage | undefined): Usage {
+  if (!previous) return current;
+  const delta: Usage = { ...current };
+  for (const key of USAGE_FIELDS) { const value = current[key]; if (typeof value === "number") (delta as Record<string, unknown>)[key] = Math.max(0, value - (previous[key] ?? 0)); }
+  return delta;
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number | undefined, message: string): Promise<T> {
   if (!ms) return promise;
@@ -77,6 +90,7 @@ export class AcpProvider implements Provider {
   private warming = 0;
   private warnedNoReadOnly = false;
   private readonly warm: PreparedSession[] = [];
+  private readonly kept: KeptSession[] = [];
   private readonly handlers = new Map<string, SessionHandler>();
   private readonly listeners = new Set<(status: ProviderStatus) => void>();
   private readonly log;
@@ -234,6 +248,7 @@ export class AcpProvider implements Provider {
       this.generation++;
       this.authInflight = undefined;
       this.dropWarm();
+      void this.dropKept();
       if (this.state === "ready") this.setState("stopped");
     });
     let authStep = false;
@@ -280,6 +295,40 @@ export class AcpProvider implements Provider {
     for (const session of this.warm.splice(0)) void rm(session.cwd, { recursive: true, force: true }).catch(() => undefined);
   }
 
+  private async dropKept(): Promise<void> {
+    await Promise.all(this.kept.splice(0).map((entry) => { clearTimeout(entry.timer); return this.disposeSession(entry.agent, entry.session); }));
+  }
+
+  /** Keeps a session after a completed turn; the oldest one is evicted over the cap and an idle one is disposed after retainedIdleMs. */
+  private keep(agent: ClientContext, session: PreparedSession, model: string, transcript: TextMessage[], usage: Usage | undefined): void {
+    const limit = Math.max(1, this.options.retainedSessions ?? DEFAULT_RETAINED_SESSIONS);
+    while (this.kept.length >= limit) { const oldest = this.kept.shift()!; clearTimeout(oldest.timer); void this.disposeSession(oldest.agent, oldest.session); }
+    const entry: KeptSession = { agent, session, model, transcript, usage, timer: setTimeout(() => {
+      const index = this.kept.indexOf(entry);
+      if (index >= 0) { this.kept.splice(index, 1); void this.disposeSession(agent, session); }
+    }, this.options.retainedIdleMs ?? DEFAULT_RETAINED_IDLE_MS) };
+    entry.timer.unref?.();
+    this.handlers.delete(session.sessionId);
+    this.kept.push(entry);
+  }
+
+  /** Removes and returns the kept session whose transcript is the request's history up to its last assistant message, with the messages after it. */
+  private takeKept(agent: ClientContext, model: string, messages: TextMessage[]): { entry: KeptSession; fresh: TextMessage[] } | undefined {
+    const last = messages.map((message) => message.role).lastIndexOf("assistant");
+    if (last < 0 || last + 1 >= messages.length) return undefined;
+    const index = this.kept.findIndex((entry) => entry.agent === agent && entry.model === model && entry.transcript.length === last + 1 && entry.transcript.every((kept, position) => {
+      const sent = messages[position]!;
+      if (kept.role !== sent.role) return false;
+      if (kept.role !== "assistant") return kept.content === sent.content;
+      const content = sent.content.trim();
+      return content !== "" && kept.content.includes(content);
+    }));
+    if (index < 0) return undefined;
+    const [entry] = this.kept.splice(index, 1);
+    clearTimeout(entry!.timer);
+    return { entry: entry!, fresh: messages.slice(last + 1) };
+  }
+
   private async stop(): Promise<void> {
     const { child, connection } = this;
     this.connection = undefined; this.agent = undefined; this.child = undefined;
@@ -287,6 +336,7 @@ export class AcpProvider implements Provider {
     this.authInflight = undefined; this.authBlock = undefined;
     if (this.openTimer) { clearTimeout(this.openTimer); this.openTimer = undefined; }
     this.dropWarm();
+    await this.dropKept();
     connection?.close();
     if (child) await killProcessTree(child);
     this.loginUrl = undefined;
@@ -416,11 +466,14 @@ export class AcpProvider implements Provider {
     }
   }
 
-  async generate(model: string, messages: TextMessage[], callbacks: GenerationCallbacks = {}, signal?: AbortSignal): Promise<GenerationResult> {
+  async generate(model: string, messages: TextMessage[], callbacks: GenerationCallbacks = {}, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
     let agent: ClientContext | undefined;
     let session: PreparedSession | undefined;
     let aborted = signal?.aborted ?? false;
     let promptSent = false;
+    let reused: KeptSession | undefined;
+    let keepWith: { transcript: TextMessage[]; usage?: Usage } | undefined;
+    let fresh = messages;
     const cancelled = (): GenerationResult => ({ text: "", stopReason: "cancelled", usage: null });
     const abort = async () => {
       aborted = true;
@@ -432,8 +485,9 @@ export class AcpProvider implements Provider {
     try {
       agent = await this.start();
       if (aborted) return cancelled();
-      session = this.warm.shift() ?? await this.createSession(agent);
-      this.refillWarm();
+      const hit = this.options.reuseSessions ? this.takeKept(agent, model, messages) : undefined;
+      if (hit) { reused = hit.entry; session = reused.session; fresh = hit.fresh; }
+      else { session = this.warm.shift() ?? await this.createSession(agent); this.refillWarm(); }
       if (aborted) return cancelled();
       const sid = session.sessionId;
       this.handlers.set(sid, (update) => {
@@ -442,16 +496,22 @@ export class AcpProvider implements Provider {
           callbacks.onText?.(update.content.text);
         }
       });
-      if (!session.modelOptionId) throw new AcpUnavailableError(`The ${this.displayName} ACP backend did not advertise a model configuration option.`);
-      await this.authGuard(() => agent!.request(methods.agent.session.setConfigOption, { sessionId: sid, configId: session!.modelOptionId!, value: model }));
-      if (aborted) return cancelled();
-      if (session.readOnlyModeId) await agent.request(methods.agent.session.setMode, { sessionId: sid, modeId: session.readOnlyModeId });
-      else if (this.descriptor.readOnlyMode === "required") throw new AcpUnavailableError(`The ${this.displayName} ACP backend did not advertise a read-only mode.`);
-      else if (!this.warnedNoReadOnly) { this.warnedNoReadOnly = true; this.log.warn("No read-only mode advertised; relying on cancelled permissions and the text-only prompt."); }
+      if (!reused) {
+        if (!session.modelOptionId) throw new AcpUnavailableError(`The ${this.displayName} ACP backend did not advertise a model configuration option.`);
+        await this.authGuard(() => agent!.request(methods.agent.session.setConfigOption, { sessionId: sid, configId: session!.modelOptionId!, value: model }));
+        if (aborted) return cancelled();
+        if (session.readOnlyModeId) await agent.request(methods.agent.session.setMode, { sessionId: sid, modeId: session.readOnlyModeId });
+        else if (this.descriptor.readOnlyMode === "required") throw new AcpUnavailableError(`The ${this.displayName} ACP backend did not advertise a read-only mode.`);
+        else if (!this.warnedNoReadOnly) { this.warnedNoReadOnly = true; this.log.warn("No read-only mode advertised; relying on cancelled permissions and the text-only prompt."); }
+      }
       if (aborted) return cancelled();
       promptSent = true;
-      const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: serializePrompt(messages) }] }));
-      return { text, stopReason: result.stopReason, usage: result.usage ?? null };
+      const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: serializePrompt(fresh, options?.instructions) }] }));
+      let usage = result.usage ?? null;
+      let cumulative = reused?.usage;
+      if (usage && this.descriptor.usageScope === "session") { cumulative = usage; usage = usageDelta(usage, reused?.usage); }
+      if (this.options.reuseSessions && result.stopReason === "end_turn" && !aborted) keepWith = { transcript: [...messages, { role: "assistant", content: text }], usage: cumulative };
+      return { text, stopReason: result.stopReason, usage };
     } catch (error) {
       if (aborted && !promptSent) return cancelled();
       if (aborted) throw new AcpUnavailableError("The request was cancelled.", error);
@@ -461,7 +521,10 @@ export class AcpProvider implements Provider {
       throw new AcpUnavailableError(`The ${this.displayName} ACP backend failed to process the request.`, error);
     } finally {
       signal?.removeEventListener("abort", abort);
-      if (session && agent) await this.disposeSession(agent, session);
+      if (session && agent) {
+        if (keepWith && !aborted && this.agent === agent) this.keep(agent, session, model, keepWith.transcript, keepWith.usage);
+        else await this.disposeSession(agent, session);
+      }
     }
   }
 

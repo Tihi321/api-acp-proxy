@@ -75,6 +75,13 @@ describe("resolveConfig", () => {
     expect([...overridden].sort()).toEqual(["providers.antigravity.enabled", "providers.codex.acpArgs", "providers.codex.acpCommand", "providers.codex.enabled", "server.apiKey", "server.modelsWaitMs", "server.port"]);
   });
 
+  it("reads PROXY_REUSE_SESSIONS (off by default)", () => {
+    expect(resolveConfig(defaultSettings(), {}).config.reuseSessions).toBe(false);
+    const { config, overridden } = resolveConfig(defaultSettings(), { PROXY_REUSE_SESSIONS: "1" });
+    expect(config.reuseSessions).toBe(true);
+    expect(overridden).toEqual(["server.reuseSessions"]);
+  });
+
   it("ignores invalid env values and keeps the settings value", () => {
     const { config, overridden } = resolveConfig(mergeSettings(defaultSettings(), { server: { port: 4321 } }), { PROXY_PORT: "nope", PROXY_CODEX_ENABLED: "maybe" });
     expect(config.port).toBe(4321);
