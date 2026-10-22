@@ -18,6 +18,8 @@ export const settingsSchema = z.object({
     modelsWaitMs: positive(3000),
     workRoot: z.string().optional(),
     launchAtLogin: z.boolean().default(false),
+    /** Drop sampling and length fields instead of answering 400, for clients that always send them. */
+    ignoreSampling: z.boolean().default(false),
   }).default({}),
   providers: z.object({
     codex: z.object({
@@ -183,6 +185,7 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
   apply("server.timeoutMs", parseInt(env.PROXY_TIMEOUT_MS), (v) => { server.timeoutMs = v; });
   apply("server.modelsWaitMs", parseInt(env.PROXY_MODELS_WAIT_MS), (v) => { server.modelsWaitMs = v; });
   apply("server.workRoot", env.PROXY_WORK_ROOT || undefined, (v) => { server.workRoot = v; });
+  apply("server.ignoreSampling", parseBool(env.PROXY_IGNORE_SAMPLING), (v) => { server.ignoreSampling = v; });
   apply("providers.codex.enabled", parseBool(env.PROXY_CODEX_ENABLED), (v) => { providers.codex.enabled = v; });
   apply("providers.codex.acpCommand", env.PROXY_ACP_COMMAND || undefined, (v) => { providers.codex.acpCommand = v; });
   apply("providers.codex.acpArgs", env.PROXY_ACP_ARGS ? env.PROXY_ACP_ARGS.split(" ").filter(Boolean) : undefined, (v) => { providers.codex.acpArgs = v; });
@@ -199,6 +202,7 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
     maxBodyBytes: server.maxBodyBytes,
     timeoutMs: server.timeoutMs,
     modelsWaitMs: server.modelsWaitMs,
+    ignoreSampling: server.ignoreSampling,
     workRoot: server.workRoot || path.join(os.tmpdir(), "codex-subscription-proxy"),
     acpCommand: providers.codex.acpCommand || undefined,
     acpArgs: providers.codex.acpArgs,

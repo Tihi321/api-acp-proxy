@@ -61,7 +61,7 @@ function chatUsage(result: GenerationResult): Record<string, number> | undefined
 }
 
 async function handleChat(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike): Promise<void> {
-  const parsed = normalizeChat(await readBody(request, config.maxBodyBytes), modelCheck(bridge));
+  const parsed = normalizeChat(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling });
   const chatId = id("chatcmpl");
   const created = Math.floor(Date.now() / 1000);
   const abortController = new AbortController();
@@ -95,7 +95,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
 }
 
 async function handleResponses(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike): Promise<void> {
-  const parsed = normalizeResponses(await readBody(request, config.maxBodyBytes), modelCheck(bridge));
+  const parsed = normalizeResponses(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling });
   const responseId = id("resp");
   const messageId = id("msg");
   const created = Math.floor(Date.now() / 1000);

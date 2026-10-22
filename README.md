@@ -75,6 +75,7 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 | `PROXY_TIMEOUT_MS` | `300000` | Per-request timeout |
 | `PROXY_MODELS_WAIT_MS` | `3000` | How long `/v1/models` waits for provider discovery |
 | `PROXY_WORK_ROOT` | OS temp directory | Parent for disposable session working directories |
+| `PROXY_IGNORE_SAMPLING` | `false` | Drop `temperature`, `top_p`, penalties, `seed`, `max_tokens` / `max_completion_tokens` / `max_output_tokens` and `stream_options` instead of answering 400, for clients that always send them (settings: `server.ignoreSampling`) |
 | `PROXY_CODEX_ENABLED` | `true` | Enable the Codex provider (`1/0`, `true/false`, `yes/no`, `on/off`) |
 | `PROXY_ACP_COMMAND` / `PROXY_ACP_ARGS` | dependency-resolved adapter | Custom Codex ACP executable and space-separated arguments |
 | `PROXY_CLAUDE_ENABLED` | `false` | Enable the Claude provider |
