@@ -63,6 +63,8 @@ export interface ProviderDescriptor {
   sessionTimeoutMs?: number;
   /** Number of pre-created sessions kept ready. */
   warmSessions?: number;
+  /** Whether PromptResponse.usage covers only the last turn (default) or the whole session so far. */
+  usageScope?: "turn" | "session";
   preflight?(ctx: RuntimeContext): Promise<PreflightResult | undefined> | PreflightResult | undefined;
   launch(ctx: RuntimeContext): LaunchSpec | Promise<LaunchSpec>;
   /** Returns the auth method id to use without user interaction, or undefined when interactive login is needed. */

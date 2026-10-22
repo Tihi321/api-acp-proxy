@@ -76,6 +76,7 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 | `PROXY_MODELS_WAIT_MS` | `3000` | How long `/v1/models` waits for provider discovery |
 | `PROXY_WORK_ROOT` | OS temp directory | Parent for disposable session working directories |
 | `PROXY_IGNORE_SAMPLING` | `false` | Drop `temperature`, `top_p`, penalties, `seed` and the Responses `stream_options` instead of answering 400, for clients that always send them (settings: `server.ignoreSampling`) |
+| `PROXY_REUSE_SESSIONS` | `false` | Keep an agent session after a completed turn and continue it when the next request extends the same conversation, sending only the new messages (settings: `server.reuseSessions`) |
 | `PROXY_CODEX_ENABLED` | `true` | Enable the Codex provider (`1/0`, `true/false`, `yes/no`, `on/off`) |
 | `PROXY_ACP_COMMAND` / `PROXY_ACP_ARGS` | dependency-resolved adapter | Custom Codex ACP executable and space-separated arguments |
 | `PROXY_CLAUDE_ENABLED` | `false` | Enable the Claude provider |
@@ -134,7 +135,9 @@ Both endpoints always report usage (`prompt_tokens` / `completion_tokens` / `tot
 
 **JSON output.** Chat Completions accepts `response_format` (`text`, `json_object`, or `json_schema` with `json_schema: { name, schema, strict, description }`) and Responses accepts `text.format` (the same three types, with `name` / `schema` / `strict` / `description` inline). The agents cannot enforce a schema, so the proxy adds an output-format instruction to the prompt (including the JSON Schema when given) and cleans the answer by stripping Markdown code fences and prose around the JSON. The answer is not validated against the schema: if the agent still returns something that is not valid JSON, the text is returned as is. With a JSON format, streaming sends the cleaned JSON as a single delta once the agent has finished instead of token by token. Other `text` options (such as `verbosity`) are rejected.
 
-Tools, files, images, audio, function calling, persistent conversations, and other behavior-changing options are intentionally rejected. Each request gets a fresh ACP session in an isolated temporary directory (Codex: read-only mode). Permission requests are denied and no client filesystem or terminal capabilities are advertised.
+**Session reuse.** With `PROXY_REUSE_SESSIONS=1` (settings: `server.reuseSessions`) a session is kept after a turn that ended normally (not cancelled, not cut by a token limit, not failed). The next request continues it when it has the same model and its messages up to the last assistant message equal what the proxy saw: the same roles, the same non-assistant content, and every assistant message a non-empty part of the answer the agent gave (so JSON-extracted answers still match), followed by at least one new message. Only the new messages are sent to the agent, which keeps its own context. A kept session is used by one request at a time, at most 8 are kept (the oldest is dropped), an idle one is dropped after 10 minutes, and all are dropped when the proxy or the agent stops. Any other request starts a fresh session.
+
+Tools, files, images, audio, function calling, persistent conversations, and other behavior-changing options are intentionally rejected. Each request gets a fresh ACP session in an isolated temporary directory (Codex: read-only mode), unless session reuse is on. Permission requests are denied and no client filesystem or terminal capabilities are advertised.
 
 ## curl
 

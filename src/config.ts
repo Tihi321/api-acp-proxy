@@ -14,8 +14,10 @@ export interface ProxyConfig {
   acpArgs: string[];
   /** How long /v1/models waits for slow providers before answering from cache. */
   modelsWaitMs?: number;
-  /** Drop sampling and length fields (temperature, max_tokens, stream_options...) instead of rejecting the request. */
+  /** Drop sampling fields (temperature, top_p, penalties, seed) instead of rejecting the request. */
   ignoreSampling?: boolean;
+  /** Keep an agent session after a completed turn and continue it when the next request extends the same conversation. */
+  reuseSessions?: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ProxyConfig {

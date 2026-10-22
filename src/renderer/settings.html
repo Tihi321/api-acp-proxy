@@ -38,6 +38,7 @@
         <label class="field"><span>Models wait (ms)</span><input id="server.modelsWaitMs" type="number" min="1"><small data-note-for="server.modelsWaitMs"></small><small class="error" data-error-for="server.modelsWaitMs"></small></label>
         <label class="check"><input id="server.launchAtLogin" type="checkbox"><span>Launch at login</span></label>
         <label class="check"><input id="server.ignoreSampling" type="checkbox"><span>Ignore sampling fields (temperature, top_p, penalties, seed) instead of rejecting them</span></label>
+        <label class="check"><input id="server.reuseSessions" type="checkbox"><span>Reuse agent sessions across conversation turns</span></label>
       </div>
       <div class="actions">
         <button id="server-save" class="primary" type="button">Save and restart</button>

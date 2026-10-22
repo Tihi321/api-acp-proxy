@@ -43,5 +43,5 @@ export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArg
 export const codexRegistration: ProviderRegistration = {
   id: "codex",
   displayName: "Codex",
-  create: ({ config, providerSettings, ctx }) => new AcpProvider(codexDescriptor(config, { authMethodId: providerSettings.authMethodId as string | undefined }), ctx, { workRoot: config.workRoot }),
+  create: ({ config, providerSettings, ctx }) => new AcpProvider(codexDescriptor(config, { authMethodId: providerSettings.authMethodId as string | undefined }), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions }),
 };

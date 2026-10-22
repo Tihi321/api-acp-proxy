@@ -19,6 +19,7 @@ import { appendFileSync, writeFileSync } from "node:fs";
 //   FAKE_ACP_CLAUDE=1                mimic claude-agent-acp: modes default/acceptEdits/plan/auto/bypassPermissions (no read-only), no authMethods
 //   FAKE_ACP_PROMPT_AUTH=1           session/prompt fails with -32000 (not logged in)
 //   FAKE_ACP_AUTH_STATUS=<kind>      push an _auth/status_update notification {authStatus:{kind,label}} right after initialize (label "Fake account" unless kind is none)
+//   FAKE_ACP_CUMULATIVE=1            report usage cumulatively per session (inputTokens 2 * turns so far, outputTokens turns), like claude-agent-acp
 //   FAKE_ACP_LOG=<file>              append every request as a JSON line {method, params}
 const env = process.env;
 const pending = new Map();
@@ -29,11 +30,15 @@ const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const agy = env.FAKE_ACP_AGY === "1";
 const claude = env.FAKE_ACP_CLAUDE === "1";
 const fail = (id, code, message, data) => send({ jsonrpc: "2.0", id, error: { code, message, ...(data ? { data } : {}) } });
-const finish = (id, reason = "end_turn") => send({ jsonrpc: "2.0", id, result: { stopReason: reason, usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 } } });
+const turns = new Map();
+const finish = (id, reason = "end_turn", sessionId) => {
+  const n = env.FAKE_ACP_CUMULATIVE === "1" ? turns.get(sessionId) ?? 1 : 1;
+  send({ jsonrpc: "2.0", id, result: { stopReason: reason, usage: { inputTokens: 2 * n, outputTokens: n, totalTokens: 3 * n } } });
+};
 const promptDone = (sessionId, id) => {
   const text = env.FAKE_ACP_ECHO === "1" ? `echo:${models.get(sessionId) ?? ""}:${sessionId}:${authedWith ?? "-"}` : "fake response";
   send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
-  finish(id);
+  finish(id, "end_turn", sessionId);
 };
 if (env.FAKE_ACP_GRANDCHILD) {
   const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
@@ -71,6 +76,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   else if (method === "session/prompt") {
     const sessionId = params.sessionId;
     pending.set(sessionId, id);
+    turns.set(sessionId, (turns.get(sessionId) ?? 0) + 1);
     const run = () => {
       if (!pending.has(sessionId)) return;
       if (env.FAKE_ACP_PROMPT_AUTH === "1") { pending.delete(sessionId); fail(id, -32000, "Authentication required"); return; }

@@ -81,6 +81,7 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
     modeCandidates: ["default"],
     sessionTimeoutMs: 120_000,
     warmSessions: 1,
+    usageScope: "session",
     stderrLogLevel: "debug",
     sessionMeta: { disableBuiltInTools: true, claudeCode: { options: { tools: [], persistSession: false, settingSources: [] } } },
     loginMethods: LOGIN_METHODS,
@@ -100,5 +101,5 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
 export const claudeRegistration: ProviderRegistration = {
   id: "claude",
   displayName: "Claude",
-  create: ({ providerSettings, ctx, env, config }) => new AcpProvider(claudeDescriptor(providerSettings as ClaudeSettings, env), ctx, { workRoot: config.workRoot }),
+  create: ({ providerSettings, ctx, env, config }) => new AcpProvider(claudeDescriptor(providerSettings as ClaudeSettings, env), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions }),
 };
