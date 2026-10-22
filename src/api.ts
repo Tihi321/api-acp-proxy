@@ -8,12 +8,12 @@ const chatMessageSchema = z.object({
   content: messageContentSchema,
 }).strict();
 
-const unsupportedChatFields = ["tools", "tool_choice", "functions", "function_call", "audio", "modalities", "logprobs", "top_logprobs", "prediction", "service_tier", "n", "temperature", "top_p", "stop", "presence_penalty", "frequency_penalty", "seed", "logit_bias", "max_tokens", "max_completion_tokens", "stream_options"] as const;
+const unsupportedChatFields = ["tools", "tool_choice", "functions", "function_call", "audio", "modalities", "logprobs", "top_logprobs", "prediction", "service_tier", "n", "temperature", "top_p", "stop", "presence_penalty", "frequency_penalty", "seed", "logit_bias", "max_tokens", "max_completion_tokens"] as const;
 const unsupportedResponseFields = ["tools", "tool_choice", "temperature", "top_p", "parallel_tool_calls", "truncation", "reasoning", "include", "background", "max_output_tokens", "stream_options"] as const;
 
 // Fields that only tune sampling or length. The agents behind the proxy cannot honour them, so by default they are
 // rejected; with `ignoreSampling` they are dropped instead, for clients that send them on every request.
-const ignorableChatFields = ["temperature", "top_p", "presence_penalty", "frequency_penalty", "seed", "max_tokens", "max_completion_tokens", "stream_options"] as const;
+const ignorableChatFields = ["temperature", "top_p", "presence_penalty", "frequency_penalty", "seed", "max_tokens", "max_completion_tokens"] as const;
 const ignorableResponseFields = ["temperature", "top_p", "max_output_tokens", "stream_options"] as const;
 export interface NormalizeOptions { ignoreSampling?: boolean }
 
@@ -45,6 +45,7 @@ export const chatRequestSchema = z.object({
   max_tokens: z.number().int().positive().optional(),
   max_completion_tokens: z.number().int().positive().optional(),
   user: z.string().optional(),
+  stream_options: z.object({ include_usage: z.boolean().optional() }).passthrough().nullable().optional(),
   response_format: chatResponseFormatSchema.nullish(),
 }).passthrough();
 

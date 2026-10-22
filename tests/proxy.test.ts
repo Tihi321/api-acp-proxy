@@ -137,6 +137,48 @@ describe("JSON output", () => {
   });
 });
 
+describe("usage", () => {
+  const chatBody = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "hi" }] };
+  const dataLines = (text: string) => text.split("\n").filter((line) => line.startsWith("data: ")).map((line) => line.slice(6));
+  it("accepts stream_options without ignoreSampling", () => {
+    expect(() => normalizeChat({ ...chatBody, stream: true, stream_options: { include_usage: true } })).not.toThrow();
+    expect(normalizeChat({ ...chatBody, stream_options: null }).textMessages).toHaveLength(1);
+    expect(() => normalizeChat({ ...chatBody, stream_options: { include_usage: "yes" } })).toThrow();
+    expect(() => normalizeResponses({ model: "gpt-5.6-sol", input: "x", stream_options: { include_usage: true } })).toThrow(/stream_options/);
+  });
+  it("ends a chat stream with a usage chunk when include_usage is set", async () => {
+    const result = await call("POST", "/v1/chat/completions", { ...chatBody, stream: true, stream_options: { include_usage: true } });
+    const lines = dataLines(result.text); expect(lines.at(-1)).toBe("[DONE]");
+    const chunks = lines.slice(0, -1).map((line) => JSON.parse(line));
+    const last = chunks.at(-1); expect(last.choices).toEqual([]); expect(last.usage).toMatchObject({ prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 });
+    for (const chunk of chunks.slice(0, -1)) expect(chunk.usage).toBeNull();
+    expect(chunks.at(-2).choices[0].finish_reason).toBe("stop");
+  });
+  it("sends no usage chunk without include_usage", async () => {
+    for (const body of [{ ...chatBody, stream: true }, { ...chatBody, stream: true, stream_options: { include_usage: false } }]) {
+      const chunks = dataLines((await call("POST", "/v1/chat/completions", body)).text).slice(0, -1).map((line) => JSON.parse(line));
+      expect(chunks.every((chunk) => chunk.choices.length === 1 && !("usage" in chunk))).toBe(true);
+    }
+  });
+  it("estimates usage when the agent reports none", async () => {
+    const silent: AcpLike = { async generate() { return { text: "12345678", stopReason: "end_turn", usage: null }; } };
+    const chat = JSON.parse((await call("POST", "/v1/chat/completions", chatBody, silent)).text);
+    expect(chat.usage.completion_tokens).toBe(2); expect(chat.usage.prompt_tokens).toBeGreaterThan(0); expect(chat.usage.total_tokens).toBe(chat.usage.prompt_tokens + 2);
+    const responses = JSON.parse((await call("POST", "/v1/responses", { model: "gpt-5.6-sol", input: "hi" }, silent)).text);
+    expect(responses.usage.output_tokens).toBe(2); expect(responses.usage.total_tokens).toBe(responses.usage.input_tokens + 2);
+    const stream = dataLines((await call("POST", "/v1/chat/completions", { ...chatBody, stream: true, stream_options: { include_usage: true } }, silent)).text).slice(0, -1).map((line) => JSON.parse(line));
+    expect(stream.at(-1).usage.completion_tokens).toBe(2);
+  });
+  it("reads the usage chunk through the OpenAI SDK", async () => {
+    const server = createProxyServer(config, fake); servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, config.host, resolve)); const address = server.address() as AddressInfo;
+    const openai = new OpenAI({ apiKey: "secret", baseURL: `http://${config.host}:${address.port}/v1` });
+    const stream = await openai.chat.completions.create({ model: "gpt-5.6-sol", messages: [{ role: "user", content: "hi" }], stream: true, stream_options: { include_usage: true } });
+    const chunks: Array<{ usage?: unknown }> = []; for await (const chunk of stream) chunks.push(chunk);
+    expect(chunks.at(-1)!.usage).toMatchObject({ total_tokens: 3 });
+  });
+});
+
 describe("HTTP contract", () => {
   it("works through the official OpenAI SDK in both endpoints and modes", async () => {
     const server = createProxyServer(config, fake); servers.push(server);

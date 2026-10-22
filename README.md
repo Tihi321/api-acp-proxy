@@ -75,7 +75,7 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 | `PROXY_TIMEOUT_MS` | `300000` | Per-request timeout |
 | `PROXY_MODELS_WAIT_MS` | `3000` | How long `/v1/models` waits for provider discovery |
 | `PROXY_WORK_ROOT` | OS temp directory | Parent for disposable session working directories |
-| `PROXY_IGNORE_SAMPLING` | `false` | Drop `temperature`, `top_p`, penalties, `seed`, `max_tokens` / `max_completion_tokens` / `max_output_tokens` and `stream_options` instead of answering 400, for clients that always send them (settings: `server.ignoreSampling`) |
+| `PROXY_IGNORE_SAMPLING` | `false` | Drop `temperature`, `top_p`, penalties, `seed`, `max_tokens` / `max_completion_tokens` / `max_output_tokens` and the Responses `stream_options` instead of answering 400, for clients that always send them (settings: `server.ignoreSampling`) |
 | `PROXY_CODEX_ENABLED` | `true` | Enable the Codex provider (`1/0`, `true/false`, `yes/no`, `on/off`) |
 | `PROXY_ACP_COMMAND` / `PROXY_ACP_ARGS` | dependency-resolved adapter | Custom Codex ACP executable and space-separated arguments |
 | `PROXY_CLAUDE_ENABLED` | `false` | Enable the Claude provider |
@@ -124,7 +124,9 @@ Google's Antigravity terms ([clause 6](https://antigravity.google/terms)) restri
 
 `GET /healthz` is unauthenticated and returns service health. `GET /v1/models` lists the models of the enabled providers (see [Models and providers](#models-and-providers)).
 
-`POST /v1/chat/completions` accepts `model`, `messages`, and `stream`. Messages may have `system`, `developer`, `user`, or `assistant` roles and string or text-part content. Token limits and `stream_options` are rejected because ACP does not expose a reliable per-request equivalent. Streaming uses standard `text/event-stream` frames and terminates with `data: [DONE]`.
+`POST /v1/chat/completions` accepts `model`, `messages`, and `stream`. Messages may have `system`, `developer`, `user`, or `assistant` roles and string or text-part content. Token limits are rejected because ACP does not expose a reliable per-request equivalent. `stream_options.include_usage: true` adds a final chunk with empty `choices` and the `usage` object before `data: [DONE]` (every other chunk then carries `usage: null`). Streaming uses standard `text/event-stream` frames and terminates with `data: [DONE]`.
+
+Both endpoints always report usage (`prompt_tokens` / `completion_tokens` / `total_tokens` with `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens` for chat; `input_tokens` / `output_tokens` / `total_tokens` with the matching `*_details` for Responses). The numbers come from the agent when it reports them; otherwise they are estimated at about 4 characters per token.
 
 `POST /v1/responses` accepts a string or text-only message-array `input` (including system/developer instructions), optional string `instructions`, `stream`, and `store: false`. Responses are never persisted; `store: true`, `previous_response_id`, token limits, and `stream_options` are rejected. Streaming emits semantic Responses API events followed by `[DONE]`.
 

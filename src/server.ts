@@ -4,8 +4,9 @@ import { timingSafeEqual } from "node:crypto";
 import type { AcpLike, GenerationResult } from "./acp.js";
 import { AcpUnavailableError } from "./acp.js";
 import { MODEL_IDS, type ProxyConfig } from "./config.js";
-import { ApiError, errorEnvelope, extractJson, formatInstructions, normalizeChat, normalizeResponses, type ModelCheck, type OutputFormat } from "./api.js";
+import { ApiError, errorEnvelope, extractJson, formatInstructions, normalizeChat, normalizeResponses, serializePrompt, type ModelCheck, type OutputFormat } from "./api.js";
 import { beginSse, endSse, writeSse } from "./sse.js";
+import { chatUsage, responsesUsage } from "./usage.js";
 
 const startedAt = Date.now();
 
@@ -50,17 +51,7 @@ export function mapStopReason(stopReason: GenerationResult["stopReason"]): { cha
   }
 }
 
-function responsesUsage(result: GenerationResult): Record<string, number> | null {
-  if (!result.usage) return null;
-  return { input_tokens: result.usage.inputTokens, output_tokens: result.usage.outputTokens, total_tokens: result.usage.totalTokens };
-}
-
 function finalText(format: OutputFormat, result: GenerationResult): string { return format.type === "json" ? extractJson(result.text) : result.text; }
-
-function chatUsage(result: GenerationResult): Record<string, number> | undefined {
-  if (!result.usage) return undefined;
-  return { prompt_tokens: result.usage.inputTokens, completion_tokens: result.usage.outputTokens, total_tokens: result.usage.totalTokens };
-}
 
 async function handleChat(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike): Promise<void> {
   const parsed = normalizeChat(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling });
@@ -74,16 +65,21 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
   const options = { instructions: formatInstructions(parsed.format) };
   const asJson = parsed.format.type === "json";
+  const promptText = serializePrompt(parsed.textMessages, options.instructions);
+  const usageFor = (result: GenerationResult) => chatUsage({ ...result, text: finalText(parsed.format, result) }, promptText);
   if (parsed.stream) {
+    const includeUsage = (parsed.stream_options as { include_usage?: boolean } | null | undefined)?.include_usage === true;
+    const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) => writeSse(response, { id: chatId, object: "chat.completion.chunk", created, model: parsed.model, choices, ...(includeUsage ? { usage: null } : {}), ...extra });
     beginSse(response);
-    writeSse(response, { id: chatId, object: "chat.completion.chunk", created, model: parsed.model, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] });
+    chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }]);
     try {
-      const delta = (text: string) => writeSse(response, { id: chatId, object: "chat.completion.chunk", created, model: parsed.model, choices: [{ index: 0, delta: { content: text }, finish_reason: null }] });
+      const delta = (text: string) => chunk([{ index: 0, delta: { content: text }, finish_reason: null }]);
       const result = await bridge.generate(parsed.model, parsed.textMessages, asJson ? {} : { onText: delta }, abortController.signal, options);
       if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
       if (asJson) delta(finalText(parsed.format, result));
       const reason = mapStopReason(result.stopReason).chat;
-      writeSse(response, { id: chatId, object: "chat.completion.chunk", created, model: parsed.model, choices: [{ index: 0, delta: {}, finish_reason: reason }] });
+      chunk([{ index: 0, delta: {}, finish_reason: reason }]);
+      if (includeUsage) chunk([], { usage: usageFor(result) });
       endSse(response);
     } catch (error) {
       writeSse(response, errorEnvelope(error instanceof Error ? error : new Error(String(error))));
@@ -95,8 +91,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
     const result = await bridge.generate(parsed.model, parsed.textMessages, {}, abortController.signal, options);
     if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
     const reason = mapStopReason(result.stopReason).chat;
-    const usage = chatUsage(result);
-    json(response, 200, { id: chatId, object: "chat.completion", created, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: finalText(parsed.format, result) }, finish_reason: reason }], ...(usage ? { usage } : {}) });
+    json(response, 200, { id: chatId, object: "chat.completion", created, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: finalText(parsed.format, result) }, finish_reason: reason }], usage: usageFor(result) });
   } finally { clearTimeout(timer); }
 }
 
@@ -113,7 +108,8 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
   const options = { instructions: formatInstructions(parsed.format) };
   const asJson = parsed.format.type === "json";
-  const base = (result: GenerationResult, status: string) => ({ id: responseId, object: "response", created_at: created, status, model: parsed.model, output: [{ id: messageId, type: "message", status, role: "assistant", content: [{ type: "output_text", text: finalText(parsed.format, result), annotations: [] }] }], usage: responsesUsage(result), store: false });
+  const promptText = serializePrompt(parsed.textMessages, options.instructions);
+  const base = (result: GenerationResult, status: string) => ({ id: responseId, object: "response", created_at: created, status, model: parsed.model, output: [{ id: messageId, type: "message", status, role: "assistant", content: [{ type: "output_text", text: finalText(parsed.format, result), annotations: [] }] }], usage: responsesUsage({ ...result, text: finalText(parsed.format, result) }, promptText), store: false });
   if (parsed.stream) {
     let sequenceNumber = 0;
     const event = (type: string, payload: Record<string, unknown>) => writeSse(response, { type, sequence_number: sequenceNumber++, ...payload }, type);
