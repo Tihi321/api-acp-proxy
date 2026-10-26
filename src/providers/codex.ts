@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { ProxyConfig } from "../config.js";
 import { MODEL_IDS } from "../config.js";
@@ -46,6 +47,8 @@ export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArg
       if (options.isolatedHome !== false) { env.CODEX_HOME = isolatedHome = path.join(ctx.dataDir, "codex-home"); await fsp.mkdir(env.CODEX_HOME, { recursive: true }); } else isolatedHome = undefined;
       return { command, args, env };
     },
+    // Its image tool asks no permission (it cannot be gated); the file lands in <CODEX_HOME>/generated_images/<threadId>/.
+    imageGeneration: { imageFolder: (ctx) => path.join(options.isolatedHome !== false ? path.join(ctx.dataDir, "codex-home") : process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "generated_images"), pruneEmptyParent: true },
     loginRequired: (methods, env) => (options.authMethodId || "chat-gpt") === "chat-gpt" && methods.some((method) => method.id === "chat-gpt") && firstLogin(env) ? "Log in to Codex for the proxy: its own Codex home has no login yet." : undefined,
     defaultLoginMethod: options.authMethodId || "chat-gpt",
     chooseAuth(methods, env) {

@@ -1,12 +1,15 @@
 import os from "node:os";
 import path from "node:path";
-import type { Usage, StopReason } from "@agentclientprotocol/sdk";
+import type { RequestPermissionRequest, Usage, StopReason } from "@agentclientprotocol/sdk";
 import type { Message } from "./api.js";
 import { silentLogger, type Logger } from "./logger.js";
 
-export interface GenerationResult { text: string; stopReason: StopReason; usage: Usage | null; }
-/** `instructions` is extra prompt text kept out of the client-visible messages. */
-export interface GenerateOptions { instructions?: string; }
+/** An image the agent generated: base64 `data` as taken from the agent's update; Codex also reports the prompt it actually used. */
+export interface GeneratedImage { mimeType: string; data: string; revisedPrompt?: string; }
+/** `images` is set only when the request asked for generated images. */
+export interface GenerationResult { text: string; stopReason: StopReason; usage: Usage | null; images?: GeneratedImage[]; }
+/** `instructions` is extra prompt text kept out of the client-visible messages; `images` lets the agent generate images (its image permission is allowed for this request only). */
+export interface GenerateOptions { instructions?: string; images?: true; }
 export interface GenerationCallbacks { onText?: (text: string) => void; onUsage?: (usage: Usage) => void; }
 
 export class AcpUnavailableError extends Error {
@@ -106,6 +109,17 @@ export interface ProviderDescriptor {
   promptPreamble?: string;
   /** Translates a backend error into a proxy error (e.g. an ApiError 403). */
   mapError?(error: unknown, model: string): Error | undefined;
+  /** The agent can generate images. Absent: a request for images is a 400 `model_not_capable`. */
+  imageGeneration?: ImageGeneration;
+}
+
+export interface ImageGeneration {
+  /** True for the agent's permission request for its image tool (it is then answered with the `allow_once` option, only in a request that asked for images). Absent: the agent asks no permission. */
+  allow?(permission: RequestPermissionRequest): boolean;
+  /** The only folder the proxy deletes a generated file from (the agent's own copy; the image itself is taken from the update). */
+  imageFolder(ctx: RuntimeContext): string;
+  /** Also remove the then-empty folder the file was in (Codex: `<threadId>`). */
+  pruneEmptyParent?: boolean;
 }
 
 export interface Provider {
@@ -114,6 +128,8 @@ export interface Provider {
   readonly ownedBy: string;
   readonly exposeUnprefixed: boolean;
   readonly staticModels?: ModelInfo[];
+  /** The agent can generate images. */
+  readonly imageGeneration?: boolean;
   generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   listModels(options?: { force?: boolean }): Promise<ModelInfo[]>;
   status(): ProviderStatus;

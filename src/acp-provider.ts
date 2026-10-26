@@ -3,14 +3,17 @@ import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { client, methods, ndJsonStream, type ClientConnection, type ClientContext } from "@agentclientprotocol/sdk";
-import type { ContentBlock, SessionConfigOption, SessionUpdate, Usage } from "@agentclientprotocol/sdk";
+import type { ContentBlock, RequestPermissionRequest, SessionConfigOption, SessionUpdate, Usage } from "@agentclientprotocol/sdk";
 import { createHash } from "node:crypto";
 import { ApiError, buildPrompt, hasImages, messageText, type Message } from "./api.js";
+import { deleteGeneratedFile } from "./generated-images.js";
 import { killProcessTree } from "./process-tree.js";
 import { AcpUnavailableError, ProviderAuthRequiredError, ProviderNotInstalledError, ProviderTermsRequiredError } from "./provider.js";
-import type { AuthMethodInfo, GenerateOptions, GenerationCallbacks, GenerationResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext } from "./provider.js";
+import type { AuthMethodInfo, GeneratedImage, GenerateOptions, GenerationCallbacks, GenerationResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext } from "./provider.js";
 
 type SessionHandler = (update: SessionUpdate) => void;
+/** Decides for one session whether a permission request is allowed; everything not allowed is cancelled. */
+type PermissionRule = (request: RequestPermissionRequest) => boolean;
 interface PreparedSession { sessionId: string; cwd: string; modelOptionId?: string; readOnlyModeId?: string; }
 /** A message as kept for session reuse: its text and the SHA-256 of each image (never the base64 itself). */
 interface KeptMessage { role: Message["role"]; text: string; images: string[]; }
@@ -68,6 +71,8 @@ export class AcpProvider implements Provider {
   readonly ownedBy: string;
   readonly exposeUnprefixed: boolean;
   readonly staticModels?: ModelInfo[];
+  /** The agent can generate images (its descriptor says so). */
+  readonly imageGeneration: boolean;
   private child?: ChildProcessWithoutNullStreams;
   private connection?: ClientConnection;
   private agent?: ClientContext;
@@ -98,6 +103,8 @@ export class AcpProvider implements Provider {
   private readonly warm: PreparedSession[] = [];
   private readonly kept: KeptSession[] = [];
   private readonly handlers = new Map<string, SessionHandler>();
+  /** Per-session allow rules by session id: only a request that asked for something sets one (see generate()). */
+  private readonly permissionRules = new Map<string, PermissionRule>();
   private readonly listeners = new Set<(status: ProviderStatus) => void>();
   private readonly log;
 
@@ -107,6 +114,7 @@ export class AcpProvider implements Provider {
     this.ownedBy = descriptor.ownedBy;
     this.exposeUnprefixed = descriptor.exposeUnprefixed;
     this.staticModels = descriptor.staticModels?.map((id) => ({ id }));
+    this.imageGeneration = descriptor.imageGeneration !== undefined;
     this.log = ctx.logger.child(`${descriptor.id}-acp`);
   }
 
@@ -241,7 +249,7 @@ export class AcpProvider implements Provider {
     const stream = ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>);
     const agentRef: { current?: ClientContext } = {};
     const app = client({ name: "api-acp-proxy" });
-    app.onRequest(methods.client.session.requestPermission, async () => ({ outcome: { outcome: "cancelled" } }));
+    app.onRequest(methods.client.session.requestPermission, async ({ params }) => this.answerPermission(params));
     app.onNotification(methods.client.session.update, ({ params }) => { this.handlers.get(params.sessionId)?.(params.update); });
     app.onNotification("_auth/status_update", (params: unknown) => params as { authStatus?: { kind?: string; label?: string } }, ({ params }) => { if (this.agent === agentRef.current) this.onAuthStatus(params.authStatus); });
     const connection = app.connect(stream);
@@ -290,6 +298,14 @@ export class AcpProvider implements Provider {
       if (authStep) throw new ProviderAuthRequiredError(message, error);
       throw missing ? new ProviderNotInstalledError(message, error) : new AcpUnavailableError(message, error);
     }
+  }
+
+  /** Cancelled, unless the session's rule allows the request and it offers an `allow_once` option: the proxy never picks allow_always or any other option. */
+  private answerPermission(params: RequestPermissionRequest): { outcome: { outcome: "cancelled" } } | { outcome: { outcome: "selected"; optionId: string } } {
+    let allowed = false;
+    try { allowed = this.permissionRules.get(params.sessionId)?.(params) === true; } catch { /* a failing rule means cancelled */ }
+    const option = allowed ? params.options.find((candidate) => candidate.kind === "allow_once") : undefined;
+    return option ? { outcome: { outcome: "selected", optionId: option.optionId } } : { outcome: { outcome: "cancelled" } };
   }
 
   /** Handles the agent's _auth/status_update push: kind "none" means logged out, anything else carries the account label. */
@@ -494,11 +510,16 @@ export class AcpProvider implements Provider {
     };
     signal?.addEventListener("abort", abort, { once: true });
     let text = "";
+    const wantImages = options?.images === true;
+    const imageSupport = this.descriptor.imageGeneration;
+    const generated: GeneratedImage[] = [];
+    const reportedFiles = new Set<string>();
     try {
+      if (wantImages && !imageSupport) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot generate images.`, "model");
       agent = await this.start();
       if (aborted) return cancelled();
       if (hasImages(messages) && !this.imageInput) throw new ApiError(400, "unsupported_content", `${this.displayName} does not accept image input.`, "messages");
-      const hit = this.options.reuseSessions ? this.takeKept(agent, model, messages) : undefined;
+      const hit = this.options.reuseSessions && !wantImages ? this.takeKept(agent, model, messages) : undefined;
       if (hit) { reused = hit.entry; session = reused.session; fresh = hit.fresh; }
       else { session = this.warm.shift() ?? await this.createSession(agent); this.refillWarm(); }
       if (aborted) return cancelled();
@@ -507,8 +528,9 @@ export class AcpProvider implements Provider {
         if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
           text += update.content.text;
           callbacks.onText?.(update.content.text);
-        }
+        } else if (imageSupport && update.sessionUpdate === "tool_call_update" && update.status === "completed") this.takeImages(update, wantImages ? generated : undefined, reportedFiles);
       });
+      if (wantImages && imageSupport?.allow) this.permissionRules.set(sid, imageSupport.allow);
       if (!reused) {
         if (!session.modelOptionId) throw new AcpUnavailableError(`The ${this.displayName} ACP backend did not advertise a model configuration option.`);
         await this.authGuard(() => agent!.request(methods.agent.session.setConfigOption, { sessionId: sid, configId: session!.modelOptionId!, value: model }));
@@ -519,13 +541,13 @@ export class AcpProvider implements Provider {
       }
       if (aborted) return cancelled();
       promptSent = true;
-      const prompt: ContentBlock[] = buildPrompt(fresh, options?.instructions, this.descriptor.promptPreamble);
+      const prompt: ContentBlock[] = buildPrompt(fresh, options?.instructions, this.descriptor.promptPreamble, wantImages);
       const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt }));
       let usage = result.usage ?? null;
       let cumulative = reused?.usage;
       if (usage && this.descriptor.usageScope === "session") { cumulative = usage; usage = usageDelta(usage, reused?.usage); }
-      if (this.options.reuseSessions && result.stopReason === "end_turn" && !aborted) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
-      return { text, stopReason: result.stopReason, usage };
+      if (this.options.reuseSessions && !wantImages && result.stopReason === "end_turn" && !aborted) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
+      return { text, stopReason: result.stopReason, usage, ...(wantImages ? { images: generated } : {}) };
     } catch (error) {
       if (aborted && !promptSent) return cancelled();
       if (aborted) throw new AcpUnavailableError("The request was cancelled.", error);
@@ -535,10 +557,36 @@ export class AcpProvider implements Provider {
       throw new AcpUnavailableError(`The ${this.displayName} ACP backend failed to process the request.`, error);
     } finally {
       signal?.removeEventListener("abort", abort);
+      if (session) this.permissionRules.delete(session.sessionId);
+      if (imageSupport && reportedFiles.size) await this.deleteImageFiles(imageSupport, reportedFiles);
       if (session && agent) {
         if (keepWith && !aborted && this.agent === agent) this.keep(agent, session, model, keepWith.transcript, keepWith.usage);
         else await this.disposeSession(agent, session);
       }
+    }
+  }
+
+  /** Takes the image blocks (and the "Revised prompt:" text) of a completed tool call; `into` is undefined when the request did not ask for images, so they are dropped. Also notes the files the agent wrote, for deletion. Never logs the update body (it can hold megabytes of base64). */
+  private takeImages(update: Extract<SessionUpdate, { sessionUpdate: "tool_call_update" }>, into: GeneratedImage[] | undefined, files: Set<string>): void {
+    const blocks = update.content ?? [];
+    const inner = blocks.flatMap((block) => block.type === "content" ? [block.content] : []);
+    const revisedPrompt = inner.flatMap((content) => content.type === "text" ? [/^Revised prompt:\s*([\s\S]*)$/.exec(content.text)?.[1]?.trim()] : []).find(Boolean);
+    for (const content of inner) {
+      if (content.type !== "image") continue;
+      this.log.debug(`Image update: ${content.mimeType}, ${content.data.length} base64 characters.`);
+      if (content.uri) files.add(content.uri);
+      into?.push({ mimeType: content.mimeType, data: content.data, ...(revisedPrompt ? { revisedPrompt } : {}) });
+    }
+    const output = update.rawOutput as { imagePath?: unknown; savedPath?: unknown } | null | undefined;
+    for (const reported of [output?.imagePath, output?.savedPath]) if (typeof reported === "string" && reported) files.add(reported);
+  }
+
+  /** Deletes the files the agent wrote, only those inside its image folder. */
+  private async deleteImageFiles(support: NonNullable<ProviderDescriptor["imageGeneration"]>, files: Set<string>): Promise<void> {
+    const folder = support.imageFolder(this.ctx);
+    for (const file of files) {
+      const deleted = await deleteGeneratedFile(file, folder, { pruneEmptyParent: support.pruneEmptyParent });
+      this.log.debug(deleted ? "Deleted a generated image file." : "Left a reported image file alone (missing, or not inside the agent's image folder).");
     }
   }
 

@@ -190,6 +190,11 @@ export function antigravityDescriptor(ctxForHooks: RuntimeContext, options: Anti
     async afterStop(ctx) {
       if (purge) await purgeRecordedSessions({ dataDir: ctx.dataDir, geminiHome: home(), logger: log });
     },
+    // Its image tool asks permission ("Run generate_image?"); a request for images allows that one, nothing else. The tool writes the file under <GEMINI_HOME>/antigravity-acp/brain/<sessionId>/.
+    imageGeneration: {
+      allow: (permission) => permission.toolCall.title === "Run generate_image?" && permission.toolCall.kind === "other",
+      imageFolder: () => path.join(home(), "antigravity-acp", "brain"),
+    },
     mapError(error, model) {
       const text = [error instanceof Error ? error.message : String(error), JSON.stringify((error as { data?: unknown } | null)?.data ?? "")].join(" ");
       if (/requested entity was not found/i.test(text)) {

@@ -21,4 +21,6 @@ export interface AcpLike {
   close?(): Promise<void>;
   listModels?(): Promise<ModelEntry[]>;
   hasModel?(model: string): boolean;
+  /** Whether the model's provider can generate images (a bridge without this method is asked and answers 400 itself). */
+  canGenerateImages?(model: string): boolean;
 }
