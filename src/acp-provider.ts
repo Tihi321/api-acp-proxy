@@ -8,9 +8,10 @@ import { createHash } from "node:crypto";
 import { ApiError, buildPrompt, hasImages, messageText, type Message } from "./api.js";
 import { deleteGeneratedFile } from "./generated-images.js";
 import { killProcessTree } from "./process-tree.js";
+import type { McpServerSpec } from "./mcp-config.js";
 import { BRIDGE_SERVER_NAME, type BridgeSession, type HeldCall } from "./tool-bridge.js";
 import { AcpUnavailableError, ProviderAuthRequiredError, ProviderNotInstalledError, ProviderTermsRequiredError } from "./provider.js";
-import type { AuthMethodInfo, GeneratedImage, GenerateOptions, GenerationCallbacks, GenerationResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext, TrackedToolCall } from "./provider.js";
+import type { AuthMethodInfo, GeneratedImage, GenerateOptions, GenerationCallbacks, GenerationResult, McpAccess, McpCallResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext, TrackedToolCall } from "./provider.js";
 
 type SessionHandler = (update: SessionUpdate) => void;
 /** Decides for one session whether a permission request is allowed; everything not allowed is cancelled. */
@@ -32,6 +33,38 @@ function sameTranscript(kept: KeptMessage[], sent: KeptMessage[]): boolean {
     return content !== "" && other.images.length === 0 && entry.text.includes(content);
   });
 }
+type ToolCallUpdate = Extract<SessionUpdate, { sessionUpdate: "tool_call" | "tool_call_update" }>;
+/** Merges a `tool_call` / `tool_call_update` into the fields kept per tool call id (the map keeps the order the calls were first seen in). */
+function trackToolCall(tracked: Map<string, TrackedToolCall>, update: ToolCallUpdate): void {
+  const entry: TrackedToolCall = { ...tracked.get(update.toolCallId), toolCallId: update.toolCallId };
+  if (update.title != null) entry.title = update.title;
+  if (update.kind != null) entry.kind = update.kind;
+  if (update.status != null) entry.status = update.status;
+  if (update.rawInput !== undefined) entry.rawInput = update.rawInput;
+  if (update.rawOutput !== undefined) entry.rawOutput = update.rawOutput;
+  if (update.content != null && update.content.length) entry.content = update.content;
+  if (update._meta != null) entry._meta = update._meta;
+  tracked.set(update.toolCallId, entry);
+}
+
+/** The text of MCP content blocks: `{ type: "text", text }` or an ACP `{ type: "content", content: { type: "text", text } }`. */
+function blockText(blocks: unknown): string | undefined {
+  if (!Array.isArray(blocks)) return undefined;
+  const texts = blocks.flatMap((block: { type?: unknown; text?: unknown; content?: { type?: unknown; text?: unknown } } | null) => block?.type === "text" && typeof block.text === "string" ? [block.text] : block?.type === "content" && block.content?.type === "text" && typeof block.content.text === "string" ? [block.content.text] : []);
+  return texts.length ? texts.join("\n") : undefined;
+}
+
+/** What a finished MCP call returned, from the agent's `rawOutput` (a string, MCP content blocks, or Codex's `{ result: { content }, error: { message } }`) or its `content`. Antigravity's completed update holds only a placeholder such as "Call client echo tool", which is all there is to report. */
+function toolOutput(call: TrackedToolCall): { output: string | null; error: string | null } {
+  const raw = call.rawOutput;
+  const object = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as { error?: { message?: unknown } | null; result?: unknown } : undefined;
+  const errorText = typeof object?.error?.message === "string" ? object.error.message : undefined;
+  const result = object ? (typeof object.result === "string" ? object.result : blockText((object.result as { content?: unknown } | null | undefined)?.content)) : undefined;
+  const text = typeof raw === "string" ? raw : Array.isArray(raw) ? blockText(raw) : result ?? blockText(call.content) ?? (raw !== undefined && raw !== null && !object?.error ? JSON.stringify(raw) : undefined);
+  if (call.status === "failed") return { output: null, error: errorText ?? text ?? "The tool call failed." };
+  return { output: text ?? null, error: null };
+}
+
 /** A finished turn's session kept for the next request of the same conversation; `transcript` holds the client-visible messages plus each raw answer. A session that has the client's tools also keeps its bridge and the tools it was made for. */
 interface KeptSession { agent: ClientContext; session: PreparedSession; model: string; transcript: KeptMessage[]; usage?: Usage; timer: NodeJS.Timeout; bridge?: BridgeSession; toolsKey?: string; }
 /** The outcome of a prompt that ran on its own while its HTTP response was already over (a suspended turn). It never rejects. */
@@ -39,6 +72,8 @@ type PromptOutcome = { result?: PromptResponse; error?: unknown };
 /** A prompt in flight on a session that has the client's tools. `sink` is the request being served; its callbacks change when a later request resumes the turn. */
 interface ToolTurn {
   agent: ClientContext; session: PreparedSession; model: string; bridge: BridgeSession; toolsKey: string;
+  /** The request's remote MCP servers (their calls are reported as `mcpCalls`); `reported` holds the tool call ids already reported by an earlier response of the turn. */
+  mcp?: McpServerSpec[]; reported: Set<string>;
   sink: GenerationCallbacks;
   /** All the agent text of the prompt so far; `segment` is where the text of the current HTTP response starts. */
   text: string; segment: number;
@@ -115,6 +150,12 @@ export function flattenSelectOptions(option: SessionConfigOption): ModelInfo[] {
   return models;
 }
 
+/** A request's MCP server as the ACP `session/new` entry: http and sse carry the URL and headers, stdio a command (settings only). */
+function acpServer(spec: McpServerSpec): McpServer {
+  if (spec.transport === "stdio") return { name: spec.label, command: spec.command ?? "", args: spec.args, env: spec.env };
+  return { type: spec.transport, name: spec.label, url: spec.url ?? "", headers: spec.headers };
+}
+
 /** Long-lived ACP v1 connection to one agent process, with disposable sessions per generation and an optional warm pool. */
 export class AcpProvider implements Provider {
   readonly id: string;
@@ -126,6 +167,8 @@ export class AcpProvider implements Provider {
   readonly imageGeneration: boolean;
   /** The agent can be given the client's function tools: its descriptor knows its permission rule and the proxy has a tool bridge. */
   readonly toolCalling: boolean;
+  /** The agent can be given the request's remote MCP servers. */
+  readonly mcpSupport: boolean;
   private child?: ChildProcessWithoutNullStreams;
   private connection?: ClientConnection;
   private agent?: ClientContext;
@@ -138,6 +181,8 @@ export class AcpProvider implements Provider {
   private agentVersion?: string;
   /** `agentCapabilities.promptCapabilities.image` of the running agent (undefined until initialize). */
   private imageInput?: boolean;
+  /** `agentCapabilities.mcpCapabilities` of the running agent: which remote MCP transports it accepts in `session/new`. */
+  private mcpCaps?: { http: boolean; sse: boolean };
   private account?: string;
   /** The agent reported (via _auth/status_update) that nobody is signed in. */
   private loggedOut = false;
@@ -173,6 +218,7 @@ export class AcpProvider implements Provider {
     this.staticModels = descriptor.staticModels?.map((id) => ({ id }));
     this.imageGeneration = descriptor.imageGeneration !== undefined;
     this.toolCalling = descriptor.allowTool !== undefined && ctx.toolBridge !== undefined;
+    this.mcpSupport = descriptor.allowTool !== undefined && descriptor.mcpTarget !== undefined;
     this.log = ctx.logger.child(`${descriptor.id}-acp`);
   }
 
@@ -300,7 +346,7 @@ export class AcpProvider implements Provider {
     const spec = await descriptor.launch(this.ctx);
     const child = spawn(spec.command, spec.args, { stdio: ["pipe", "pipe", "pipe"], env: spec.env ?? process.env, cwd: spec.cwd, windowsHide: true, detached: process.platform !== "win32" });
     this.child = child;
-    this.loginUrl = undefined; this.openedUrl = undefined; this.agentVersion = undefined; this.authInflight = undefined; this.authBlock = undefined; this.stderrBuffer = ""; this.account = undefined; this.loggedOut = false; this.imageInput = undefined;
+    this.loginUrl = undefined; this.openedUrl = undefined; this.agentVersion = undefined; this.authInflight = undefined; this.authBlock = undefined; this.stderrBuffer = ""; this.account = undefined; this.loggedOut = false; this.imageInput = undefined; this.mcpCaps = undefined;
     const childFailure = new Promise<never>((_, reject) => child.once("error", reject));
     childFailure.catch(() => undefined);
     child.stderr.on("data", (chunk) => this.onStderr(chunk));
@@ -330,6 +376,8 @@ export class AcpProvider implements Provider {
       this.authMethods = (initialized.authMethods ?? []).map((method) => ({ id: method.id, name: method.name, ...(method.description ? { description: method.description } : {}), ...("type" in method && method.type ? { type: String(method.type) } : {}) }));
       if (!this.authMethods.length && descriptor.loginMethods) this.authMethods = descriptor.loginMethods;
       this.imageInput = initialized.agentCapabilities?.promptCapabilities?.image === true;
+      const mcpCaps = initialized.agentCapabilities?.mcpCapabilities;
+      this.mcpCaps = { http: mcpCaps?.http === true, sse: mcpCaps?.sse === true };
       const version = initialized.agentInfo?.version;
       if (version) { this.agentVersion = version; this.emitStatus(); }
       if (descriptor.authMode === "eager") {
@@ -454,12 +502,12 @@ export class AcpProvider implements Provider {
     }
   }
 
-  /** `bridge`: the session also gets the client's tools as the MCP server `client` (and the descriptor's `bridgeSessionMeta`). */
-  private async createSession(agent: ClientContext, bridge?: BridgeSession): Promise<PreparedSession> {
+  /** `bridge`: the session also gets the client's tools as the MCP server `client`; `mcp`: the request's remote MCP servers. The descriptor's `mcpSessionMeta` is merged into the session `_meta` for either. */
+  private async createSession(agent: ClientContext, bridge?: BridgeSession, mcp?: McpServerSpec[]): Promise<PreparedSession> {
     const cwd = await mkdtemp(path.join(this.options.workRoot, "request-"));
     try {
-      const meta = bridge ? mergeMeta(this.descriptor.sessionMeta, this.descriptor.bridgeSessionMeta) : this.descriptor.sessionMeta;
-      const mcpServers: McpServer[] = bridge ? [{ type: "http", name: BRIDGE_SERVER_NAME, url: bridge.url, headers: [] }] : [];
+      const meta = bridge || mcp?.length ? mergeMeta(this.descriptor.sessionMeta, this.descriptor.mcpSessionMeta?.([...(bridge ? [{ label: BRIDGE_SERVER_NAME }] : []), ...(mcp ?? []).map(({ label, allowedTools }) => ({ label, ...(allowedTools ? { tools: allowedTools } : {}) }))])) : this.descriptor.sessionMeta;
+      const mcpServers: McpServer[] = [...(bridge ? [{ type: "http" as const, name: BRIDGE_SERVER_NAME, url: bridge.url, headers: [] }] : []), ...(mcp ?? []).map(acpServer)];
       const session = await this.withAuth(agent, () => withTimeout(agent.request(methods.agent.session.new, { cwd, mcpServers, ...(meta ? { _meta: meta } : {}) }), this.descriptor.sessionTimeoutMs, `${this.displayName} session creation timed out.`));
       if (bridge) this.bridges.set(session.sessionId, bridge);
       if (this.state === "needs_login" && !this.loggedOut) this.setState("ready");
@@ -599,13 +647,19 @@ export class AcpProvider implements Provider {
     const imageSupport = this.descriptor.imageGeneration;
     const generated: GeneratedImage[] = [];
     const reportedFiles = new Set<string>();
+    // Remote MCP servers: a fresh session of their own (never warm, never kept); the agent calls them inside its turn.
+    const mcp = options?.mcpServers?.length ? options.mcpServers : undefined;
+    const mcpTracked = new Map<string, TrackedToolCall>();
     try {
       if (wantImages && !imageSupport) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot generate images.`, "model");
+      if (mcp && !this.mcpSupport) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot call MCP servers through this proxy.`, "model");
       agent = await this.start();
       if (aborted) return cancelled();
       if (hasImages(messages) && !this.imageInput) throw new ApiError(400, "unsupported_content", `${this.displayName} does not accept image input.`, "messages");
-      const hit = this.options.reuseSessions && !wantImages ? this.takeKept(agent, model, messages) : undefined;
+      if (mcp) this.assertMcpTransports(mcp);
+      const hit = this.options.reuseSessions && !wantImages && !mcp ? this.takeKept(agent, model, messages) : undefined;
       if (hit) { reused = hit.entry; session = reused.session; fresh = hit.fresh; }
+      else if (mcp) session = await this.createSession(agent, undefined, mcp);
       else { session = this.warm.shift() ?? await this.createSession(agent); this.refillWarm(); }
       if (aborted) return cancelled();
       const sid = session.sessionId;
@@ -613,19 +667,22 @@ export class AcpProvider implements Provider {
         if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
           text += update.content.text;
           callbacks.onText?.(update.content.text);
-        } else if (imageSupport && update.sessionUpdate === "tool_call_update" && update.status === "completed") this.takeImages(update, wantImages ? generated : undefined, reportedFiles);
+        } else if (mcp && (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")) trackToolCall(mcpTracked, update);
+        else if (imageSupport && update.sessionUpdate === "tool_call_update" && update.status === "completed") this.takeImages(update, wantImages ? generated : undefined, reportedFiles);
       });
       if (wantImages && imageSupport?.allow) this.permissionRules.set(sid, imageSupport.allow);
+      if (mcp) this.permissionRules.set(sid, this.mcpRule(this.mcpAccess(mcp, false), mcpTracked));
       if (!reused && !await this.configureSession(agent, session, model, () => aborted)) return cancelled();
       if (aborted) return cancelled();
       promptSent = true;
-      const prompt: ContentBlock[] = buildPrompt(fresh, options?.instructions, this.descriptor.promptPreamble, wantImages);
+      const prompt: ContentBlock[] = buildPrompt(fresh, options?.instructions, this.descriptor.promptPreamble, wantImages, mcp ? { client: false, mcp: mcp.map(({ label, allowedTools }) => ({ label, ...(allowedTools ? { tools: allowedTools } : {}) })) } : undefined);
       const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt }));
       let usage = result.usage ?? null;
       let cumulative = reused?.usage;
       if (usage && this.descriptor.usageScope === "session") { cumulative = usage; usage = usageDelta(usage, reused?.usage); }
-      if (this.options.reuseSessions && !wantImages && result.stopReason === "end_turn" && !aborted) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
-      return { text, stopReason: result.stopReason, usage, ...(wantImages ? { images: generated } : {}) };
+      if (this.options.reuseSessions && !wantImages && !mcp && result.stopReason === "end_turn" && !aborted) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
+      const mcpCalls = mcp ? this.collectMcpCalls(mcpTracked, mcp.map((server) => server.label), undefined, true) : [];
+      return { text, stopReason: result.stopReason, usage, ...(wantImages ? { images: generated } : {}), ...(mcpCalls.length ? { mcpCalls } : {}) };
     } catch (error) {
       if (aborted && !promptSent) return cancelled();
       if (aborted) throw new AcpUnavailableError("The request was cancelled.", error);
@@ -644,6 +701,42 @@ export class AcpProvider implements Provider {
     }
   }
 
+  // --- remote MCP servers ------------------------------------------------------------------------------------------------
+
+  /** A server over a transport the agent did not say it supports (`initialize` `mcpCapabilities`, for example Codex has no sse) is a 400. */
+  private assertMcpTransports(servers: McpServerSpec[]): void {
+    for (const server of servers) {
+      if ((server.transport === "http" || server.transport === "sse") && this.mcpCaps?.[server.transport] !== true) throw new ApiError(400, "unsupported_parameter", `${this.displayName} does not support MCP servers over ${server.transport === "sse" ? "SSE" : "HTTP"} (server '${server.label}').`, "tools");
+    }
+  }
+
+  /** What the session's tools may reach: the `client` bridge (all its tools) and each remote server with the tools the request allows. */
+  private mcpAccess(servers: McpServerSpec[] | undefined, bridge: boolean): McpAccess {
+    const filters = new Map((servers ?? []).map((server) => [server.label, server.allowedTools] as const));
+    return { labels: [...(bridge ? [BRIDGE_SERVER_NAME] : []), ...filters.keys()], allows: (server, tool) => server === BRIDGE_SERVER_NAME ? bridge : filters.has(server) && (filters.get(server) === undefined || filters.get(server)!.includes(tool)) };
+  }
+
+  /** The permission rule of a session that has MCP servers: the descriptor decides for each request from the call's tracked fields. */
+  private mcpRule(access: McpAccess, tracked: Map<string, TrackedToolCall>): PermissionRule {
+    return (request) => this.descriptor.allowTool?.(request, tracked.get(request.toolCall.toolCallId), access) === true;
+  }
+
+  /** The calls to the remote MCP servers in `tracked` that were not reported yet. Only finished calls, unless `final` (the turn is over: a call that never finished is `incomplete`). */
+  private collectMcpCalls(tracked: Map<string, TrackedToolCall>, labels: readonly string[], reported: Set<string> | undefined, final: boolean): McpCallResult[] {
+    const out: McpCallResult[] = [];
+    for (const call of tracked.values()) {
+      if (reported?.has(call.toolCallId)) continue;
+      const target = this.descriptor.mcpTarget?.(call, labels);
+      if (!target) continue;
+      const finished = call.status === "completed" || call.status === "failed";
+      if (!finished && !final) continue;
+      reported?.add(call.toolCallId);
+      const { output, error } = toolOutput(call);
+      out.push({ server: target.server, name: target.tool, arguments: JSON.stringify(target.arguments ?? {}), output: finished ? output : null, error: finished ? error : null, status: finished ? call.status as "completed" | "failed" : "incomplete" });
+    }
+    return out;
+  }
+
   // --- function calling through the MCP bridge -------------------------------------------------------------------------
 
   private suspendedCount(): number { return new Set(this.suspended.values()).size; }
@@ -656,21 +749,13 @@ export class AcpProvider implements Provider {
   }
 
   /** The state of a prompt that has the client's tools: its update handler (text goes to the current sink, tool calls are only tracked and never forwarded), its permission rule and the bridge's call hook. */
-  private newTurn(agent: ClientContext, session: PreparedSession, model: string, bridge: BridgeSession, toolsKey: string, sink: GenerationCallbacks, baseUsage: Usage | undefined): ToolTurn {
-    const turn: ToolTurn = { agent, session, model, bridge, toolsKey, sink, text: "", segment: 0, tracked: new Map(), pending: [], cancelled: false, baseUsage };
+  private newTurn(agent: ClientContext, session: PreparedSession, model: string, bridge: BridgeSession, toolsKey: string, sink: GenerationCallbacks, baseUsage: Usage | undefined, mcp?: McpServerSpec[]): ToolTurn {
+    const turn: ToolTurn = { agent, session, model, bridge, toolsKey, ...(mcp ? { mcp } : {}), reported: new Set(), sink, text: "", segment: 0, tracked: new Map(), pending: [], cancelled: false, baseUsage };
     this.handlers.set(session.sessionId, (update) => {
       if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") { turn.text += update.content.text; turn.sink.onText?.(update.content.text); }
-      else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
-        const tracked: TrackedToolCall = { ...turn.tracked.get(update.toolCallId), toolCallId: update.toolCallId };
-        if (update.title != null) tracked.title = update.title;
-        if (update.kind != null) tracked.kind = update.kind;
-        if (update.status != null) tracked.status = update.status;
-        if (update.rawInput !== undefined) tracked.rawInput = update.rawInput;
-        if (update._meta != null) tracked._meta = update._meta;
-        turn.tracked.set(update.toolCallId, tracked);
-      }
+      else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") trackToolCall(turn.tracked, update);
     });
-    this.permissionRules.set(session.sessionId, (request) => this.descriptor.allowTool?.(request, turn.tracked.get(request.toolCall.toolCallId)) === true);
+    this.permissionRules.set(session.sessionId, this.mcpRule(this.mcpAccess(mcp, true), turn.tracked));
     bridge.onCall = (call) => { turn.pending.push(call); turn.arm?.(); };
     return turn;
   }
@@ -754,7 +839,11 @@ export class AcpProvider implements Provider {
     const hub = this.ctx.toolBridge;
     if (!this.toolCalling || !hub) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot call tools through this proxy.`, "model");
     const tools = options.tools!;
-    const toolsKey = JSON.stringify(tools);
+    // Remote MCP servers next to the bridge: the same session, and the same tool set for reuse and resume only with the same servers.
+    const mcp = options.mcpServers?.length ? options.mcpServers : undefined;
+    if (mcp && !this.mcpSupport) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot call MCP servers through this proxy.`, "model");
+    const toolsKey = mcp ? JSON.stringify({ tools, mcp }) : JSON.stringify(tools);
+    const mcpLabels = (mcp ?? []).map((server) => server.label);
     let agent: ClientContext | undefined;
     let session: PreparedSession | undefined;
     let turn: ToolTurn | undefined;
@@ -769,6 +858,7 @@ export class AcpProvider implements Provider {
       agent = await this.start();
       if (aborted) return cancelled();
       if (hasImages(messages) && !this.imageInput) throw new ApiError(400, "unsupported_content", `${this.displayName} does not accept image input.`, "messages");
+      if (mcp) this.assertMcpTransports(mcp);
       const resumed = this.takeSuspended(agent, model, messages, toolsKey);
       if (resumed) {
         turn = resumed.entry.turn; session = turn.session; promptSent = true;
@@ -779,15 +869,15 @@ export class AcpProvider implements Provider {
         let fresh = messages;
         if (hit) {
           session = hit.entry.session; fresh = hit.fresh;
-          turn = this.newTurn(agent, session, model, hit.entry.bridge!, toolsKey, callbacks, hit.entry.usage);
+          turn = this.newTurn(agent, session, model, hit.entry.bridge!, toolsKey, callbacks, hit.entry.usage, mcp);
         } else {
           const bridge = hub.create(tools.map((tool) => ({ name: tool.name, ...(tool.description ? { description: tool.description } : {}), ...(tool.parameters ? { inputSchema: tool.parameters } : {}) })));
-          try { session = await this.createSession(agent, bridge); } catch (error) { bridge.dispose(); throw error; }
-          turn = this.newTurn(agent, session, model, bridge, toolsKey, callbacks, undefined);
+          try { session = await this.createSession(agent, bridge, mcp); } catch (error) { bridge.dispose(); throw error; }
+          turn = this.newTurn(agent, session, model, bridge, toolsKey, callbacks, undefined, mcp);
           if (!await this.configureSession(agent, session, model, () => aborted)) return cancelled();
         }
         if (aborted) return cancelled();
-        const prompt: ContentBlock[] = buildPrompt(fresh, options.instructions, undefined, false, { choice: options.toolChoice, parallel: options.parallelToolCalls });
+        const prompt: ContentBlock[] = buildPrompt(fresh, options.instructions, undefined, false, { choice: options.toolChoice, parallel: options.parallelToolCalls, ...(mcp ? { mcp: mcp.map(({ label, allowedTools }) => ({ label, ...(allowedTools ? { tools: allowedTools } : {}) })) } : {}) });
         promptSent = true;
         turn.finished = this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: session!.sessionId, prompt })).then((result): PromptOutcome => ({ result }), (error): PromptOutcome => ({ error }));
       }
@@ -804,7 +894,8 @@ export class AcpProvider implements Provider {
           }
           const result = this.suspend(turn, calls, messages.map(toKept));
           suspended = true;
-          return result;
+          const mcpCalls = this.collectMcpCalls(turn.tracked, mcpLabels, turn.reported, false);
+          return mcpCalls.length ? { ...result, mcpCalls } : result;
         }
         for (const call of turn.pending.splice(0)) call.settle("The turn ended before this tool call was answered.", true);
         if (outcome.done.error !== undefined) throw outcome.done.error;
@@ -814,7 +905,8 @@ export class AcpProvider implements Provider {
         if (usage && this.descriptor.usageScope === "session") { cumulative = usage; usage = usageDelta(usage, turn.baseUsage); }
         const text = turn.text.slice(turn.segment);
         if (this.options.reuseSessions && result.stopReason === "end_turn" && !aborted && !turn.cancelled) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
-        return { text, stopReason: result.stopReason, usage };
+        const mcpCalls = this.collectMcpCalls(turn.tracked, mcpLabels, turn.reported, true);
+        return { text, stopReason: result.stopReason, usage, ...(mcpCalls.length ? { mcpCalls } : {}) };
       }
     } catch (error) {
       if (aborted && !promptSent) return cancelled();

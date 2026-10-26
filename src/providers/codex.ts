@@ -8,7 +8,6 @@ import { MODEL_IDS } from "../config.js";
 import { AcpProvider } from "../acp-provider.js";
 import type { ProviderRegistration } from "../controller.js";
 import type { ProviderDescriptor } from "../provider.js";
-import { BRIDGE_SERVER_NAME } from "../tool-bridge.js";
 
 export interface CodexOptions { authMethodId?: string; /** Run Codex with its own `<dataDir>/codex-home` instead of the user's ~/.codex (default true). */ isolatedHome?: boolean; }
 
@@ -16,6 +15,12 @@ export interface CodexOptions { authMethodId?: string; /** Run Codex with its ow
 export function hardenedCodexConfig(configured: Record<string, unknown> = {}): Record<string, unknown> {
   const section = (key: string) => configured[key] && typeof configured[key] === "object" && !Array.isArray(configured[key]) ? configured[key] as Record<string, unknown> : {};
   return { ...configured, approval_policy: "never", sandbox_mode: "read-only", skills: { ...section("skills"), include_instructions: false }, features: { ...section("features"), multi_agent: false, shell_tool: false, unified_exec: false, plugins: false } };
+}
+
+/** A Codex MCP tool call: `rawInput` is `{ server, tool, arguments }`. */
+function codexTarget(call: { rawInput?: unknown }, labels: readonly string[]): { server: string; tool: string; arguments?: unknown } | undefined {
+  const input = call.rawInput as { server?: unknown; tool?: unknown; arguments?: unknown } | null | undefined;
+  return typeof input?.server === "string" && typeof input.tool === "string" && labels.includes(input.server) ? { server: input.server, tool: input.tool, arguments: input.arguments } : undefined;
 }
 
 /** The Codex ACP agent: read-only, never prompts for approval, no shell tool, own CODEX_HOME by default, models are the fixed MODEL_IDS contract. */
@@ -50,8 +55,12 @@ export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArg
     },
     // Its image tool asks no permission (it cannot be gated); the file lands in <CODEX_HOME>/generated_images/<threadId>/.
     imageGeneration: { imageFolder: (ctx) => path.join(options.isolatedHome !== false ? path.join(ctx.dataDir, "codex-home") : process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "generated_images"), pruneEmptyParent: true },
-    // Its MCP approval request names only the tool call id and `is_mcp_tool_approval`: the server comes from the `tool_call` with that id. Codex gives up on a call after 300 s (fixed).
-    allowTool: (permission, tracked) => (permission._meta as { is_mcp_tool_approval?: unknown } | null | undefined)?.is_mcp_tool_approval === true && (tracked?.rawInput as { server?: unknown } | null | undefined)?.server === BRIDGE_SERVER_NAME,
+    // Its MCP approval request names only the tool call id and `is_mcp_tool_approval`: the server and tool come from the `tool_call` with that id (`rawInput.server` / `.tool`). Codex gives up on a call after 300 s (fixed).
+    allowTool: (permission, tracked, mcp) => {
+      const target = tracked ? codexTarget(tracked, mcp.labels) : undefined;
+      return (permission._meta as { is_mcp_tool_approval?: unknown } | null | undefined)?.is_mcp_tool_approval === true && target !== undefined && mcp.allows(target.server, target.tool);
+    },
+    mcpTarget: codexTarget,
     toolCallLimitMs: 300_000,
     loginRequired: (methods, env) => (options.authMethodId || "chat-gpt") === "chat-gpt" && methods.some((method) => method.id === "chat-gpt") && firstLogin(env) ? "Log in to Codex for the proxy: its own Codex home has no login yet." : undefined,
     defaultLoginMethod: options.authMethodId || "chat-gpt",

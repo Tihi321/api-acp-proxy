@@ -37,6 +37,61 @@ describe("SettingsStore", () => {
     }
   });
 
+  describe("mcpServers", () => {
+    const backups = (file: string) => readdirSync(path.dirname(file)).filter((name) => name.includes(".bak-"));
+    const write = (content: string) => { const file = fresh(); mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, content); return file; };
+    const warnings = (log: ReturnType<typeof createLogger>) => log.recent().filter((entry) => entry.level === "warn").map((entry) => entry.message);
+
+    it("keeps the valid entries and the other settings, drops invalid entries with a warning, and leaves the file as written", async () => {
+      const content = JSON.stringify({
+        version: 1,
+        server: { port: 9001, apiKey: "k" },
+        providers: { claude: { enabled: true, termsAcknowledgedAt: "2026-01-01T00:00:00Z" } },
+        mcpServers: {
+          docs: { url: "https://docs.example/mcp", headers: { A: "1" } },
+          client: { url: "https://x.example/mcp" },
+          "bad label": { url: "https://x.example/mcp" },
+          mixed: { url: "https://x.example/mcp", command: "node" },
+          lines: { url: "https://x.example/mcp", headers: { "X-A": "a\nb" } },
+          files: { command: "node", args: ["f.js"] },
+        },
+      }, null, 1);
+      const file = write(content);
+      const log = createLogger({ console: false });
+      const settings = await new SettingsStore(file, undefined, log).load();
+      expect(settings.server.port).toBe(9001);
+      expect(settings.server.apiKey).toBe("k");
+      expect(settings.providers.claude).toEqual({ enabled: true, termsAcknowledgedAt: "2026-01-01T00:00:00Z" });
+      expect(settings.mcpServers).toEqual({ docs: { url: "https://docs.example/mcp", headers: { A: "1" } }, files: { command: "node", args: ["f.js"] } });
+      const warned = warnings(log);
+      expect(warned).toHaveLength(4);
+      for (const label of ["client", "bad label", "mixed", "lines"]) expect(warned.some((message) => message.includes(`'${label}'`))).toBe(true);
+      expect(backups(file)).toEqual([]);
+      expect(readFileSync(file, "utf8")).toBe(content);
+    });
+
+    it("ignores a non-object mcpServers and still loads the other settings", async () => {
+      for (const value of ["docs", ["a"], 5, null]) {
+        const file = write(JSON.stringify({ server: { port: 9002 }, mcpServers: value }));
+        const log = createLogger({ console: false });
+        const settings = await new SettingsStore(file, undefined, log).load();
+        expect(settings.server.port).toBe(9002);
+        expect(settings.mcpServers).toEqual({});
+        expect(warnings(log)).toHaveLength(value === null ? 0 : 1);
+        expect(backups(file)).toEqual([]);
+      }
+    });
+
+    it("still moves a genuinely corrupt file aside", async () => {
+      const content = "{ \"mcpServers\": { oops";
+      const file = write(content);
+      const settings = await new SettingsStore(file, undefined, logger).load();
+      expect(settings).toEqual(defaultSettings());
+      expect(backups(file)).toHaveLength(1);
+      expect(readFileSync(path.join(path.dirname(file), backups(file)[0]!), "utf8")).toBe(content);
+    });
+  });
+
   it("saves atomically, even concurrently, leaving no temp files", async () => {
     const file = fresh();
     const store = new SettingsStore(file);

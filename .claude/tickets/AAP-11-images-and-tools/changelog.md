@@ -1,5 +1,85 @@
 # Changelog
 
+## 2026-10-26: AAP-16 Phase 5 (remote MCP servers)
+
+Responses requests can give the agent MCP servers: an http(s) URL in the request, or a label configured in `settings.json` (http, sse or stdio). The agent calls them itself during its turn, and each call comes back as an `mcp_call` output item. This works with Claude, Codex and Antigravity.
+
+**Repository** `api-acp-proxy`, branch `AAP-16_remote-mcp` (stacked on `AAP-15_function-calling` at `5cf41fc`, PR #11 open):
+- `src/mcp-config.ts` (new): the label, header-name, plain-value and tool-filter rules, and the `McpServerSpec` type.
+- `src/mcp-servers.ts` (new): `resolveMcpServers` matches a request's `mcp` tools with the configured servers. It returns 400 for any of these:
+  - a stdio server in a request;
+  - a `server_url` or `headers` on a configured label;
+  - an unknown label;
+  - the reserved label `client`, or a duplicate label;
+  - an approval other than `"never"` / `{ never: { tool_names } }`, including a missing one;
+  - an empty tool filter.
+- `src/api.ts`: Responses `tools: [{ type: "mcp", ... }]` parsing, and a tool prompt generalized to several servers. Echoed `mcp_call` / `mcp_list_tools` input items are accepted and left out of the prompt. Chat Completions still rejects `mcp` tools. `mcp` together with `image_generation` gets a 400.
+- `src/settings.ts`, `src/config.ts`:
+  - **Setting:** top-level `mcpServers` (`{ url, headers?, transport? }` or `{ command, args?, env? }`).
+  - **Validation:** `sanitizeMcpServers` checks entries one at a time at load. An invalid entry, or a non-object `mcpServers`, is dropped with a warning; the rest of the settings loads, and the file is neither moved aside nor rewritten.
+  - **Next save:** a save from the settings window writes only the valid entries.
+  - **Corrupt files:** a file that isn't valid JSON still gets the `.bak` behaviour.
+- `src/provider.ts`: `GenerateOptions.mcpServers`, `McpCallResult`, `McpAccess`, `Provider.mcpSupport`, and tracked `rawOutput` / `content`. `allowTool(permission, tracked, mcp)` takes a third argument. `mcpTarget` is new, and `mcpSessionMeta` replaces `bridgeSessionMeta`.
+- `src/acp-provider.ts`:
+  - **Capabilities:** reads `mcpCapabilities` at initialize; an `sse` server sent to an agent without sse (Codex) gets 400 `unsupported_parameter`.
+  - **Sessions:** a session with `mcp` servers is always fresh. It names the bridge first (when there are function tools), then the remote servers (`http` / `sse` / stdio `{ name, command, args, env }`).
+  - **Permissions:** a rule per session covering the session's labels and tool filter, answered only with `allow_once`.
+  - **Calls:** remote calls are collected from the `tool_call` updates. An `mcp`-only session is never kept for reuse.
+- `src/providers/claude.ts`:
+  - **Session settings:** `mcpSessionMeta` gives `allowedTools` entries `mcp__<label>__<tool>`, or `mcp__<label>__*` when there is no filter.
+  - **Fallback rule:** `_meta.claudeCode.mcpServer.name`, plus a check on the tool name.
+- `src/providers/antigravity.ts`: allows a tool only when `_meta.mcp.server` and `_meta.mcp.tool` are allowed and `is_mcp_tool_call` is set.
+- `src/providers/codex.ts`: allows `is_mcp_tool_approval` only when the tracked `tool_call` has an allowed `rawInput.server` and `rawInput.tool`.
+- `src/server.ts`: resolves `mcp` tools before a stream starts. Adds `mcp_call` items (`{ id, type, server_label, name, arguments, output, error, status }`) before the message. Streaming emits `output_item.added`, `response.mcp_call.in_progress`, `.completed` / `.failed` and `output_item.done`, and then the message text in one delta.
+- `src/router.ts`, `src/acp.ts`: `canUseMcp`.
+- Tests:
+  - `tests/mcp-servers.test.ts` (new, 31 tests).
+  - `tests/settings.test.ts`: 3 new tests for the per-entry `mcpServers` validation.
+  - `tests/tool-calling.test.ts`: one override renamed.
+  - `tests/fixtures/fake-acp.mjs`: `FAKE_ACP_REMOTE=claude|agy|codex`, `_CALLS`, `_FAIL`, `FAKE_ACP_MCP_CAPS`; the fake now advertises `mcpCapabilities`.
+- `README.md`: an "MCP servers" block covering:
+  - the request shape and accepted approvals, and the settings JSON with an example;
+  - that stdio comes only from settings, and how invalid entries are handled;
+  - the output items, per-agent timeouts and Antigravity's placeholder output;
+  - the security notes: a request can point the agent at any URL, configured stdio servers run commands on this machine, and settings headers and env are stored in plain text.
+- `ROADMAP.md`: one line.
+- `.claude/tickets/AAP-11-images-and-tools/plan.md`: Phase 5 status, decisions, deviations and the live table.
+
+**Live check** (headless CLI, temporary settings, `mcp-echo.mjs` over http, a stdio echo server configured as `stdioecho`, `PROXY_CODEX_ISOLATED_HOME=0`):
+
+| Server | Model | Time | `mcp_call` |
+|---|---|---|---|
+| http | `claude/haiku` | 2.9 s | real result, completed |
+| http | `codex/gpt-5.6-luna` | 11.7 s | real result, completed |
+| http | `antigravity/gemini-3.8-flash-low` | 14.6 s | placeholder "Docs echo tool call", completed |
+| stdio (`stdioecho`) | `claude/haiku` | 3.2 s | real result |
+| http, streamed | `claude/haiku` | 2.5 s | the expected event sequence |
+
+**Deviations**
+- No `mcp_list_tools` item: no ACP update lists a server's tools, so it is omitted (documented).
+- Tool filter:
+  - When both `allowed_tools` and `never.tool_names` are given, their intersection applies; an empty result gets 400 `invalid_request`.
+  - `never` without `tool_names` means all tools.
+  - `tool_choice: "none"` with function tools drops the `mcp` tools too.
+  - `tool_choice` and `parallel_tool_calls` stay rejected for an `mcp`-only request.
+- With function tools, the tool-set key includes the servers, so only a request with the same tools and servers resumes or reuses the session.
+- An `sse` server sent to Codex on a streamed request gets its 400 as an SSE error event, because the check needs the started agent.
+- Review fix: per-entry `mcpServers` validation, so a typo in that section no longer resets the whole settings file.
+- No settings-window editor for `mcpServers`: JSON only, as decided.
+
+**Verification**
+- `npm run typecheck`: clean.
+- `npx vitest run`: 291 passed, 1 skipped (19 files).
+- `npm run build`: succeeded.
+- I ran all three on the final tree after the review fix.
+- Not run live: stdio servers with Codex and Antigravity (only Claude), and an `sse` server against Claude or Antigravity.
+
+**Follow-ups**
+- Optional: a settings-window editor for `mcpServers`, and encrypted storage for header and env values.
+- Still pending: the Codex isolated-home live check after the user's first Codex login (AAP-12).
+
+**Status:** committed on `AAP-16_remote-mcp` (cut on `AAP-15_function-calling`, which is merged in PR #11), pushed, with a PR against `master`.
+
 ## 2026-10-26: AAP-15 Phase 4 (function calling through an MCP bridge)
 
 OpenAI function calling now works with Claude, Codex and Antigravity, for Chat Completions and Responses, streaming too. The client's tools reach each agent through an MCP endpoint that the proxy hosts for that session. A tool call suspends the agent's turn; the client's next request with the results resumes it.
@@ -80,7 +160,7 @@ All five answers were correct. The 90 s hold ran past Claude's 60 s JSON limit; 
 - Optional: validate tool arguments against the declared schema before returning a tool call.
 - Still pending: the Codex isolated-home live check after the user's first Codex login (AAP-12).
 
-**Status:** committed on `AAP-15_function-calling` (cut on `AAP-14_image-generation`, which is merged in PR #10), pushed, with a PR against `master`.
+**Status:** committed as `5cf41fc` on `AAP-15_function-calling`, merged to `master` in PR #11.
 
 ## 2026-10-26: AAP-14 Phase 3 (image generation)
 

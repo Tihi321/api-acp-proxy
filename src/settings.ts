@@ -4,8 +4,36 @@ import path from "node:path";
 import { z } from "zod";
 import type { ProxyConfig } from "./config.js";
 import { silentLogger, type Logger } from "./logger.js";
+import { HEADER_NAME, MCP_LABEL, plainValue } from "./mcp-config.js";
+import { BRIDGE_SERVER_NAME } from "./tool-bridge.js";
 
 const positive = (fallback: number) => z.number().int().positive().default(fallback);
+
+const mcpLabel = z.string().regex(MCP_LABEL, "An MCP server label is 1 to 64 letters, digits, '_' or '-'.").refine((label) => label !== BRIDGE_SERVER_NAME, `The MCP server label '${BRIDGE_SERVER_NAME}' is reserved for the proxy's own tool bridge.`);
+const mcpHttpUrl = z.string().url().refine((value) => /^https?:\/\//i.test(value), "An MCP server url must be http or https.");
+const mcpHeaders = z.record(z.string().regex(HEADER_NAME, "Not a valid header name."), z.string().refine(plainValue, "A header value cannot contain line breaks."));
+/** A remote server (`url`, http unless `transport` says sse) or a local command (stdio). Stdio servers can only be configured here, never by a request. */
+const mcpServerSchema = z.union([
+  z.object({ url: mcpHttpUrl, headers: mcpHeaders.optional(), transport: z.enum(["http", "sse"]).optional() }).strict(),
+  z.object({ command: z.string().min(1), args: z.array(z.string()).optional(), env: z.record(z.string().min(1), z.string()).optional() }).strict(),
+]);
+export type McpServerSetting = z.infer<typeof mcpServerSchema>;
+const mcpEntryIssue = (error: z.ZodError): string => { const issue = error.issues[0]; return issue ? `${issue.path.length ? `${issue.path.join(".")}: ` : ""}${issue.message}` : "invalid entry"; };
+
+/** The valid entries of a hand-written `mcpServers` value. An invalid entry (or a value that is not an object) is dropped with a warning naming the label and the first issue; it never invalidates the rest of the settings. */
+export function sanitizeMcpServers(raw: unknown, logger: Logger = silentLogger): Settings["mcpServers"] {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== "object" || Array.isArray(raw)) { logger.warn("Ignoring 'mcpServers' in the settings file: it must be an object of label to server."); return {}; }
+  const kept: Settings["mcpServers"] = {};
+  for (const [label, entry] of Object.entries(raw)) {
+    const checkedLabel = mcpLabel.safeParse(label);
+    if (!checkedLabel.success) { logger.warn(`Ignoring the MCP server '${label}' in the settings file: ${mcpEntryIssue(checkedLabel.error)}`); continue; }
+    const checked = mcpServerSchema.safeParse(entry);
+    if (checked.success) kept[label] = checked.data;
+    else logger.warn(`Ignoring the MCP server '${label}' in the settings file: ${mcpEntryIssue(checked.error)}`);
+  }
+  return kept;
+}
 
 export const settingsSchema = z.object({
   version: z.literal(1).default(1),
@@ -56,6 +84,8 @@ export const settingsSchema = z.object({
       termsAcknowledgedAt: z.string().optional(),
     }).default({}),
   }).default({}),
+  /** MCP servers a Responses request may name by `server_label` (JSON only, no settings-window editor). Headers and env are stored as written. */
+  mcpServers: z.record(mcpLabel, mcpServerSchema).default({}),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;
@@ -120,7 +150,11 @@ export class SettingsStore {
       return settings;
     }
     try {
-      const parsed = settingsSchema.parse(JSON.parse(raw.replace(/^﻿/, "")));
+      const json: unknown = JSON.parse(raw.replace(/^﻿/, ""));
+      // `mcpServers` is hand-edited: its entries are checked one by one below, so a typo there does not reset the file.
+      const loose = isPlain(json) ? json : undefined;
+      const parsed = settingsSchema.parse(loose ? { ...loose, mcpServers: undefined } : json);
+      if (loose) parsed.mcpServers = sanitizeMcpServers(loose.mcpServers, this.logger);
       return mapSecrets(parsed, (value) => {
         if (!value.startsWith(SECRET_PREFIX)) return value;
         try { return this.codec ? this.codec.decode(value.slice(SECRET_PREFIX.length)) : undefined; } catch { this.logger.warn("A stored secret could not be decrypted and was dropped."); return undefined; }
@@ -214,6 +248,7 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
     ignoreSampling: server.ignoreSampling,
     reuseSessions: server.reuseSessions,
     toolResultTimeoutMs: server.toolResultTimeoutMs,
+    mcpServers: effective.mcpServers,
     workRoot: server.workRoot || path.join(os.tmpdir(), "codex-subscription-proxy"),
     acpCommand: providers.codex.acpCommand || undefined,
     acpArgs: providers.codex.acpArgs,

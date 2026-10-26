@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { MODEL_IDS } from "./config.js";
 import { ImageError, loadImage } from "./images.js";
+import { HEADER_NAME, MCP_LABEL, plainValue, TOOL_FILTER_NAME } from "./mcp-config.js";
+import { BRIDGE_SERVER_NAME } from "./tool-bridge.js";
 
 // Content parts are checked one by one in `convertContent`, so an unknown part type answers `unsupported_content` instead of a schema error.
 const messageContentSchema = z.union([z.string(), z.array(z.object({ type: z.string() }).passthrough()).min(1)]);
@@ -69,9 +71,12 @@ const responseMessageSchema = z.object({
 const responseFunctionCallSchema = z.object({ type: z.literal("function_call"), call_id: z.string().min(1), name: z.string().min(1), arguments: z.string(), id: z.string().optional(), status: z.string().optional() }).strict();
 const responseFunctionOutputSchema = z.object({ type: z.literal("function_call_output"), call_id: z.string().min(1), output: z.union([z.string(), z.array(z.object({ type: z.string() }).passthrough())]), id: z.string().optional(), status: z.string().optional() }).strict();
 
+// A client may send our own `mcp_call` / `mcp_list_tools` output items back as input; they are history the agent already lived through, so they are accepted and left out.
+const responseSkippedSchema = z.object({ type: z.enum(["mcp_call", "mcp_list_tools"]) }).passthrough();
+
 export const responsesRequestSchema = z.object({
   model: z.string(),
-  input: z.union([z.string(), z.array(z.union([responseMessageSchema, responseFunctionCallSchema, responseFunctionOutputSchema])).min(1)]),
+  input: z.union([z.string(), z.array(z.union([responseMessageSchema, responseFunctionCallSchema, responseFunctionOutputSchema, responseSkippedSchema])).min(1)]),
   instructions: z.string().optional(),
   stream: z.boolean().optional().default(false),
   store: z.boolean().optional().default(false),
@@ -85,6 +90,8 @@ export type ResponsesRequest = z.infer<typeof responsesRequestSchema>;
 export type Role = "system" | "developer" | "user" | "assistant";
 /** A tool call of an assistant message: `id` is the proxy's `call_<random>`, `arguments` the JSON text. */
 export type ToolCall = { id: string; name: string; arguments: string };
+/** A Responses `mcp` tool: `url` is its `server_url` (absent: the label names a server of the settings); `allowedTools` is `allowed_tools` and `neverTools` the `never.tool_names` of `require_approval` (absent: all tools). */
+export interface McpToolRequest { label: string; url?: string; headers?: Record<string, string>; allowedTools?: string[]; neverTools?: string[] }
 /** A function tool of the client's request. */
 export interface ToolDef { name: string; description?: string; parameters?: unknown }
 /** `tool_choice`: `none` leaves the tools out altogether; `required` and a named function are only an instruction to the agent. */
@@ -139,7 +146,7 @@ function rejectUnsupported(obj: Record<string, unknown>, fields: readonly string
 }
 
 /** `generateImages`: the request asked the agent for images (chat `modalities` with "image", Responses `image_generation` tool). */
-type NormalizedRequest = { model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; generateImages: boolean; /** The function tools to hand the agent (absent without tools or with `tool_choice: "none"`). */ functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean };
+type NormalizedRequest = { model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; generateImages: boolean; /** The function tools to hand the agent (absent without tools or with `tool_choice: "none"`). */ functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** The Responses `mcp` tools (matched with the settings by `resolveMcpServers`). */ mcpTools?: McpToolRequest[] };
 
 function unsupportedContent(message: string, param: string): ApiError { return new ApiError(400, "unsupported_content", message, param); }
 
@@ -172,22 +179,78 @@ function chatModalities(value: unknown): boolean {
   return value.includes("image");
 }
 
-/** Responses `tools`: `image_generation` tools or function tools (not both in one request); anything else, or an empty list, is a 400. `partial_images` is a 400. */
-function responsesTools(data: Record<string, unknown>): { image: boolean; functions: ToolDef[] } {
+/** Responses `tools`: `image_generation` tools, or function tools and `mcp` tools (the image tool cannot be combined with the others); anything else, or an empty list, is a 400. `partial_images` is a 400. */
+function responsesTools(data: Record<string, unknown>): { image: boolean; functions: ToolDef[]; mcp: McpToolRequest[] } {
   const tools = data.tools;
-  if (tools === undefined || tools === null) return { image: false, functions: [] };
+  if (tools === undefined || tools === null) return { image: false, functions: [], mcp: [] };
   if (!Array.isArray(tools) || !tools.length) throw toolsError("Parameter 'tools' is not supported by this proxy.");
   let image = false;
   const functions: ToolDef[] = [];
+  const mcp: McpToolRequest[] = [];
   for (const tool of tools) {
-    if (tool && typeof tool === "object" && (tool as { type?: unknown }).type === "image_generation") {
+    const type = tool && typeof tool === "object" ? (tool as { type?: unknown }).type : undefined;
+    if (type === "image_generation") {
       if ((tool as { partial_images?: unknown }).partial_images != null && (tool as { partial_images?: unknown }).partial_images !== 0) throw toolsError("Partial images are not supported; the image is returned whole.");
       image = true;
-    } else functions.push(parseFunctionTool(tool, "responses"));
+    } else if (type === "mcp") mcp.push(parseMcpTool(tool as Record<string, unknown>));
+    else functions.push(parseFunctionTool(tool, "responses"));
   }
   if (image && functions.length) throw toolsError("Function tools cannot be combined with the image_generation tool in one request.");
+  if (image && mcp.length) throw toolsError("MCP tools cannot be combined with the image_generation tool in one request.");
   if (new Set(functions.map((tool) => tool.name)).size !== functions.length) throw toolsError("Tool names must be unique.", "invalid_request");
-  return { image, functions };
+  if (new Set(mcp.map((tool) => tool.label)).size !== mcp.length) throw toolsError("MCP server labels must be unique within a request.", "invalid_request");
+  return { image, functions, mcp };
+}
+
+const APPROVAL_HELP = "The approval flow for MCP tools is not supported by this proxy: send require_approval: \"never\" (or { never: { tool_names: [...] } }) on every mcp tool.";
+/** `require_approval`: only "never" and `{ never: { tool_names? } }` are accepted (the OpenAI default is "always", so a missing value is a 400 too). Returns the tools that need no approval (undefined: all). */
+function parseApproval(value: unknown): string[] | undefined {
+  if (value === "never") return undefined;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const { never, always } = value as { never?: unknown; always?: unknown };
+    if (never && typeof never === "object" && !Array.isArray(never) && (always === undefined || always === null)) {
+      const names = (never as { tool_names?: unknown }).tool_names;
+      return names === undefined || names === null ? undefined : toolNames(names, "require_approval.never.tool_names");
+    }
+  }
+  throw toolsError(APPROVAL_HELP);
+}
+
+function toolNames(value: unknown, what: string): string[] {
+  if (!Array.isArray(value) || !value.length || value.some((name) => typeof name !== "string" || !TOOL_FILTER_NAME.test(name))) throw toolsError(`${what} must be a non-empty array of tool names (no spaces, '*' or parentheses).`, "invalid_request");
+  return [...new Set(value as string[])];
+}
+
+/** One `mcp` tool of a Responses request. Stdio servers, connectors and `authorization` are 400s; `server_description` is accepted and ignored. */
+function parseMcpTool(raw: Record<string, unknown>): McpToolRequest {
+  const label = raw.server_label;
+  if (typeof label !== "string" || !MCP_LABEL.test(label)) throw toolsError("An mcp tool needs a server_label of 1 to 64 letters, digits, '_' or '-'.", "invalid_request");
+  if (label === BRIDGE_SERVER_NAME) throw toolsError(`The server_label '${BRIDGE_SERVER_NAME}' is reserved for the proxy's own tool bridge.`, "invalid_request");
+  for (const field of ["command", "args", "env"]) if (raw[field] !== undefined) throw toolsError("Stdio MCP servers can only be configured in the proxy's settings (mcpServers), never in a request.");
+  if (raw.connector_id != null) throw toolsError("MCP connectors (connector_id) are not supported; send a server_url.");
+  if (raw.authorization != null) throw toolsError("The mcp tool 'authorization' field is not supported; send the credential in headers.");
+  let url: string | undefined;
+  if (raw.server_url !== undefined && raw.server_url !== null) {
+    if (typeof raw.server_url !== "string") throw toolsError("server_url must be a string.", "invalid_request");
+    let parsed: URL;
+    try { parsed = new URL(raw.server_url); } catch { throw toolsError("server_url is not a valid URL.", "invalid_request"); }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw toolsError("server_url must be an http or https URL.");
+    url = raw.server_url;
+  }
+  let headers: Record<string, string> | undefined;
+  if (raw.headers !== undefined && raw.headers !== null) {
+    const entries = raw.headers && typeof raw.headers === "object" && !Array.isArray(raw.headers) ? Object.entries(raw.headers) : undefined;
+    if (!entries || entries.some(([name, value]) => !HEADER_NAME.test(name) || typeof value !== "string" || !plainValue(value))) throw toolsError("headers must be an object of header names to string values without line breaks.", "invalid_request");
+    headers = Object.fromEntries(entries as Array<[string, string]>);
+  }
+  let allowedTools: string[] | undefined;
+  const allowed = raw.allowed_tools;
+  if (allowed !== undefined && allowed !== null) {
+    const names = Array.isArray(allowed) ? allowed : allowed && typeof allowed === "object" ? (allowed as { tool_names?: unknown }).tool_names : undefined;
+    if (names !== undefined && names !== null) allowedTools = toolNames(names, "allowed_tools");
+  }
+  const neverTools = parseApproval(raw.require_approval);
+  return { label, ...(url ? { url } : {}), ...(headers ? { headers } : {}), ...(allowedTools ? { allowedTools } : {}), ...(neverTools ? { neverTools } : {}) };
 }
 /** A `tool_choice` that agrees with the image tool being the only tool. */
 function imageToolChoice(choice: unknown): boolean { return choice === "auto" || choice === "required" || (typeof choice === "object" && choice !== null && (choice as { type?: unknown }).type === "image_generation"); }
@@ -198,7 +261,7 @@ function toolsError(message: string, code = "unsupported_parameter", param = "to
 /** One function tool: chat nests it under `function`, Responses puts the fields next to `type`. */
 function parseFunctionTool(raw: unknown, api: "chat" | "responses"): ToolDef {
   const type = raw && typeof raw === "object" ? (raw as { type?: unknown }).type : undefined;
-  if (type !== "function") throw toolsError(api === "chat" ? "Only tools of type 'function' are supported." : "Only tools of type 'function' (and 'image_generation') are supported.");
+  if (type !== "function") throw toolsError(api === "chat" ? "Only tools of type 'function' are supported." : "Only tools of type 'function', 'mcp' and 'image_generation' are supported.");
   const spec = (api === "chat" ? (raw as { function?: unknown }).function : raw) as Record<string, unknown> | undefined;
   if (!spec || typeof spec !== "object" || typeof spec.name !== "string") throw toolsError("A function tool needs a name.", "invalid_request");
   if (!TOOL_NAME.test(spec.name)) throw toolsError(`The tool name '${spec.name}' must be 1 to 64 letters, digits, '_' or '-'.`, "invalid_request");
@@ -273,8 +336,9 @@ export async function normalizeChat(raw: unknown, isKnownModel?: ModelCheck, opt
 }
 
 /** Responses input items: messages, and `function_call` / `function_call_output` items. A `function_call` joins the assistant message right before it (its text, in the same response), else it is an assistant message of its own. */
-async function convertResponsesInput(input: Array<z.infer<typeof responseMessageSchema> | z.infer<typeof responseFunctionCallSchema> | z.infer<typeof responseFunctionOutputSchema>>, options: NormalizeOptions): Promise<Message[]> {
-  const items = await Promise.all(input.map(async (item): Promise<{ message: Message } | { call: ToolCall }> => {
+async function convertResponsesInput(input: Array<z.infer<typeof responseMessageSchema> | z.infer<typeof responseFunctionCallSchema> | z.infer<typeof responseFunctionOutputSchema> | z.infer<typeof responseSkippedSchema>>, options: NormalizeOptions): Promise<Message[]> {
+  const kept = input.filter((item): item is Exclude<typeof item, z.infer<typeof responseSkippedSchema>> => !("type" in item && (item.type === "mcp_call" || item.type === "mcp_list_tools")));
+  const items = await Promise.all(kept.map(async (item): Promise<{ message: Message } | { call: ToolCall }> => {
     if ("role" in item) return { message: { role: item.role, parts: await convertContent(item.content, item.role, "responses", "input", options) } };
     if (item.type === "function_call") return { call: { id: item.call_id, name: item.name, arguments: item.arguments } };
     return { message: { role: "tool", toolCallId: item.call_id, parts: await convertContent(item.output, "tool", "responses", "input", options) } };
@@ -292,10 +356,11 @@ async function convertResponsesInput(input: Array<z.infer<typeof responseMessage
 export async function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Promise<Omit<ResponsesRequest, "model"> & NormalizedRequest> {
   const parsed = responsesRequestSchema.safeParse(withoutFields(raw, ignorableResponseFields, options.ignoreSampling));
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.", issueParam(parsed.error.issues[0]));
-  const { image: generateImages, functions } = responsesTools(parsed.data);
+  const { image: generateImages, functions, mcp } = responsesTools(parsed.data);
   rejectUnsupported(parsed.data, unsupportedResponseFields);
   if (generateImages) { if (parsed.data.tool_choice != null && !imageToolChoice(parsed.data.tool_choice)) rejectUnsupported(parsed.data, ["tool_choice"]); rejectUnsupported(parsed.data, ["parallel_tool_calls"]); }
   else if (!functions.length) rejectUnsupported(parsed.data, ["tool_choice", "parallel_tool_calls"]);
+  // `tool_choice: "none"` leaves every tool out, the MCP tools too.
   const toolSpec = functions.length ? toolFields(functions, parsed.data.tool_choice, parsed.data.parallel_tool_calls, "responses") : {};
   if (parsed.data.store === true) throw new ApiError(400, "unsupported_parameter", "Stored responses are not supported.", "store");
   if (parsed.data.previous_response_id !== undefined) throw new ApiError(400, "unsupported_parameter", "Persistent conversations are not supported.", "previous_response_id");
@@ -305,7 +370,7 @@ export async function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck
   if (typeof parsed.data.input === "string") conversation.push(textMessage("user", parsed.data.input));
   else conversation.push(...await convertResponsesInput(parsed.data.input, options));
   const tf = parsed.data.text?.format;
-  return { ...parsed.data, model: parsed.data.model, conversation, format: !tf || tf.type === "text" ? textFormat : jsonFormat(tf), generateImages, ...toolSpec, ...(parsed.data.max_output_tokens !== undefined ? { maxOutputTokens: parsed.data.max_output_tokens } : {}) };
+  return { ...parsed.data, model: parsed.data.model, conversation, format: !tf || tf.type === "text" ? textFormat : jsonFormat(tf), generateImages, ...toolSpec, ...(mcp.length && !(functions.length && !toolSpec.functionTools) ? { mcpTools: mcp } : {}), ...(parsed.data.max_output_tokens !== undefined ? { maxOutputTokens: parsed.data.max_output_tokens } : {}) };
 }
 
 const imageRequestSchema = z.object({
@@ -365,12 +430,15 @@ export function formatInstructions(format: OutputFormat): string | undefined {
   return `${base} It must conform to this JSON Schema${format.name ? ` (${format.name})` : ""}${format.description ? `: ${format.description}` : ""}\n${JSON.stringify(format.schema)}`;
 }
 
-/** What a request with function tools tells the agent about them (see `buildPrompt`). */
-export interface ToolPrompt { choice?: ToolChoice; parallel?: boolean }
+/** What a request with tools tells the agent about them (see `buildPrompt`). `client`: the session has the client's function tools as the MCP server `client` (default true); `mcp`: its remote MCP servers, with the tools the agent may call (all when absent). */
+export interface ToolPrompt { choice?: ToolChoice; parallel?: boolean; client?: boolean; mcp?: Array<{ label: string; tools?: string[] }> }
 
-/** The preamble of a prompt whose session has the client's tools: use only the `client` MCP server, nothing else. `tool_choice` and `parallel_tool_calls` are instructions only. */
+/** The preamble of a prompt whose session has MCP servers (the `client` bridge and/or the request's remote servers): use only those servers' tools, nothing else. `tool_choice` and `parallel_tool_calls` are instructions only. */
 function toolsPreamble(tools: ToolPrompt): string {
-  const lines = ["This is an API request with tools. When a tool is needed, call it from the MCP server named \"client\" and use only those tools. Never run commands, access files, use the web or call any other tool. Respond with the answer only."];
+  const labels = [...(tools.client === false ? [] : [BRIDGE_SERVER_NAME]), ...(tools.mcp ?? []).map((server) => server.label)];
+  const named = labels.map((label) => `"${label}"`).join(", ");
+  const lines = [`This is an API request with tools. When a tool is needed, call it from the MCP server${labels.length === 1 ? "" : "s"} named ${named} and use only those tools. Never run commands, access files, use the web or call any other tool. Respond with the answer only.`];
+  for (const server of tools.mcp ?? []) if (server.tools) lines.push(`From the MCP server "${server.label}" use only these tools: ${server.tools.join(", ")}.`);
   if (tools.choice === "required") lines.push("You must call one of the client tools before you answer.");
   else if (typeof tools.choice === "object") lines.push(`You must call the client tool "${tools.choice.name}" before you answer.`);
   if (tools.parallel === false) lines.push("Call one tool at a time.");

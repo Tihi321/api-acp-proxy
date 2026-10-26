@@ -7,7 +7,6 @@ import path from "node:path";
 import { AcpProvider } from "../acp-provider.js";
 import type { ProviderRegistration } from "../controller.js";
 import { AcpUnavailableError } from "../provider.js";
-import { BRIDGE_SERVER_NAME } from "../tool-bridge.js";
 import type { AuthMethodInfo, ProviderDescriptor, RuntimeContext } from "../provider.js";
 
 /** `settings.providers.claude`. */
@@ -98,9 +97,21 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
       return { command: ctx.nodeRuntime.command, args: [...ctx.nodeRuntime.argsPrefix, adapterEntry(ctx)], env: claudeEnv(ctx, settings, env) };
     },
     onSessionDisposed: (cwd) => removeProjectLeftovers(settings, env, cwd),
-    // With `allowedTools` Claude asks no permission for the client's tools; the rule below is the fallback. No call limit (see claudeEnv).
-    bridgeSessionMeta: { claudeCode: { options: { allowedTools: [`mcp__${BRIDGE_SERVER_NAME}__*`] } } },
-    allowTool: (permission) => (permission.toolCall._meta as { claudeCode?: { mcpServer?: { name?: unknown } } } | null | undefined)?.claudeCode?.mcpServer?.name === BRIDGE_SERVER_NAME,
+    // With `allowedTools` Claude asks no permission for the MCP tools of the session (the client bridge, the request's remote servers); the rule below is the fallback. No call limit (see claudeEnv).
+    mcpSessionMeta: (servers) => ({ claudeCode: { options: { allowedTools: servers.flatMap(({ label, tools }) => tools ? tools.map((tool) => `mcp__${label}__${tool}`) : [`mcp__${label}__*`]) } } }),
+    // The permission names the server (`mcpServer.name`) and the tool (`toolName`, `mcp__<server>__<tool>`).
+    allowTool: (permission, _tracked, mcp) => {
+      const meta = (permission.toolCall._meta as { claudeCode?: { toolName?: unknown; mcpServer?: { name?: unknown } } } | null | undefined)?.claudeCode;
+      const server = meta?.mcpServer?.name;
+      const name = typeof meta?.toolName === "string" ? meta.toolName : permission.toolCall.title;
+      return typeof server === "string" && mcp.labels.includes(server) && typeof name === "string" && name.startsWith(`mcp__${server}__`) && mcp.allows(server, name.slice(`mcp__${server}__`.length));
+    },
+    // The call's name is `mcp__<server>__<tool>` (`_meta.claudeCode.toolName`); its arguments are the `rawInput`.
+    mcpTarget: (call, labels) => {
+      const name = (call._meta as { claudeCode?: { toolName?: unknown } } | null | undefined)?.claudeCode?.toolName ?? call.title;
+      const server = typeof name === "string" ? [...labels].sort((a, b) => b.length - a.length).find((label) => name.startsWith(`mcp__${label}__`)) : undefined;
+      return server && typeof name === "string" ? { server, tool: name.slice(`mcp__${server}__`.length), arguments: call.rawInput } : undefined;
+    },
     mapError(error) {
       const text = [error instanceof Error ? error.message : String(error), JSON.stringify((error as { data?: unknown } | null)?.data ?? "")].join(" ");
       if (/Failed to refresh OAuth token/i.test(text) && /another Claude Code process is refreshing/i.test(text)) return new AcpUnavailableError("Claude is refreshing its login in another process. Retry in a few seconds.", error, "provider_busy", BUSY_RETRY_SECONDS);
