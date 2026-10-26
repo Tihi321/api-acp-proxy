@@ -43,7 +43,7 @@ describe("normalization", () => {
     const body = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "x" }], temperature: 0.7, stream_options: { include_usage: true } };
     const chat = await normalizeChat(body, undefined, { ignoreSampling: true });
     expect(chat).not.toHaveProperty("temperature");
-    await expect(normalizeChat({ ...body, tools: [{ type: "function" }] }, undefined, { ignoreSampling: true })).rejects.toThrow(/tools/);
+    await expect(normalizeChat({ ...body, functions: [{ name: "f" }] }, undefined, { ignoreSampling: true })).rejects.toThrow(/functions/);
     expect((await normalizeChat({ ...body, response_format: { type: "json_object" } }, undefined, { ignoreSampling: true })).format).toEqual({ type: "json" });
     expect((await normalizeResponses({ model: "gpt-5.6-luna", input: "x", temperature: 1 }, undefined, { ignoreSampling: true })).conversation).toHaveLength(1);
     await expect(normalizeChat(body)).rejects.toThrow(/temperature/);
@@ -69,14 +69,14 @@ describe("JSON output", () => {
     await expect(normalizeChat({ ...chatBody, response_format: { type: "xml" } })).rejects.toThrow();
     await expect(normalizeChat({ ...chatBody, response_format: { type: "json_schema" } })).rejects.toThrow();
     await expect(normalizeResponses({ model: "gpt-5.6-sol", input: "x", text: { verbosity: "low" } })).rejects.toThrow();
-    await expect(normalizeChat({ ...chatBody, tools: [{ type: "function" }] })).rejects.toThrow(/tools/);
+    await expect(normalizeChat({ ...chatBody, functions: [{ name: "f" }] })).rejects.toThrow(/functions/);
   });
   it("returns 400 with the offending param", async () => {
     const chat = await call("POST", "/v1/chat/completions", { ...chatBody, response_format: { type: "xml" } });
     expect(chat.status).toBe(400); expect(JSON.parse(chat.text).error).toMatchObject({ code: "invalid_request", param: "response_format" });
     const responses = await call("POST", "/v1/responses", { model: "gpt-5.6-sol", input: "x", text: { verbosity: "low" } });
     expect(responses.status).toBe(400); expect(JSON.parse(responses.text).error).toMatchObject({ code: "invalid_request", param: "text" });
-    expect((await call("POST", "/v1/chat/completions", { ...chatBody, tools: [{ type: "function" }] })).status).toBe(400);
+    expect((await call("POST", "/v1/chat/completions", { ...chatBody, functions: [{ name: "f" }] })).status).toBe(400);
   });
   it("extracts JSON from fences and prose", () => {
     expect(extractJson('```json\n{"a":1}\n```')).toBe('{"a":1}');

@@ -1,15 +1,16 @@
 import os from "node:os";
 import path from "node:path";
 import type { RequestPermissionRequest, Usage, StopReason } from "@agentclientprotocol/sdk";
-import type { Message } from "./api.js";
+import type { Message, ToolCall, ToolChoice, ToolDef } from "./api.js";
 import { silentLogger, type Logger } from "./logger.js";
+import type { ToolBridgeHub } from "./tool-bridge.js";
 
 /** An image the agent generated: base64 `data` as taken from the agent's update; Codex also reports the prompt it actually used. */
 export interface GeneratedImage { mimeType: string; data: string; revisedPrompt?: string; }
-/** `images` is set only when the request asked for generated images. */
-export interface GenerationResult { text: string; stopReason: StopReason; usage: Usage | null; images?: GeneratedImage[]; }
-/** `instructions` is extra prompt text kept out of the client-visible messages; `images` lets the agent generate images (its image permission is allowed for this request only). */
-export interface GenerateOptions { instructions?: string; images?: true; }
+/** `images` is set only when the request asked for generated images. `stopReason` is `"tool_calls"` when the turn is suspended on `toolCalls` (the agent waits for the client's results). */
+export interface GenerationResult { text: string; stopReason: StopReason | "tool_calls"; usage: Usage | null; images?: GeneratedImage[]; toolCalls?: ToolCall[]; }
+/** `instructions` is extra prompt text kept out of the client-visible messages; `images` lets the agent generate images (its image permission is allowed for this request only). `tools` gives the agent the client's function tools through the MCP bridge (`toolChoice` and `parallelToolCalls` as the request said). */
+export interface GenerateOptions { instructions?: string; images?: true; tools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; }
 export interface GenerationCallbacks { onText?: (text: string) => void; onUsage?: (usage: Usage) => void; }
 
 export class AcpUnavailableError extends Error {
@@ -44,6 +45,8 @@ export interface RuntimeContext {
   fetch?: typeof fetch;
   /** Opens a URL in the user's browser (used for interactive logins). Undefined when headless. */
   openUrl?: (url: string) => void | Promise<void>;
+  /** The MCP endpoint of the proxy that gives an agent the client's function tools. Without it a request with tools is a 400. */
+  toolBridge?: ToolBridgeHub;
 }
 export function defaultRuntimeContext(overrides: Partial<RuntimeContext> = {}): RuntimeContext {
   return { logger: silentLogger, dataDir: path.join(os.tmpdir(), "api-acp-proxy"), nodeRuntime: { command: process.execPath, argsPrefix: [], env: {} }, resolveUnpacked: (file) => file, ...overrides };
@@ -111,7 +114,16 @@ export interface ProviderDescriptor {
   mapError?(error: unknown, model: string): Error | undefined;
   /** The agent can generate images. Absent: a request for images is a 400 `model_not_capable`. */
   imageGeneration?: ImageGeneration;
+  /** True for the agent's permission request for a tool of the proxy's `client` MCP server (then answered with `allow_once`, only in a request that has tools). `tracked` holds the `tool_call` fields seen so far for the request's `toolCallId`. Absent: the agent cannot be given tools (400 `model_not_capable`). */
+  allowTool?(permission: RequestPermissionRequest, tracked: TrackedToolCall | undefined): boolean;
+  /** Merged into the session `_meta` of a session that has the `client` MCP server (Claude: `allowedTools`, so it asks no permission). */
+  bridgeSessionMeta?: Record<string, unknown>;
+  /** How long the agent keeps one MCP `tools/call` open before it gives up (undefined: no limit). The proxy answers or drops a suspended call 30 s before that. */
+  toolCallLimitMs?: number;
 }
+
+/** The fields of an ACP `tool_call` / `tool_call_update` the proxy keeps per tool call id (Codex's permission request names only the id). */
+export interface TrackedToolCall { toolCallId: string; title?: string; kind?: string; status?: string; rawInput?: unknown; _meta?: Record<string, unknown> | null; }
 
 export interface ImageGeneration {
   /** True for the agent's permission request for its image tool (it is then answered with the `allow_once` option, only in a request that asked for images). Absent: the agent asks no permission. */
@@ -130,6 +142,8 @@ export interface Provider {
   readonly staticModels?: ModelInfo[];
   /** The agent can generate images. */
   readonly imageGeneration?: boolean;
+  /** The agent can be given the client's function tools. */
+  readonly toolCalling?: boolean;
   generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   listModels(options?: { force?: boolean }): Promise<ModelInfo[]>;
   status(): ProviderStatus;

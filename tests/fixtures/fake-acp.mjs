@@ -31,6 +31,14 @@ import path from "node:path";
 //   FAKE_ACP_IMAGE_GEN_OUTSIDE=<file>        write the image to <file> and report that path (outside the agent's image folder; the folder itself is still created)
 //   FAKE_ACP_IMAGE_GEN_BYTES=<n>     pad the image to n bytes (a 2300000-byte codex image makes a ~6 MB update line)
 //   FAKE_ACP_IMAGE_GEN_NONE=1        no tool call at all: the agent only answers "I cannot generate that image."
+//   FAKE_ACP_MCP=claude|agy|codex    every prompt uses the MCP server of session/new (the tool bridge) like that agent: its handshake (claude/agy: server/discover -> -32601, initialize 2025-11-25,
+//                                    GET -> 405, tools/list; codex: initialize 2025-06-18), its tool_call updates and permission request shape (claude sends none when the session _meta has allowedTools),
+//                                    then tools/call (answered as SSE, read to the end; all calls of a round at once for claude, one after another for agy and codex; agy re-initializes before its first call),
+//                                    and finally answers "got: <result texts joined by ' | '>". Each step is logged as {method: "mcp", params: {phase, ...}} into FAKE_ACP_LOG.
+//   FAKE_ACP_MCP_CALLS=<json>        rounds of calls: [[{"name":"get_weather","arguments":{"city":"Paris"}}, ...], ...] (default: one round with get_weather, and add too for claude)
+//   FAKE_ACP_MCP_TEXT=<text>         text sent before the first call of a prompt (default "Let me check. ", empty for none)
+//   FAKE_ACP_MCP_ONCE=1              only the first prompt of a session calls tools; later prompts answer "again"
+//   FAKE_ACP_MCP_STRAY=1             before the real calls send permission requests that must not be allowed (another MCP server; codex: an unknown id and a tracked call of another server)
 //   FAKE_ACP_LOG=<file>              append every request as a JSON line {method, params}; permission answers as {method: "permission_response", params: <the response result>}
 const env = process.env;
 const pending = new Map();
@@ -47,6 +55,7 @@ const finish = (id, reason = "end_turn", sessionId) => {
   send({ jsonrpc: "2.0", id, result: { stopReason: reason, usage: { inputTokens: 2 * n, outputTokens: n, totalTokens: 3 * n } } });
 };
 const imageCounts = new Map();
+const mcpSessions = new Map();
 const waiters = new Map();
 const TINY_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 const TINY_JPEG = Buffer.from("/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=", "base64");
@@ -65,6 +74,99 @@ const sayDone = (sessionId, id, text) => {
   pending.delete(sessionId);
   update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
   finish(id, "end_turn", sessionId);
+};
+const logMcp = (params) => { if (env.FAKE_ACP_LOG) appendFileSync(env.FAKE_ACP_LOG, JSON.stringify({ method: "mcp", params }) + "\n"); };
+let rpcCounter = 0;
+let mcpCallCounter = 0;
+const mcpPost = async (url, body, headers = {}) => {
+  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers }, body: JSON.stringify(body) });
+  const raw = await response.text();
+  const data = raw.split("\n").filter((line) => line.startsWith("data: ")).map((line) => line.slice(6)).join("\n");
+  let parsed; try { parsed = JSON.parse(data || raw); } catch { parsed = undefined; }
+  return { status: response.status, body: parsed, keepalives: (raw.match(/: keepalive/g) || []).length, contentType: response.headers.get("content-type") ?? "" };
+};
+const rpc = (url, method, params, headers) => mcpPost(url, { jsonrpc: "2.0", id: ++rpcCounter, method, params }, headers);
+const handshake = async (kind, url) => {
+  if (kind !== "codex") {
+    const discover = await rpc(url, "server/discover", { protocolVersion: "2026-07-28" }, { "mcp-method": "server/discover" });
+    logMcp({ phase: "server/discover", status: discover.status, code: discover.body?.error?.code });
+  }
+  const init = await rpc(url, "initialize", { protocolVersion: kind === "codex" ? "2025-06-18" : "2025-11-25", capabilities: {}, clientInfo: { name: "fake-" + kind, version: "1" } });
+  logMcp({ phase: "initialize", status: init.status, protocolVersion: init.body?.result?.protocolVersion });
+  const initialized = await mcpPost(url, { jsonrpc: "2.0", method: "notifications/initialized" });
+  logMcp({ phase: "notifications/initialized", status: initialized.status });
+  if (kind !== "codex") { const get = await fetch(url, { method: "GET", headers: { accept: "text/event-stream" } }); await get.text(); logMcp({ phase: "GET", status: get.status }); }
+  const list = await rpc(url, "tools/list", {});
+  logMcp({ phase: "tools/list", status: list.status, tools: (list.body?.result?.tools ?? []).map((tool) => ({ name: tool.name, readOnlyHint: tool.annotations?.readOnlyHint === true })) });
+};
+const askPermission = (sessionId, params, options) => new Promise((resolve) => {
+  const requestId = 9500 + Math.floor(Math.random() * 1000000);
+  waiters.set(requestId, resolve);
+  send({ jsonrpc: "2.0", id: requestId, method: "session/request_permission", params: { sessionId, ...params, options } });
+});
+const claudeOptions = [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }, { optionId: "allow-with-updates", name: "Always allow", kind: "allow_always" }, { optionId: "reject", name: "Reject", kind: "reject_once" }];
+const agyOptions = [{ optionId: "allow_always", name: "Allow Always", kind: "allow_always" }, { optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }];
+const codexOptions = [{ optionId: "allow_once", name: "Allow", kind: "allow_once" }, { optionId: "allow_session", name: "Allow for session", kind: "allow_always" }, { optionId: "allow_always", name: "Always", kind: "allow_always" }, { optionId: "cancel", name: "Cancel", kind: "reject_once" }];
+const wasAllowed = (result) => result?.outcome?.outcome === "selected" && ["allow-once", "allow", "allow_once"].includes(result.outcome.optionId);
+/** Permission requests that are not for the bridge's tools; each is logged with the proxy's answer. */
+const strayPermissions = async (kind, sessionId) => {
+  const shapes = kind === "claude" ? [{ toolCall: { toolCallId: "stray-1", title: "mcp__other__thing", kind: "other", status: "pending", _meta: { claudeCode: { toolName: "mcp__other__thing", mcpServer: { name: "other", source: "dynamic" } } } }, options: claudeOptions }]
+    : kind === "agy" ? [{ toolCall: { toolCallId: "stray-1", title: "other_thing", kind: "other", status: "pending", _meta: { mcp: { tool: "thing", server: "other" }, is_mcp_tool_call: true } }, options: agyOptions }]
+    : [{ toolCall: { toolCallId: "stray-unknown", kind: "execute", status: "pending" }, _meta: { is_mcp_tool_approval: true }, options: codexOptions }, { toolCall: { toolCallId: "stray-other", kind: "execute", status: "pending" }, _meta: { is_mcp_tool_approval: true }, options: codexOptions, track: { toolCallId: "stray-other", kind: "execute", title: "mcp.other.thing", rawInput: { server: "other", tool: "thing" }, _meta: { is_mcp_tool_call: true } } }];
+  for (const shape of shapes) {
+    if (shape.track) update(sessionId, { sessionUpdate: "tool_call", status: "in_progress", ...shape.track });
+    const result = await askPermission(sessionId, { toolCall: shape.toolCall, ...(shape._meta ? { _meta: shape._meta } : {}) }, shape.options);
+    logMcp({ phase: "stray", toolCallId: shape.toolCall.toolCallId, allowed: wasAllowed(result) });
+  }
+};
+const runMcp = async (sessionId, promptId) => {
+  const kind = env.FAKE_ACP_MCP;
+  const state = mcpSessions.get(sessionId);
+  const alive = () => pending.get(sessionId) === promptId;
+  state.prompts++;
+  if (!state.url) { sayDone(sessionId, promptId, "no mcp server"); return; }
+  if (env.FAKE_ACP_MCP_ONCE === "1" && state.prompts > 1) { sayDone(sessionId, promptId, "again"); return; }
+  const before = env.FAKE_ACP_MCP_TEXT ?? "Let me check. ";
+  if (before) update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: before } });
+  const allowedTools = state.meta?.claudeCode?.options?.allowedTools;
+  if (!state.ready) { await handshake(kind, state.url); state.ready = true; if (!alive()) return; }
+  if (env.FAKE_ACP_MCP_STRAY === "1") { await strayPermissions(kind, sessionId); if (!alive()) return; }
+  const weather = { name: "get_weather", arguments: { city: "Paris" } };
+  const rounds = env.FAKE_ACP_MCP_CALLS ? JSON.parse(env.FAKE_ACP_MCP_CALLS) : [kind === "claude" ? [weather, { name: "add", arguments: { a: 1, b: 2 } }] : [weather]];
+  const texts = [];
+  const callOne = async (call) => {
+    const slot = texts.length; texts.push("");
+    const toolCallId = `mcpcall-${++mcpCallCounter}`;
+    const title = kind === "claude" ? `mcp__client__${call.name}` : kind === "agy" ? `client_${call.name}` : `mcp.client.${call.name}`;
+    const tracked = kind === "claude" ? { title, kind: "other", _meta: { claudeCode: { toolName: title } } }
+      : kind === "agy" ? { title, kind: "other", rawInput: { arguments: call.arguments, ...call.arguments }, _meta: { mcp: { tool: call.name, server: "client" }, is_mcp_tool_call: true } }
+      : { title, kind: "execute", rawInput: { server: "client", tool: call.name, arguments: call.arguments }, _meta: { is_mcp_tool_call: true } };
+    update(sessionId, { sessionUpdate: "tool_call", toolCallId, status: "pending", ...tracked });
+    let allowed = true;
+    if (kind === "claude" && !(allowedTools ?? []).includes("mcp__client__*")) {
+      const result = await askPermission(sessionId, { toolCall: { toolCallId, title, kind: "other", status: "pending", rawInput: call.arguments, _meta: { claudeCode: { toolName: title, mcpServer: { name: "client", source: "dynamic" } } } } }, claudeOptions);
+      allowed = wasAllowed(result);
+    } else if (kind === "agy") {
+      allowed = wasAllowed(await askPermission(sessionId, { toolCall: { toolCallId, title, kind: "other", status: "pending", rawInput: tracked.rawInput, _meta: tracked._meta } }, agyOptions));
+    } else if (kind === "codex") {
+      allowed = wasAllowed(await askPermission(sessionId, { toolCall: { toolCallId, kind: "execute", status: "pending" }, _meta: { is_mcp_tool_approval: true } }, codexOptions));
+    }
+    if (!alive()) return;
+    logMcp({ phase: "permission", tool: call.name, allowed });
+    if (!allowed) { update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status: "failed", rawOutput: "Rejected by user" }); texts[slot] = "denied"; return; }
+    if (kind === "agy" && !state.reconnected) { state.reconnected = true; await handshake("agy", state.url); }
+    logMcp({ phase: "tools/call sent", tool: call.name });
+    const reply = await rpc(state.url, "tools/call", { name: call.name, arguments: call.arguments, _meta: kind === "codex" ? { callId: toolCallId } : kind === "claude" ? { "claudecode/toolUseId": toolCallId } : {} });
+    const text = reply.body?.result?.content?.[0]?.text ?? reply.body?.error?.message ?? "";
+    logMcp({ phase: "tools/call", tool: call.name, status: reply.status, contentType: reply.contentType, keepalives: reply.keepalives, isError: reply.body?.result?.isError === true, text });
+    if (alive()) update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status: "completed", ...(kind === "agy" ? { content: [{ type: "content", content: { type: "text", text: `Call client ${call.name} tool` } }] } : { rawOutput: { text } }) });
+    texts[slot] = text;
+  };
+  for (const round of rounds) {
+    if (kind === "claude") await Promise.all(round.map(callOne)); else for (const call of round) await callOne(call);
+    if (!alive()) return;
+  }
+  sayDone(sessionId, promptId, `got: ${texts.join(" | ")}`);
 };
 const generateImage = (sessionId, id) => {
   const toolCallId = `imgcall-${sessionId}`;
@@ -107,8 +209,9 @@ if (env.FAKE_ACP_GRANDCHILD) {
   writeFileSync(env.FAKE_ACP_GRANDCHILD, String(grandchild.pid));
 }
 const defaultModels = [{ value: "gpt-5.6-sol" }, { value: "gpt-5.6-terra" }, { value: "gpt-5.6-luna" }];
-const newSession = (id) => {
+const newSession = (id, params = {}) => {
   const sessionId = sessionCount++ === 0 ? "fake-session" : `fake-session-${sessionCount}`;
+  mcpSessions.set(sessionId, { url: params.mcpServers?.[0]?.url, meta: params._meta, prompts: 0 });
   const modes = claude ? { currentModeId: "default", availableModes: ["default", "acceptEdits", "plan", "auto", "bypassPermissions"].map((id) => ({ id, name: id })) } : agy ? { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "auto_edit", name: "Auto edit" }, { id: "yolo", name: "Yolo" }] } : env.FAKE_ACP_NO_READONLY === "1" ? { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }] } : { currentModeId: "read-only", availableModes: [{ id: "read-only", name: "Read only" }] };
   const options = env.FAKE_ACP_MODELS ? JSON.parse(env.FAKE_ACP_MODELS) : defaultModels;
   const respond = () => send({ jsonrpc: "2.0", id, result: { sessionId, modes, configOptions: [{ id: "model", name: "Model", category: "model", type: "select", currentValue: "gpt-5.6-sol", options }] } });
@@ -135,7 +238,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const authDelay = Number(env.FAKE_ACP_AUTH_DELAY_MS || 0);
     if (authDelay > 0) setTimeout(done, authDelay); else done();
   }
-  else if (method === "session/new") { if (env.FAKE_ACP_REQUIRE_AUTH === "1" && !authedWith) fail(id, -32000, "Authentication required", agy ? { message: "No authentication method selected. Either call the `authenticate` method (supports oauth-personal, gemini-api-key, agent-platform)" } : undefined); else newSession(id); }
+  else if (method === "session/new") { if (env.FAKE_ACP_REQUIRE_AUTH === "1" && !authedWith) fail(id, -32000, "Authentication required", agy ? { message: "No authentication method selected. Either call the `authenticate` method (supports oauth-personal, gemini-api-key, agent-platform)" } : undefined); else newSession(id, params); }
   else if (method === "session/set_config_option") { models.set(params.sessionId, params.value); send({ jsonrpc: "2.0", id, result: { configOptions: [] } }); }
   else if (method === "session/delete" && agy) fail(id, -32601, "Method not found");
   else if (method === "session/set_mode" || method === "session/delete") send({ jsonrpc: "2.0", id, result: { configOptions: [] } });
@@ -153,6 +256,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       if (env.FAKE_ACP_PROMPT_ERROR) { pending.delete(sessionId); const e = JSON.parse(env.FAKE_ACP_PROMPT_ERROR); fail(id, e.code, e.message, e.data); return; }
       if (env.FAKE_ACP_ENTITY_NOT_FOUND === "1") { pending.delete(sessionId); fail(id, -32603, "Requested entity was not found"); return; }
       if (env.FAKE_ACP_IMAGE_GEN) { generateImage(sessionId, id); return; }
+      if (env.FAKE_ACP_MCP) { runMcp(sessionId, id).catch((error) => { logMcp({ phase: "error", message: String(error?.message ?? error) }); sayDone(sessionId, id, "mcp error: " + String(error?.message ?? error)); }); return; }
       if (env.FAKE_ACP_REQUIRE_PERMISSION === "1") send({ jsonrpc: "2.0", id: 9001, method: "session/request_permission", params: { sessionId, toolCall: { toolCallId: "tool", title: "run command", kind: "execute", status: "pending", content: [] }, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] } });
       setTimeout(() => { if (pending.has(sessionId)) { pending.delete(sessionId); promptDone(sessionId, id); } }, 20);
     };

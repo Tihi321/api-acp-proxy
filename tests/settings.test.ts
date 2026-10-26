@@ -75,6 +75,13 @@ describe("resolveConfig", () => {
     expect([...overridden].sort()).toEqual(["providers.antigravity.enabled", "providers.codex.acpArgs", "providers.codex.acpCommand", "providers.codex.enabled", "server.apiKey", "server.modelsWaitMs", "server.port"]);
   });
 
+  it("reads PROXY_TOOL_RESULT_TIMEOUT_MS (10 minutes by default)", () => {
+    expect(resolveConfig(defaultSettings(), {}).config.toolResultTimeoutMs).toBe(600_000);
+    const { config, overridden } = resolveConfig(defaultSettings(), { PROXY_TOOL_RESULT_TIMEOUT_MS: "90000" });
+    expect(config.toolResultTimeoutMs).toBe(90_000);
+    expect(overridden).toEqual(["server.toolResultTimeoutMs"]);
+  });
+
   it("reads PROXY_REUSE_SESSIONS (off by default)", () => {
     expect(resolveConfig(defaultSettings(), {}).config.reuseSessions).toBe(false);
     const { config, overridden } = resolveConfig(defaultSettings(), { PROXY_REUSE_SESSIONS: "1" });

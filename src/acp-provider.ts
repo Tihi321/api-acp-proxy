@@ -3,23 +3,58 @@ import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { client, methods, ndJsonStream, type ClientConnection, type ClientContext } from "@agentclientprotocol/sdk";
-import type { ContentBlock, RequestPermissionRequest, SessionConfigOption, SessionUpdate, Usage } from "@agentclientprotocol/sdk";
+import type { ContentBlock, McpServer, PromptResponse, RequestPermissionRequest, SessionConfigOption, SessionUpdate, Usage } from "@agentclientprotocol/sdk";
 import { createHash } from "node:crypto";
 import { ApiError, buildPrompt, hasImages, messageText, type Message } from "./api.js";
 import { deleteGeneratedFile } from "./generated-images.js";
 import { killProcessTree } from "./process-tree.js";
+import { BRIDGE_SERVER_NAME, type BridgeSession, type HeldCall } from "./tool-bridge.js";
 import { AcpUnavailableError, ProviderAuthRequiredError, ProviderNotInstalledError, ProviderTermsRequiredError } from "./provider.js";
-import type { AuthMethodInfo, GeneratedImage, GenerateOptions, GenerationCallbacks, GenerationResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext } from "./provider.js";
+import type { AuthMethodInfo, GeneratedImage, GenerateOptions, GenerationCallbacks, GenerationResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext, TrackedToolCall } from "./provider.js";
 
 type SessionHandler = (update: SessionUpdate) => void;
 /** Decides for one session whether a permission request is allowed; everything not allowed is cancelled. */
 type PermissionRule = (request: RequestPermissionRequest) => boolean;
 interface PreparedSession { sessionId: string; cwd: string; modelOptionId?: string; readOnlyModeId?: string; }
-/** A message as kept for session reuse: its text and the SHA-256 of each image (never the base64 itself). */
-interface KeptMessage { role: Message["role"]; text: string; images: string[]; }
-function toKept(message: Message): KeptMessage { return { role: message.role, text: messageText(message), images: message.parts.flatMap((part) => part.type === "image" ? [createHash("sha256").update(part.data, "base64").digest("hex")] : []) }; }
-/** A finished turn's session kept for the next request of the same conversation; `transcript` holds the client-visible messages plus each raw answer. */
-interface KeptSession { agent: ClientContext; session: PreparedSession; model: string; transcript: KeptMessage[]; usage?: Usage; timer: NodeJS.Timeout; }
+/** A message as kept for session reuse: its text, the SHA-256 of each image (never the base64 itself), and the ids of its tool calls / the call a tool result answers. */
+interface KeptMessage { role: Message["role"]; text: string; images: string[]; toolCalls?: Array<{ id: string; name: string }>; toolCallId?: string; }
+function toKept(message: Message): KeptMessage { return { role: message.role, text: messageText(message), images: message.parts.flatMap((part) => part.type === "image" ? [createHash("sha256").update(part.data, "base64").digest("hex")] : []), ...(message.toolCalls?.length ? { toolCalls: message.toolCalls.map(({ id, name }) => ({ id, name })) } : {}), ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}) }; }
+const sameCalls = (a: KeptMessage["toolCalls"], b: KeptMessage["toolCalls"]): boolean => (a?.length ?? 0) === (b?.length ?? 0) && (a ?? []).every((call, index) => call.id === b![index]!.id && call.name === b![index]!.name);
+/** Whether the client's history matches a kept transcript: user-side messages exactly, an assistant message when its text is part of the raw answer (a tool-call message by its call ids). */
+function sameTranscript(kept: KeptMessage[], sent: KeptMessage[]): boolean {
+  return kept.length === sent.length && kept.every((entry, position) => {
+    const other = sent[position]!;
+    if (entry.role !== other.role) return false;
+    if (entry.role === "tool") return entry.toolCallId === other.toolCallId && entry.text === other.text;
+    if (entry.role !== "assistant") return entry.text === other.text && entry.images.length === other.images.length && entry.images.every((hash, at) => hash === other.images[at]);
+    const content = other.text.trim();
+    if (entry.toolCalls?.length || other.toolCalls?.length) return sameCalls(entry.toolCalls, other.toolCalls) && other.images.length === 0 && (content === "" || entry.text.includes(content));
+    return content !== "" && other.images.length === 0 && entry.text.includes(content);
+  });
+}
+/** A finished turn's session kept for the next request of the same conversation; `transcript` holds the client-visible messages plus each raw answer. A session that has the client's tools also keeps its bridge and the tools it was made for. */
+interface KeptSession { agent: ClientContext; session: PreparedSession; model: string; transcript: KeptMessage[]; usage?: Usage; timer: NodeJS.Timeout; bridge?: BridgeSession; toolsKey?: string; }
+/** The outcome of a prompt that ran on its own while its HTTP response was already over (a suspended turn). It never rejects. */
+type PromptOutcome = { result?: PromptResponse; error?: unknown };
+/** A prompt in flight on a session that has the client's tools. `sink` is the request being served; its callbacks change when a later request resumes the turn. */
+interface ToolTurn {
+  agent: ClientContext; session: PreparedSession; model: string; bridge: BridgeSession; toolsKey: string;
+  sink: GenerationCallbacks;
+  /** All the agent text of the prompt so far; `segment` is where the text of the current HTTP response starts. */
+  text: string; segment: number;
+  tracked: Map<string, TrackedToolCall>;
+  /** `tools/call`s that arrived and are not yet in a returned batch. */
+  pending: HeldCall[];
+  batchTimer?: NodeJS.Timeout;
+  /** Set while a request waits for the next batch; called when a `tools/call` arrives. */
+  arm?: () => void;
+  finished?: Promise<PromptOutcome>;
+  /** The cumulative usage of a reused session before this turn. */
+  baseUsage?: Usage;
+  cancelled: boolean;
+}
+/** A turn waiting for the client's tool results, found by the `call_<random>` ids it returned. */
+interface SuspendedTurn { turn: ToolTurn; calls: HeldCall[]; ids: string[]; transcript: KeptMessage[]; timer: NodeJS.Timeout; }
 interface AuthInflight { methodId: string; agent: ClientContext; promise: Promise<void>; }
 const DEFAULT_MODE_CANDIDATES = ["read-only", "readonly"] as const;
 const DEFAULT_AUTH_TIMEOUT_MS = 10_000;
@@ -27,11 +62,27 @@ const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_LOGIN_OPEN_DELAY_MS = 3_000;
 const DEFAULT_RETAINED_SESSIONS = 8;
 const DEFAULT_RETAINED_IDLE_MS = 10 * 60_000;
+/** After the last `tools/call` of a batch, wait this long for more (only Claude sends parallel calls, 24 ms apart). */
+const DEFAULT_TOOL_BATCH_MS = 150;
+const DEFAULT_TOOL_RESULT_TIMEOUT_MS = 10 * 60_000;
+/** The proxy gives up on a suspended call this long before the agent's own limit. */
+const DEFAULT_TOOL_CALL_MARGIN_MS = 30_000;
 const USAGE_FIELDS = ["inputTokens", "outputTokens", "totalTokens", "thoughtTokens", "cachedReadTokens", "cachedWriteTokens"] as const;
+
+/** `extra` merged into `base` (plain objects recursively, everything else replaced). */
+function mergeMeta(base: Record<string, unknown> | undefined, extra: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!extra) return base;
+  const out: Record<string, unknown> = { ...(base ?? {}) };
+  for (const [key, value] of Object.entries(extra)) {
+    const current = out[key];
+    out[key] = value && typeof value === "object" && !Array.isArray(value) && current && typeof current === "object" && !Array.isArray(current) ? mergeMeta(current as Record<string, unknown>, value as Record<string, unknown>) : value;
+  }
+  return out;
+}
 
 /** An authenticate call did not finish in time; the request itself is left pending. */
 class AuthTimeoutError extends Error { constructor(message: string) { super(message); this.name = "AuthTimeoutError"; } }
-export interface AcpProviderOptions { workRoot: string; /** Keep a session after a completed turn for the next turn of the same conversation. */ reuseSessions?: boolean; /** Most kept sessions at once (default 8). */ retainedSessions?: number; /** A kept session is disposed after this idle time (default 10 minutes). */ retainedIdleMs?: number; }
+export interface AcpProviderOptions { workRoot: string; /** Keep a session after a completed turn for the next turn of the same conversation. */ reuseSessions?: boolean; /** Most kept sessions at once, suspended ones included (default 8). */ retainedSessions?: number; /** A kept session is disposed after this idle time (default 10 minutes). */ retainedIdleMs?: number; /** How long a turn suspended on a tool call waits for the result (default 10 minutes, cut to the agent's own limit minus the margin). */ toolResultTimeoutMs?: number; /** Quiet time after a `tools/call` before its batch is returned (default 150 ms). */ toolBatchMs?: number; /** How long before the agent's own tool call limit a suspended call is given up (default 30 s). */ toolCallMarginMs?: number; }
 
 const AUTH_REQUIRED = -32000;
 
@@ -73,6 +124,8 @@ export class AcpProvider implements Provider {
   readonly staticModels?: ModelInfo[];
   /** The agent can generate images (its descriptor says so). */
   readonly imageGeneration: boolean;
+  /** The agent can be given the client's function tools: its descriptor knows its permission rule and the proxy has a tool bridge. */
+  readonly toolCalling: boolean;
   private child?: ChildProcessWithoutNullStreams;
   private connection?: ClientConnection;
   private agent?: ClientContext;
@@ -105,6 +158,10 @@ export class AcpProvider implements Provider {
   private readonly handlers = new Map<string, SessionHandler>();
   /** Per-session allow rules by session id: only a request that asked for something sets one (see generate()). */
   private readonly permissionRules = new Map<string, PermissionRule>();
+  /** The tool bridge session of every session that has the client's tools, by session id. */
+  private readonly bridges = new Map<string, BridgeSession>();
+  /** Turns waiting for tool results, once per call id (an entry shows up under each of its ids). */
+  private readonly suspended = new Map<string, SuspendedTurn>();
   private readonly listeners = new Set<(status: ProviderStatus) => void>();
   private readonly log;
 
@@ -115,6 +172,7 @@ export class AcpProvider implements Provider {
     this.exposeUnprefixed = descriptor.exposeUnprefixed;
     this.staticModels = descriptor.staticModels?.map((id) => ({ id }));
     this.imageGeneration = descriptor.imageGeneration !== undefined;
+    this.toolCalling = descriptor.allowTool !== undefined && ctx.toolBridge !== undefined;
     this.log = ctx.logger.child(`${descriptor.id}-acp`);
   }
 
@@ -263,6 +321,7 @@ export class AcpProvider implements Provider {
       this.authInflight = undefined;
       this.dropWarm();
       void this.dropKept();
+      void this.dropSuspended();
       if (this.state === "ready") this.setState("stopped");
     });
     let authStep = false;
@@ -321,15 +380,26 @@ export class AcpProvider implements Provider {
     for (const session of this.warm.splice(0)) void rm(session.cwd, { recursive: true, force: true }).catch(() => undefined);
   }
 
+  /** Gives up every turn that waits for tool results: its held calls get an error, the turn is cancelled and the session disposed. */
+  private async dropSuspended(): Promise<void> {
+    const entries = [...new Set(this.suspended.values())];
+    this.suspended.clear();
+    await Promise.all(entries.map((entry) => { clearTimeout(entry.timer); return this.dropTurn(entry.turn, "The proxy stopped before the tool result arrived."); }));
+  }
+
   private async dropKept(): Promise<void> {
     await Promise.all(this.kept.splice(0).map((entry) => { clearTimeout(entry.timer); return this.disposeSession(entry.agent, entry.session); }));
   }
 
   /** Keeps a session after a completed turn; the oldest one is evicted over the cap and an idle one is disposed after retainedIdleMs. */
-  private keep(agent: ClientContext, session: PreparedSession, model: string, transcript: KeptMessage[], usage: Usage | undefined): void {
+  private keep(agent: ClientContext, session: PreparedSession, model: string, transcript: KeptMessage[], usage: Usage | undefined, bridge?: BridgeSession, toolsKey?: string): void {
     const limit = Math.max(1, this.options.retainedSessions ?? DEFAULT_RETAINED_SESSIONS);
-    while (this.kept.length >= limit) { const oldest = this.kept.shift()!; clearTimeout(oldest.timer); void this.disposeSession(oldest.agent, oldest.session); }
-    const entry: KeptSession = { agent, session, model, transcript, usage, timer: setTimeout(() => {
+    while (this.kept.length > 0 && this.kept.length + this.suspendedCount() >= limit) { const oldest = this.kept.shift()!; clearTimeout(oldest.timer); void this.disposeSession(oldest.agent, oldest.session); }
+    // Turns waiting for tool results count against the cap too, and are not given up for a finished conversation.
+    if (this.kept.length + this.suspendedCount() >= limit) { void this.disposeSession(agent, session); return; }
+    this.permissionRules.delete(session.sessionId);
+    if (bridge) bridge.onCall = undefined;
+    const entry: KeptSession = { agent, session, model, transcript, usage, ...(bridge ? { bridge, toolsKey } : {}), timer: setTimeout(() => {
       const index = this.kept.indexOf(entry);
       if (index >= 0) { this.kept.splice(index, 1); void this.disposeSession(agent, session); }
     }, this.options.retainedIdleMs ?? DEFAULT_RETAINED_IDLE_MS) };
@@ -339,17 +409,12 @@ export class AcpProvider implements Provider {
   }
 
   /** Removes and returns the kept session whose transcript is the request's history up to its last assistant message, with the messages after it. */
-  private takeKept(agent: ClientContext, model: string, messages: Message[]): { entry: KeptSession; fresh: Message[] } | undefined {
+  private takeKept(agent: ClientContext, model: string, messages: Message[], toolsKey?: string): { entry: KeptSession; fresh: Message[] } | undefined {
     const last = messages.map((message) => message.role).lastIndexOf("assistant");
     if (last < 0 || last + 1 >= messages.length) return undefined;
     const sentHistory = messages.slice(0, last + 1).map(toKept);
-    const index = this.kept.findIndex((entry) => entry.agent === agent && entry.model === model && entry.transcript.length === last + 1 && entry.transcript.every((kept, position) => {
-      const sent = sentHistory[position]!;
-      if (kept.role !== sent.role) return false;
-      if (kept.role !== "assistant") return kept.text === sent.text && kept.images.length === sent.images.length && kept.images.every((hash, at) => hash === sent.images[at]);
-      const content = sent.text.trim();
-      return content !== "" && sent.images.length === 0 && kept.text.includes(content);
-    }));
+    // A session that has the client's tools is only reused for a request with the same tools, and a plain request never takes one.
+    const index = this.kept.findIndex((entry) => entry.agent === agent && entry.model === model && entry.toolsKey === toolsKey && sameTranscript(entry.transcript, sentHistory));
     if (index < 0) return undefined;
     const [entry] = this.kept.splice(index, 1);
     clearTimeout(entry!.timer);
@@ -364,6 +429,7 @@ export class AcpProvider implements Provider {
     if (this.openTimer) { clearTimeout(this.openTimer); this.openTimer = undefined; }
     this.dropWarm();
     await this.dropKept();
+    await this.dropSuspended();
     connection?.close();
     if (child) await killProcessTree(child);
     this.loginUrl = undefined;
@@ -388,10 +454,14 @@ export class AcpProvider implements Provider {
     }
   }
 
-  private async createSession(agent: ClientContext): Promise<PreparedSession> {
+  /** `bridge`: the session also gets the client's tools as the MCP server `client` (and the descriptor's `bridgeSessionMeta`). */
+  private async createSession(agent: ClientContext, bridge?: BridgeSession): Promise<PreparedSession> {
     const cwd = await mkdtemp(path.join(this.options.workRoot, "request-"));
     try {
-      const session = await this.withAuth(agent, () => withTimeout(agent.request(methods.agent.session.new, { cwd, mcpServers: [], ...(this.descriptor.sessionMeta ? { _meta: this.descriptor.sessionMeta } : {}) }), this.descriptor.sessionTimeoutMs, `${this.displayName} session creation timed out.`));
+      const meta = bridge ? mergeMeta(this.descriptor.sessionMeta, this.descriptor.bridgeSessionMeta) : this.descriptor.sessionMeta;
+      const mcpServers: McpServer[] = bridge ? [{ type: "http", name: BRIDGE_SERVER_NAME, url: bridge.url, headers: [] }] : [];
+      const session = await this.withAuth(agent, () => withTimeout(agent.request(methods.agent.session.new, { cwd, mcpServers, ...(meta ? { _meta: meta } : {}) }), this.descriptor.sessionTimeoutMs, `${this.displayName} session creation timed out.`));
+      if (bridge) this.bridges.set(session.sessionId, bridge);
       if (this.state === "needs_login" && !this.loggedOut) this.setState("ready");
       this.authBlock = undefined;
       this.descriptor.onSessionCreated?.(session.sessionId);
@@ -413,6 +483,9 @@ export class AcpProvider implements Provider {
 
   private async disposeSession(agent: ClientContext, session: PreparedSession): Promise<void> {
     this.handlers.delete(session.sessionId);
+    this.permissionRules.delete(session.sessionId);
+    this.bridges.get(session.sessionId)?.dispose();
+    this.bridges.delete(session.sessionId);
     try { await agent.request(methods.agent.session.delete, { sessionId: session.sessionId }); } catch { /* best effort cleanup */ }
     await rm(session.cwd, { recursive: true, force: true }).catch(() => undefined);
     try { await this.descriptor.onSessionDisposed?.(session.cwd); } catch { /* best effort cleanup */ }
@@ -494,7 +567,19 @@ export class AcpProvider implements Provider {
     }
   }
 
+  /** Selects the model and the read-only mode of a new session; false when the request was cancelled meanwhile. */
+  private async configureSession(agent: ClientContext, session: PreparedSession, model: string, aborted: () => boolean): Promise<boolean> {
+    if (!session.modelOptionId) throw new AcpUnavailableError(`The ${this.displayName} ACP backend did not advertise a model configuration option.`);
+    await this.authGuard(() => agent.request(methods.agent.session.setConfigOption, { sessionId: session.sessionId, configId: session.modelOptionId!, value: model }));
+    if (aborted()) return false;
+    if (session.readOnlyModeId) await agent.request(methods.agent.session.setMode, { sessionId: session.sessionId, modeId: session.readOnlyModeId });
+    else if (this.descriptor.readOnlyMode === "required") throw new AcpUnavailableError(`The ${this.displayName} ACP backend did not advertise a read-only mode.`);
+    else if (!this.warnedNoReadOnly) { this.warnedNoReadOnly = true; this.log.warn("No read-only mode advertised; relying on cancelled permissions and the text-only prompt."); }
+    return true;
+  }
+
   async generate(model: string, messages: Message[], callbacks: GenerationCallbacks = {}, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
+    if (options?.tools?.length) return this.generateWithTools(model, messages, callbacks, signal, options);
     let agent: ClientContext | undefined;
     let session: PreparedSession | undefined;
     let aborted = signal?.aborted ?? false;
@@ -531,14 +616,7 @@ export class AcpProvider implements Provider {
         } else if (imageSupport && update.sessionUpdate === "tool_call_update" && update.status === "completed") this.takeImages(update, wantImages ? generated : undefined, reportedFiles);
       });
       if (wantImages && imageSupport?.allow) this.permissionRules.set(sid, imageSupport.allow);
-      if (!reused) {
-        if (!session.modelOptionId) throw new AcpUnavailableError(`The ${this.displayName} ACP backend did not advertise a model configuration option.`);
-        await this.authGuard(() => agent!.request(methods.agent.session.setConfigOption, { sessionId: sid, configId: session!.modelOptionId!, value: model }));
-        if (aborted) return cancelled();
-        if (session.readOnlyModeId) await agent.request(methods.agent.session.setMode, { sessionId: sid, modeId: session.readOnlyModeId });
-        else if (this.descriptor.readOnlyMode === "required") throw new AcpUnavailableError(`The ${this.displayName} ACP backend did not advertise a read-only mode.`);
-        else if (!this.warnedNoReadOnly) { this.warnedNoReadOnly = true; this.log.warn("No read-only mode advertised; relying on cancelled permissions and the text-only prompt."); }
-      }
+      if (!reused && !await this.configureSession(agent, session, model, () => aborted)) return cancelled();
       if (aborted) return cancelled();
       promptSent = true;
       const prompt: ContentBlock[] = buildPrompt(fresh, options?.instructions, this.descriptor.promptPreamble, wantImages);
@@ -561,6 +639,194 @@ export class AcpProvider implements Provider {
       if (imageSupport && reportedFiles.size) await this.deleteImageFiles(imageSupport, reportedFiles);
       if (session && agent) {
         if (keepWith && !aborted && this.agent === agent) this.keep(agent, session, model, keepWith.transcript, keepWith.usage);
+        else await this.disposeSession(agent, session);
+      }
+    }
+  }
+
+  // --- function calling through the MCP bridge -------------------------------------------------------------------------
+
+  private suspendedCount(): number { return new Set(this.suspended.values()).size; }
+
+  /** How long a suspended call waits for the client: the setting, cut to the agent's own limit minus the margin. */
+  private resultTimeoutMs(): number {
+    const configured = this.options.toolResultTimeoutMs ?? DEFAULT_TOOL_RESULT_TIMEOUT_MS;
+    const limit = this.descriptor.toolCallLimitMs;
+    return limit === undefined ? configured : Math.max(1, Math.min(configured, limit - (this.options.toolCallMarginMs ?? DEFAULT_TOOL_CALL_MARGIN_MS)));
+  }
+
+  /** The state of a prompt that has the client's tools: its update handler (text goes to the current sink, tool calls are only tracked and never forwarded), its permission rule and the bridge's call hook. */
+  private newTurn(agent: ClientContext, session: PreparedSession, model: string, bridge: BridgeSession, toolsKey: string, sink: GenerationCallbacks, baseUsage: Usage | undefined): ToolTurn {
+    const turn: ToolTurn = { agent, session, model, bridge, toolsKey, sink, text: "", segment: 0, tracked: new Map(), pending: [], cancelled: false, baseUsage };
+    this.handlers.set(session.sessionId, (update) => {
+      if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") { turn.text += update.content.text; turn.sink.onText?.(update.content.text); }
+      else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+        const tracked: TrackedToolCall = { ...turn.tracked.get(update.toolCallId), toolCallId: update.toolCallId };
+        if (update.title != null) tracked.title = update.title;
+        if (update.kind != null) tracked.kind = update.kind;
+        if (update.status != null) tracked.status = update.status;
+        if (update.rawInput !== undefined) tracked.rawInput = update.rawInput;
+        if (update._meta != null) tracked._meta = update._meta;
+        turn.tracked.set(update.toolCallId, tracked);
+      }
+    });
+    this.permissionRules.set(session.sessionId, (request) => this.descriptor.allowTool?.(request, turn.tracked.get(request.toolCall.toolCallId)) === true);
+    bridge.onCall = (call) => { turn.pending.push(call); turn.arm?.(); };
+    return turn;
+  }
+
+  /** Waits for the prompt to end or for a batch of tool calls (they are collected until `toolBatchMs` after the latest one). */
+  private nextOutcome(turn: ToolTurn): Promise<{ done: PromptOutcome } | { calls: HeldCall[] }> {
+    return new Promise((resolve) => {
+      let over = false;
+      const settle = (value: { done: PromptOutcome } | { calls: HeldCall[] }) => { if (over) return; over = true; turn.arm = undefined; clearTimeout(turn.batchTimer); resolve(value); };
+      const arm = () => { clearTimeout(turn.batchTimer); turn.batchTimer = setTimeout(() => settle({ calls: turn.pending.splice(0).filter((call) => !call.closed) }), this.options.toolBatchMs ?? DEFAULT_TOOL_BATCH_MS); };
+      void turn.finished!.then((done) => settle({ done }));
+      turn.arm = arm;
+      if (turn.pending.length) arm();
+    });
+  }
+
+  /** Cancels a turn: its held calls get an error so the agent is not left waiting, and the agent is told to stop. */
+  private async cancelTurn(turn: ToolTurn, reason = "The request was cancelled."): Promise<void> {
+    turn.cancelled = true;
+    // Cancel first, so an agent that gets the error result does not go on with the turn.
+    try { await turn.agent.notify(methods.agent.session.cancel, { sessionId: turn.session.sessionId }); } catch { /* connection may already be gone */ }
+    for (const call of [...turn.pending.splice(0), ...turn.bridge.openCalls()]) call.settle(reason, true);
+  }
+
+  /** Gives a turn up: cancel it, let its prompt end, dispose the session. */
+  private async dropTurn(turn: ToolTurn, reason: string): Promise<void> {
+    await this.cancelTurn(turn, reason);
+    await turn.finished?.catch(() => undefined);
+    await this.disposeSession(turn.agent, turn.session);
+  }
+
+  /** The suspended turn that this request's history answers: it ends with the assistant message that carries the turn's tool calls, followed by one tool message per call, after exactly the history the turn had. */
+  private takeSuspended(agent: ClientContext, model: string, messages: Message[], toolsKey: string): { entry: SuspendedTurn; results: Map<string, string> } | undefined {
+    const last = messages.map((message) => message.role).lastIndexOf("assistant");
+    const calls = messages[last]?.toolCalls;
+    if (last < 0 || !calls?.length) return undefined;
+    const entry = this.suspended.get(calls[0]!.id);
+    if (!entry || entry.turn.agent !== agent || entry.turn.model !== model || entry.turn.toolsKey !== toolsKey) return undefined;
+    const answers = messages.slice(last + 1);
+    if (answers.length !== entry.ids.length || answers.some((message) => message.role !== "tool")) return undefined;
+    const results = new Map(answers.map((message) => [message.toolCallId ?? "", messageText(message)] as const));
+    if (results.size !== entry.ids.length || !entry.ids.every((id) => results.has(id)) || calls.length !== entry.ids.length || !calls.every((call) => entry.ids.includes(call.id))) return undefined;
+    if (!sameTranscript(entry.transcript, messages.slice(0, last + 1).map(toKept))) return undefined;
+    for (const id of entry.ids) this.suspended.delete(id);
+    clearTimeout(entry.timer);
+    return { entry, results };
+  }
+
+  /** The turn's request ends with these tool calls; the turn (prompt, session, held calls) waits for the results. */
+  private suspend(turn: ToolTurn, calls: HeldCall[], history: KeptMessage[]): GenerationResult {
+    const text = turn.text.slice(turn.segment);
+    turn.segment = turn.text.length;
+    turn.sink = {};
+    const limit = Math.max(1, this.options.retainedSessions ?? DEFAULT_RETAINED_SESSIONS);
+    while (this.kept.length + this.suspendedCount() >= limit) {
+      if (this.kept.length) { const oldest = this.kept.shift()!; clearTimeout(oldest.timer); void this.disposeSession(oldest.agent, oldest.session); continue; }
+      const oldest = this.suspended.values().next().value as SuspendedTurn | undefined;
+      if (!oldest) break;
+      this.expire(oldest, "The proxy holds too many conversations that wait for tool results.");
+    }
+    const entry: SuspendedTurn = { turn, calls, ids: calls.map((call) => call.id), transcript: [...history, { role: "assistant", text, images: [], toolCalls: calls.map(({ id, name }) => ({ id, name })) }], timer: setTimeout(() => this.expire(entry, "The client did not return the tool result in time."), this.resultTimeoutMs()) };
+    entry.timer.unref?.();
+    for (const id of entry.ids) this.suspended.set(id, entry);
+    return { text, stopReason: "tool_calls", usage: null, toolCalls: calls.map(({ id, name, arguments: args }) => ({ id, name, arguments: args })) };
+  }
+
+  /** A suspended turn ran out of time (or room): its held calls get an error result, the turn is cancelled and the session disposed. A late follow-up takes the text fallback. */
+  private expire(entry: SuspendedTurn, reason: string): void {
+    clearTimeout(entry.timer);
+    for (const id of entry.ids) if (this.suspended.get(id) === entry) this.suspended.delete(id);
+    this.log.debug(`Giving up a turn that waited for tool results: ${reason}`);
+    void this.dropTurn(entry.turn, reason);
+  }
+
+  /**
+   * A request with function tools. The session gets the client's tools as the MCP server `client`; when the agent calls one, the HTTP response ends with the call
+   * (`stopReason: "tool_calls"`) and the turn is suspended with its prompt and the held MCP call. A later request whose history holds the results resumes it:
+   * the held calls are answered and the rest of the same turn streams into that request's callbacks. Anything else starts a fresh session with the history as text.
+   */
+  private async generateWithTools(model: string, messages: Message[], callbacks: GenerationCallbacks, signal: AbortSignal | undefined, options: GenerateOptions): Promise<GenerationResult> {
+    const hub = this.ctx.toolBridge;
+    if (!this.toolCalling || !hub) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot call tools through this proxy.`, "model");
+    const tools = options.tools!;
+    const toolsKey = JSON.stringify(tools);
+    let agent: ClientContext | undefined;
+    let session: PreparedSession | undefined;
+    let turn: ToolTurn | undefined;
+    let suspended = false;
+    let aborted = signal?.aborted ?? false;
+    let promptSent = false;
+    let keepWith: { transcript: KeptMessage[]; usage?: Usage } | undefined;
+    const cancelled = (): GenerationResult => ({ text: "", stopReason: "cancelled", usage: null });
+    const abort = async () => { aborted = true; if (turn) await this.cancelTurn(turn); };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      agent = await this.start();
+      if (aborted) return cancelled();
+      if (hasImages(messages) && !this.imageInput) throw new ApiError(400, "unsupported_content", `${this.displayName} does not accept image input.`, "messages");
+      const resumed = this.takeSuspended(agent, model, messages, toolsKey);
+      if (resumed) {
+        turn = resumed.entry.turn; session = turn.session; promptSent = true;
+        turn.sink = callbacks;
+        for (const call of resumed.entry.calls) call.settle(resumed.results.get(call.id) ?? "");
+      } else {
+        const hit = this.options.reuseSessions ? this.takeKept(agent, model, messages, toolsKey) : undefined;
+        let fresh = messages;
+        if (hit) {
+          session = hit.entry.session; fresh = hit.fresh;
+          turn = this.newTurn(agent, session, model, hit.entry.bridge!, toolsKey, callbacks, hit.entry.usage);
+        } else {
+          const bridge = hub.create(tools.map((tool) => ({ name: tool.name, ...(tool.description ? { description: tool.description } : {}), ...(tool.parameters ? { inputSchema: tool.parameters } : {}) })));
+          try { session = await this.createSession(agent, bridge); } catch (error) { bridge.dispose(); throw error; }
+          turn = this.newTurn(agent, session, model, bridge, toolsKey, callbacks, undefined);
+          if (!await this.configureSession(agent, session, model, () => aborted)) return cancelled();
+        }
+        if (aborted) return cancelled();
+        const prompt: ContentBlock[] = buildPrompt(fresh, options.instructions, undefined, false, { choice: options.toolChoice, parallel: options.parallelToolCalls });
+        promptSent = true;
+        turn.finished = this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: session!.sessionId, prompt })).then((result): PromptOutcome => ({ result }), (error): PromptOutcome => ({ error }));
+      }
+      if (aborted) await this.cancelTurn(turn);
+      for (;;) {
+        const outcome = await this.nextOutcome(turn);
+        if ("calls" in outcome) {
+          let calls = outcome.calls;
+          if (!calls.length) continue;
+          // parallel_tool_calls: false: the first call goes to the client, the others are told to wait their turn.
+          if (options.parallelToolCalls === false && calls.length > 1) {
+            for (const extra of calls.slice(1)) extra.settle("Call one tool at a time. This call was not run: call it again after the result of the previous tool call.", true);
+            calls = calls.slice(0, 1);
+          }
+          const result = this.suspend(turn, calls, messages.map(toKept));
+          suspended = true;
+          return result;
+        }
+        for (const call of turn.pending.splice(0)) call.settle("The turn ended before this tool call was answered.", true);
+        if (outcome.done.error !== undefined) throw outcome.done.error;
+        const result = outcome.done.result!;
+        let usage = result.usage ?? null;
+        let cumulative = turn.baseUsage;
+        if (usage && this.descriptor.usageScope === "session") { cumulative = usage; usage = usageDelta(usage, turn.baseUsage); }
+        const text = turn.text.slice(turn.segment);
+        if (this.options.reuseSessions && result.stopReason === "end_turn" && !aborted && !turn.cancelled) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
+        return { text, stopReason: result.stopReason, usage };
+      }
+    } catch (error) {
+      if (aborted && !promptSent) return cancelled();
+      if (aborted) throw new AcpUnavailableError("The request was cancelled.", error);
+      const mapped = this.descriptor.mapError?.(error, model);
+      if (mapped) throw mapped;
+      if (error instanceof AcpUnavailableError || error instanceof ApiError) throw error;
+      throw new AcpUnavailableError(`The ${this.displayName} ACP backend failed to process the request.`, error);
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      if (!suspended && session && agent) {
+        if (keepWith && !aborted && this.agent === agent && turn) this.keep(agent, session, model, keepWith.transcript, keepWith.usage, turn.bridge, toolsKey);
         else await this.disposeSession(agent, session);
       }
     }

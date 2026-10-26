@@ -5,8 +5,9 @@ import type { AcpLike, GenerateOptions, GenerationResult } from "./acp.js";
 import type { GeneratedImage } from "./provider.js";
 import { AcpUnavailableError } from "./acp.js";
 import { MODEL_IDS, type ProxyConfig } from "./config.js";
-import { ApiError, errorEnvelope, extractJson, formatInstructions, imageFormatName, normalizeChat, normalizeImageGeneration, normalizeResponses, serializePrompt, type ModelCheck, type Message, type OutputFormat } from "./api.js";
+import { ApiError, errorEnvelope, extractJson, formatInstructions, imageFormatName, normalizeChat, normalizeImageGeneration, normalizeResponses, serializePrompt, type ModelCheck, type Message, type OutputFormat, type ToolChoice, type ToolDef } from "./api.js";
 import { beginSse, endSse, writeSse } from "./sse.js";
+import { ToolBridgeHub } from "./tool-bridge.js";
 import { CHARS_PER_TOKEN, chatUsage, responsesUsage } from "./usage.js";
 
 const startedAt = Date.now();
@@ -48,12 +49,23 @@ function requireImageGeneration(bridge: AcpLike, model: string): void {
   if (bridge.canGenerateImages && !bridge.canGenerateImages(model)) throw new ApiError(400, "model_not_capable", `The model '${model}' cannot generate images.`, "model");
 }
 
+/** A request with function tools goes only to a model whose provider can be given them (a bridge that cannot tell lets the provider answer the 400). */
+function requireToolCalling(bridge: AcpLike, model: string): void {
+  if (bridge.canCallTools && !bridge.canCallTools(model)) throw new ApiError(400, "model_not_capable", `The model '${model}' cannot call tools.`, "model");
+}
+
+/** The generation options of a request's function tools (none for a request without them). */
+function toolOptions(parsed: { functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean }): GenerateOptions {
+  return parsed.functionTools ? { tools: parsed.functionTools, ...(parsed.toolChoice ? { toolChoice: parsed.toolChoice } : {}), ...(parsed.parallelToolCalls !== undefined ? { parallelToolCalls: parsed.parallelToolCalls } : {}) } : {};
+}
+
 const imageDataUrl = (image: GeneratedImage): string => `data:${image.mimeType};base64,${image.data}`;
 
 export function mapStopReason(stopReason: GenerationResult["stopReason"]): { chat: string | null; responseStatus: string } {
   switch (stopReason) {
     case "max_tokens": case "max_turn_requests": return { chat: "length", responseStatus: "incomplete" };
     case "refusal": return { chat: "content_filter", responseStatus: "incomplete" };
+    case "tool_calls": return { chat: "tool_calls", responseStatus: "completed" };
     case "cancelled": return { chat: "stop", responseStatus: "incomplete" };
     default: return { chat: "stop", responseStatus: "completed" };
   }
@@ -83,11 +95,13 @@ async function runGeneration(bridge: AcpLike, model: string, messages: Message[]
   } finally { signal.removeEventListener("abort", link); }
 }
 
-function finalText(format: OutputFormat, result: GenerationResult): string { return format.type === "json" ? extractJson(result.text) : result.text; }
+/** The answer text; a result that ends with tool calls is not a JSON answer, so it is left as it is. */
+function finalText(format: OutputFormat, result: GenerationResult): string { return format.type === "json" && !result.toolCalls?.length ? extractJson(result.text) : result.text; }
 
 async function handleChat(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, fetchImpl?: typeof fetch): Promise<void> {
   const parsed = await normalizeChat(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling, fetch: fetchImpl });
   if (parsed.generateImages) requireImageGeneration(bridge, parsed.model);
+  if (parsed.functionTools) requireToolCalling(bridge, parsed.model);
   const chatId = id("chatcmpl");
   const created = Math.floor(Date.now() / 1000);
   const abortController = new AbortController();
@@ -96,9 +110,10 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   request.once("aborted", () => abortController.abort());
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
-  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}) };
+  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed) };
   const asJson = parsed.format.type === "json";
   const promptText = serializePrompt(parsed.conversation, options.instructions);
+  const chatToolCalls = (result: GenerationResult) => (result.toolCalls ?? []).map((call, index) => ({ index, id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } }));
   const chatImages = (result: GenerationResult) => (result.images ?? []).map((image, index) => ({ index, type: "image_url", image_url: { url: imageDataUrl(image) } }));
   const usageFor = (result: GenerationResult) => chatUsage({ ...result, text: finalText(parsed.format, result) }, promptText);
   if (parsed.stream) {
@@ -110,9 +125,11 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
       const delta = (text: string) => chunk([{ index: 0, delta: { content: text }, finish_reason: null }]);
       const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, asJson ? undefined : delta, abortController.signal);
       if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
-      if (asJson) delta(finalText(parsed.format, result));
+      if (asJson && (result.text || !result.toolCalls?.length)) delta(finalText(parsed.format, result));
       const images = chatImages(result);
       if (images.length) chunk([{ index: 0, delta: { images }, finish_reason: null }]);
+      const toolCalls = chatToolCalls(result);
+      if (toolCalls.length) chunk([{ index: 0, delta: { tool_calls: toolCalls }, finish_reason: null }]);
       const reason = mapStopReason(result.stopReason).chat;
       chunk([{ index: 0, delta: {}, finish_reason: reason }]);
       if (includeUsage) chunk([], { usage: usageFor(result) });
@@ -128,7 +145,9 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
     if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
     const reason = mapStopReason(result.stopReason).chat;
     const images = chatImages(result);
-    json(response, 200, { id: chatId, object: "chat.completion", created, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: finalText(parsed.format, result), ...(images.length ? { images } : {}) }, finish_reason: reason }], usage: usageFor(result) });
+    const toolCalls = chatToolCalls(result);
+    const content = finalText(parsed.format, result);
+    json(response, 200, { id: chatId, object: "chat.completion", created, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: toolCalls.length && !content ? null : content, ...(images.length ? { images } : {}), ...(toolCalls.length ? { tool_calls: toolCalls.map(({ index: _index, ...call }) => call) } : {}) }, finish_reason: reason }], usage: usageFor(result) });
   } finally { clearTimeout(timer); }
 }
 
@@ -138,6 +157,7 @@ function forResponses(error: unknown): unknown { return error instanceof ApiErro
 async function handleResponses(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, fetchImpl?: typeof fetch): Promise<void> {
   const parsed = await normalizeResponses(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling, fetch: fetchImpl });
   if (parsed.generateImages) requireImageGeneration(bridge, parsed.model);
+  if (parsed.functionTools) requireToolCalling(bridge, parsed.model);
   const responseId = id("resp");
   const messageId = id("msg");
   const created = Math.floor(Date.now() / 1000);
@@ -147,12 +167,17 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   request.once("aborted", () => abortController.abort());
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
-  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}) };
+  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed) };
   const asJson = parsed.format.type === "json";
+  const withTools = parsed.functionTools !== undefined;
   const promptText = serializePrompt(parsed.conversation, options.instructions);
+  /** A `function_call` output item per tool call the agent made; they come after the message. */
+  const callItems = (result: GenerationResult) => (result.toolCalls ?? []).map((call) => ({ id: id("fc"), type: "function_call", status: "completed", call_id: call.id, name: call.name, arguments: call.arguments }));
   /** An `image_generation_call` item per generated image; they come before the message. */
   const imageItems = (result: GenerationResult) => (result.images ?? []).map((image) => ({ id: id("ig"), type: "image_generation_call", status: "completed", result: image.data, ...(image.revisedPrompt ? { revised_prompt: image.revisedPrompt } : {}), output_format: imageFormatName(image.mimeType) }));
-  const base = (result: GenerationResult, status: string, items: unknown[] = []) => ({ id: responseId, object: "response", created_at: created, status, model: parsed.model, output: [...items, { id: messageId, type: "message", status, role: "assistant", content: [{ type: "output_text", text: finalText(parsed.format, result), annotations: [] }] }], incomplete_details: result.stopReason === "max_tokens" ? { reason: "max_output_tokens" } : null, usage: responsesUsage({ ...result, text: finalText(parsed.format, result) }, promptText), store: false });
+  const messageItem = (result: GenerationResult, status: string) => ({ id: messageId, type: "message", status, role: "assistant", content: [{ type: "output_text", text: finalText(parsed.format, result), annotations: [] }] });
+  // A response that ends with tool calls has no message item when the agent said nothing before them.
+  const base = (result: GenerationResult, status: string, items: unknown[] = [], calls: unknown[] = []) => ({ id: responseId, object: "response", created_at: created, status, model: parsed.model, output: [...items, ...(calls.length && !result.text ? [] : [messageItem(result, status)]), ...calls], incomplete_details: result.stopReason === "max_tokens" ? { reason: "max_output_tokens" } : null, usage: responsesUsage({ ...result, text: finalText(parsed.format, result) }, promptText), store: false });
   if (parsed.stream) {
     let sequenceNumber = 0;
     const event = (type: string, payload: Record<string, unknown>) => writeSse(response, { type, sequence_number: sequenceNumber++, ...payload }, type);
@@ -163,23 +188,39 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
       event("response.output_item.added", { output_index: index, item: { id: messageId, type: "message", status: "in_progress", role: "assistant", content: [] } });
       event("response.content_part.added", { item_id: messageId, output_index: index, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
     };
-    if (!parsed.generateImages) openMessage(0);
+    // With function tools the message item opens with the first text, since a response that goes straight to tool calls has none.
+    let messageOpen = false;
+    if (!parsed.generateImages && !withTools) openMessage(0);
     try {
-      const delta = (text: string, index = 0) => event("response.output_text.delta", { item_id: messageId, output_index: index, content_index: 0, delta: text });
+      const delta = (text: string, index = 0) => {
+        if (withTools && !messageOpen) { messageOpen = true; openMessage(0); }
+        event("response.output_text.delta", { item_id: messageId, output_index: index, content_index: 0, delta: text });
+      };
       const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, asJson || parsed.generateImages ? undefined : delta, abortController.signal);
       if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
       const status = mapStopReason(result.stopReason).responseStatus;
       const text = finalText(parsed.format, result);
       const items = imageItems(result);
       items.forEach((item, index) => { event("response.output_item.added", { output_index: index, item: { ...item, status: "in_progress", result: null } }); event("response.output_item.done", { output_index: index, item }); });
+      const calls = callItems(result);
       const at = items.length;
       if (parsed.generateImages) openMessage(at);
-      if (asJson || parsed.generateImages) delta(text, at);
-      event("response.output_text.done", { item_id: messageId, output_index: at, content_index: 0, text });
-      event("response.content_part.done", { item_id: messageId, output_index: at, content_index: 0, part: { type: "output_text", text, annotations: [] } });
-      event("response.output_item.done", { output_index: at, item: base(result, status).output[0] });
+      if (withTools) { if (asJson && text) delta(text); if (!messageOpen && !calls.length) { messageOpen = true; openMessage(0); } }
+      else if (asJson || parsed.generateImages) delta(text, at);
+      if (!withTools || messageOpen) {
+        event("response.output_text.done", { item_id: messageId, output_index: at, content_index: 0, text });
+        event("response.content_part.done", { item_id: messageId, output_index: at, content_index: 0, part: { type: "output_text", text, annotations: [] } });
+        event("response.output_item.done", { output_index: at, item: messageItem(result, status) });
+      }
+      calls.forEach((call, position) => {
+        const index = at + (!withTools || messageOpen ? 1 : 0) + position;
+        event("response.output_item.added", { output_index: index, item: { ...call, status: "in_progress", arguments: "" } });
+        event("response.function_call_arguments.delta", { item_id: call.id, output_index: index, delta: call.arguments });
+        event("response.function_call_arguments.done", { item_id: call.id, output_index: index, name: call.name, arguments: call.arguments });
+        event("response.output_item.done", { output_index: index, item: call });
+      });
       const terminalEvent = status === "completed" ? "response.completed" : "response.incomplete";
-      event(terminalEvent, { response: base(result, status, items) });
+      event(terminalEvent, { response: base(result, status, items, calls) });
       endSse(response);
     } catch (error) { const mapped = forResponses(error); writeSse(response, errorEnvelope(mapped instanceof Error ? mapped : new Error(String(mapped)))); endSse(response); }
     finally { clearTimeout(timer); }
@@ -188,7 +229,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   try {
     const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, undefined, abortController.signal);
     if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
-    json(response, 200, base(result, mapStopReason(result.stopReason).responseStatus, imageItems(result)));
+    json(response, 200, base(result, mapStopReason(result.stopReason).responseStatus, imageItems(result), callItems(result)));
   } catch (error) { throw forResponses(error); }
   finally { clearTimeout(timer); }
 }
@@ -212,13 +253,16 @@ async function handleImageGeneration(request: IncomingMessage, response: ServerR
   } finally { clearTimeout(timer); }
 }
 
-/** `options.fetch` downloads http(s) image URLs (default: the global fetch). */
-export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options: { fetch?: typeof fetch } = {}): Server {
-  return createServer(async (request, response) => {
+/** `options.fetch` downloads http(s) image URLs (default: the global fetch). `options.toolBridge` is the MCP endpoint `/mcp/<token>` for function tools; the server tells it where it listens. */
+export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options: { fetch?: typeof fetch; toolBridge?: ToolBridgeHub } = {}): Server {
+  const toolBridge = options.toolBridge ?? new ToolBridgeHub();
+  const server = createServer(async (request, response) => {
     try {
       const method = request.method || "GET";
       const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
       if (method === "GET" && url.pathname === "/healthz") { json(response, 200, { status: "ok", uptime_seconds: Math.floor((Date.now() - startedAt) / 1000) }); return; }
+      // The agents reach the tool bridge here; its token is the credential, so it is routed before the API key check.
+      if (await toolBridge.handle(request, response, url.pathname)) return;
       if (!authenticated(request, config)) { json(response, 401, { error: { message: "Invalid or missing bearer token.", type: "invalid_request_error", code: "invalid_api_key", param: null } }); return; }
       if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : MODEL_IDS.map((model) => ({ id: model, ownedBy: "openai" })); json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai" })) }); return; }
       if (method === "POST" && url.pathname === "/v1/chat/completions") { await handleChat(request, response, config, bridge, options.fetch); return; }
@@ -232,4 +276,7 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
       json(response, 500, errorEnvelope(error instanceof Error ? error : new Error(String(error))));
     }
   });
+  server.on("listening", () => { const address = server.address(); if (address && typeof address === "object") toolBridge.setAddress(address.address, address.port); });
+  server.on("close", () => toolBridge.closeAll());
+  return server;
 }
