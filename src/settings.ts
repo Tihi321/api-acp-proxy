@@ -22,6 +22,8 @@ export const settingsSchema = z.object({
     ignoreSampling: z.boolean().default(false),
     /** Keep agent sessions across the turns of a conversation. */
     reuseSessions: z.boolean().default(false),
+    /** How long a turn that called a client tool waits for the tool result before the agent turn is cancelled (the agents' own limits can be shorter). */
+    toolResultTimeoutMs: positive(10 * 60 * 1000),
   }).default({}),
   providers: z.object({
     codex: z.object({
@@ -191,6 +193,7 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
   apply("server.workRoot", env.PROXY_WORK_ROOT || undefined, (v) => { server.workRoot = v; });
   apply("server.ignoreSampling", parseBool(env.PROXY_IGNORE_SAMPLING), (v) => { server.ignoreSampling = v; });
   apply("server.reuseSessions", parseBool(env.PROXY_REUSE_SESSIONS), (v) => { server.reuseSessions = v; });
+  apply("server.toolResultTimeoutMs", parseInt(env.PROXY_TOOL_RESULT_TIMEOUT_MS), (v) => { server.toolResultTimeoutMs = v; });
   apply("providers.codex.enabled", parseBool(env.PROXY_CODEX_ENABLED), (v) => { providers.codex.enabled = v; });
   apply("providers.codex.isolatedHome", parseBool(env.PROXY_CODEX_ISOLATED_HOME), (v) => { providers.codex.isolatedHome = v; });
   apply("providers.codex.acpCommand", env.PROXY_ACP_COMMAND || undefined, (v) => { providers.codex.acpCommand = v; });
@@ -210,6 +213,7 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
     modelsWaitMs: server.modelsWaitMs,
     ignoreSampling: server.ignoreSampling,
     reuseSessions: server.reuseSessions,
+    toolResultTimeoutMs: server.toolResultTimeoutMs,
     workRoot: server.workRoot || path.join(os.tmpdir(), "codex-subscription-proxy"),
     acpCommand: providers.codex.acpCommand || undefined,
     acpArgs: providers.codex.acpArgs,

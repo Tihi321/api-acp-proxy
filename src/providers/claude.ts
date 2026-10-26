@@ -7,6 +7,7 @@ import path from "node:path";
 import { AcpProvider } from "../acp-provider.js";
 import type { ProviderRegistration } from "../controller.js";
 import { AcpUnavailableError } from "../provider.js";
+import { BRIDGE_SERVER_NAME } from "../tool-bridge.js";
 import type { AuthMethodInfo, ProviderDescriptor, RuntimeContext } from "../provider.js";
 
 /** `settings.providers.claude`. */
@@ -27,6 +28,8 @@ function claudeEnv(ctx: RuntimeContext, settings: ClaudeSettings, env: NodeJS.Pr
   if (settings.oauthToken) childEnv.CLAUDE_CODE_OAUTH_TOKEN = settings.oauthToken;
   if (settings.configDir) childEnv.CLAUDE_CONFIG_DIR = settings.configDir;
   if (settings.executablePath) childEnv.CLAUDE_CODE_EXECUTABLE = settings.executablePath;
+  // A tool call held for the client's result must not hit the CLI's 300 s silence limit (the proxy answers its calls as SSE, which also avoids the 60 s limit of a JSON reply).
+  childEnv.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT = "0";
   delete childEnv.CLAUDECODE;
   delete childEnv.CLAUDE_CODE_ENTRYPOINT;
   delete childEnv.NODE_OPTIONS;
@@ -95,6 +98,9 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
       return { command: ctx.nodeRuntime.command, args: [...ctx.nodeRuntime.argsPrefix, adapterEntry(ctx)], env: claudeEnv(ctx, settings, env) };
     },
     onSessionDisposed: (cwd) => removeProjectLeftovers(settings, env, cwd),
+    // With `allowedTools` Claude asks no permission for the client's tools; the rule below is the fallback. No call limit (see claudeEnv).
+    bridgeSessionMeta: { claudeCode: { options: { allowedTools: [`mcp__${BRIDGE_SERVER_NAME}__*`] } } },
+    allowTool: (permission) => (permission.toolCall._meta as { claudeCode?: { mcpServer?: { name?: unknown } } } | null | undefined)?.claudeCode?.mcpServer?.name === BRIDGE_SERVER_NAME,
     mapError(error) {
       const text = [error instanceof Error ? error.message : String(error), JSON.stringify((error as { data?: unknown } | null)?.data ?? "")].join(" ");
       if (/Failed to refresh OAuth token/i.test(text) && /another Claude Code process is refreshing/i.test(text)) return new AcpUnavailableError("Claude is refreshing its login in another process. Retry in a few seconds.", error, "provider_busy", BUSY_RETRY_SECONDS);
@@ -108,5 +114,5 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
 export const claudeRegistration: ProviderRegistration = {
   id: "claude",
   displayName: "Claude",
-  create: ({ providerSettings, ctx, env, config }) => new AcpProvider(claudeDescriptor(providerSettings as ClaudeSettings, env), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions }),
+  create: ({ providerSettings, ctx, env, config }) => new AcpProvider(claudeDescriptor(providerSettings as ClaudeSettings, env), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions, toolResultTimeoutMs: config.toolResultTimeoutMs }),
 };

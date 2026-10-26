@@ -18,6 +18,8 @@ export interface ProxyConfig {
   ignoreSampling?: boolean;
   /** Keep an agent session after a completed turn and continue it when the next request extends the same conversation. */
   reuseSessions?: boolean;
+  /** How long a turn suspended on a tool call waits for the client's result (shorter for agents that give up sooner). */
+  toolResultTimeoutMs?: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ProxyConfig {

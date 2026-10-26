@@ -8,6 +8,7 @@ import { MODEL_IDS } from "../config.js";
 import { AcpProvider } from "../acp-provider.js";
 import type { ProviderRegistration } from "../controller.js";
 import type { ProviderDescriptor } from "../provider.js";
+import { BRIDGE_SERVER_NAME } from "../tool-bridge.js";
 
 export interface CodexOptions { authMethodId?: string; /** Run Codex with its own `<dataDir>/codex-home` instead of the user's ~/.codex (default true). */ isolatedHome?: boolean; }
 
@@ -49,6 +50,9 @@ export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArg
     },
     // Its image tool asks no permission (it cannot be gated); the file lands in <CODEX_HOME>/generated_images/<threadId>/.
     imageGeneration: { imageFolder: (ctx) => path.join(options.isolatedHome !== false ? path.join(ctx.dataDir, "codex-home") : process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "generated_images"), pruneEmptyParent: true },
+    // Its MCP approval request names only the tool call id and `is_mcp_tool_approval`: the server comes from the `tool_call` with that id. Codex gives up on a call after 300 s (fixed).
+    allowTool: (permission, tracked) => (permission._meta as { is_mcp_tool_approval?: unknown } | null | undefined)?.is_mcp_tool_approval === true && (tracked?.rawInput as { server?: unknown } | null | undefined)?.server === BRIDGE_SERVER_NAME,
+    toolCallLimitMs: 300_000,
     loginRequired: (methods, env) => (options.authMethodId || "chat-gpt") === "chat-gpt" && methods.some((method) => method.id === "chat-gpt") && firstLogin(env) ? "Log in to Codex for the proxy: its own Codex home has no login yet." : undefined,
     defaultLoginMethod: options.authMethodId || "chat-gpt",
     chooseAuth(methods, env) {
@@ -63,5 +67,5 @@ export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArg
 export const codexRegistration: ProviderRegistration = {
   id: "codex",
   displayName: "Codex",
-  create: ({ config, providerSettings, ctx }) => new AcpProvider(codexDescriptor(config, { authMethodId: providerSettings.authMethodId as string | undefined, isolatedHome: providerSettings.isolatedHome !== false }), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions }),
+  create: ({ config, providerSettings, ctx }) => new AcpProvider(codexDescriptor(config, { authMethodId: providerSettings.authMethodId as string | undefined, isolatedHome: providerSettings.isolatedHome !== false }), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions, toolResultTimeoutMs: config.toolResultTimeoutMs }),
 };

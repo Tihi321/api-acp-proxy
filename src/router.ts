@@ -113,6 +113,8 @@ export class ProviderRouter implements AcpLike {
 
   canGenerateImages(id: string): boolean { return this.resolve(id)?.provider.imageGeneration === true; }
 
+  canCallTools(id: string): boolean { return this.resolve(id)?.provider.toolCalling === true; }
+
   private entries(): ListedModel[] {
     const owners = this.unprefixedOwners();
     const out: ListedModel[] = [];

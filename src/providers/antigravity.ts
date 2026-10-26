@@ -9,6 +9,7 @@ import { silentLogger, type Logger } from "../logger.js";
 import { sweepOrphans } from "../process-tree.js";
 import type { AuthMethodInfo, ProviderDescriptor, RuntimeContext } from "../provider.js";
 import type { SettingsPatch } from "../settings.js";
+import { BRIDGE_SERVER_NAME } from "../tool-bridge.js";
 import { agentsDir, readInstallInfo } from "./antigravity-installer.js";
 
 export interface AntigravityOptions {
@@ -195,6 +196,9 @@ export function antigravityDescriptor(ctxForHooks: RuntimeContext, options: Anti
       allow: (permission) => permission.toolCall.title === "Run generate_image?" && permission.toolCall.kind === "other",
       imageFolder: () => path.join(home(), "antigravity-acp", "brain"),
     },
+    // Its permission request repeats the `tool_call` with `_meta.mcp.server`. It gives up on a tool call after 3 minutes (fixed).
+    allowTool: (permission) => { const meta = permission.toolCall._meta as { mcp?: { server?: unknown }; is_mcp_tool_call?: unknown } | null | undefined; return meta?.mcp?.server === BRIDGE_SERVER_NAME && (meta.is_mcp_tool_call === true || (permission._meta as { is_mcp_tool_call?: unknown } | null | undefined)?.is_mcp_tool_call === true); },
+    toolCallLimitMs: 180_000,
     mapError(error, model) {
       const text = [error instanceof Error ? error.message : String(error), JSON.stringify((error as { data?: unknown } | null)?.data ?? "")].join(" ");
       if (/requested entity was not found/i.test(text)) {
@@ -209,5 +213,5 @@ export function antigravityDescriptor(ctxForHooks: RuntimeContext, options: Anti
 export const antigravityRegistration: ProviderRegistration = {
   id: "antigravity",
   displayName: "Google Antigravity",
-  create: ({ providerSettings, ctx, env, config, saveSettings }) => new AcpProvider(antigravityDescriptor(ctx, { settings: providerSettings as AntigravityOptions["settings"], env, saveSettings }), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions }),
+  create: ({ providerSettings, ctx, env, config, saveSettings }) => new AcpProvider(antigravityDescriptor(ctx, { settings: providerSettings as AntigravityOptions["settings"], env, saveSettings }), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions, toolResultTimeoutMs: config.toolResultTimeoutMs }),
 };

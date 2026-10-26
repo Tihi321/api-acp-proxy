@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { createLogger, type Logger } from "./logger.js";
 import { ProviderRouter } from "./router.js";
 import { createProxyServer } from "./server.js";
+import { ToolBridgeHub } from "./tool-bridge.js";
 import { codexRegistration } from "./providers/codex.js";
 import { antigravityRegistration } from "./providers/antigravity.js";
 import { claudeRegistration } from "./providers/claude.js";
@@ -49,7 +50,7 @@ export interface ServerStatus { state: ServerState; host: string; port: number; 
 export interface ControllerStatus { server: ServerStatus; providers: ProviderStatus[]; overridden: string[]; settingsPath: string; }
 export interface SettingsSnapshot { settings: Settings; effective: Settings; overridden: string[]; path: string; }
 
-interface Running { server: Server; router: ProviderRouter; providers: Provider[]; unsubscribe: Array<() => void>; }
+interface Running { server: Server; router: ProviderRouter; providers: Provider[]; unsubscribe: Array<() => void>; toolBridge: ToolBridgeHub; }
 
 /** Owns settings, router and HTTP server. Emits "status" (ControllerStatus) on every change. */
 export class ProxyController extends EventEmitter {
@@ -160,7 +161,9 @@ export class ProxyController extends EventEmitter {
     const { config, settings, providers: providerSettings } = await this.load();
     this.serverStatus = { state: "starting", host: config.host, port: config.port };
     this.publish();
-    const ctx = { ...this.ctx, dataDir: this.dataDir };
+    // The MCP endpoint the agents reach the client's function tools on; createProxyServer tells it the port once the server listens.
+    const toolBridge = new ToolBridgeHub();
+    const ctx = { ...this.ctx, dataDir: this.dataDir, toolBridge };
     const providers: Provider[] = [];
     for (const entry of this.registry) {
       if (!providerSettings[entry.id]?.enabled) continue;
@@ -168,7 +171,7 @@ export class ProxyController extends EventEmitter {
       catch (error) { this.logger.error(`Could not create provider '${entry.id}': ${error instanceof Error ? error.message : String(error)}`); }
     }
     const router = new ProviderRouter({ providers, logger: this.logger, cachePath: path.join(this.dataDir, "models-cache.json"), modelsWaitMs: config.modelsWaitMs });
-    const server = createProxyServer(config, router, { fetch: ctx.fetch });
+    const server = createProxyServer(config, router, { fetch: ctx.fetch, toolBridge });
     try {
       await new Promise<void>((resolve, reject) => {
         server.once("error", reject);
@@ -184,7 +187,7 @@ export class ProxyController extends EventEmitter {
     server.on("error", (error) => this.logger.error(`Server error: ${error.message}`));
     const port = (server.address() as AddressInfo).port;
     const unsubscribe = providers.map((provider) => provider.onStatus(() => this.publish()));
-    this.running = { server, router, providers, unsubscribe };
+    this.running = { server, router, providers, unsubscribe, toolBridge };
     const visibleHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host.includes(":") ? `[${config.host}]` : config.host;
     this.serverStatus = { state: "running", host: config.host, port, baseUrl: `http://${visibleHost}:${port}/v1` };
     this.logger.info(`Codex subscription proxy listening on http://${config.host}:${port}`);
@@ -197,6 +200,8 @@ export class ProxyController extends EventEmitter {
     this.running = undefined;
     if (running) {
       for (const off of running.unsubscribe) off();
+      // Tool calls held open for a client's result would keep their connections (and the drain) going; the agents are stopped right after.
+      running.toolBridge.closeAll();
       const closed = new Promise<void>((resolve) => running.server.close(() => resolve()));
       running.server.closeIdleConnections?.();
       const timer = setTimeout(() => running.server.closeAllConnections?.(), this.drainMs);

@@ -1,5 +1,87 @@
 # Changelog
 
+## 2026-10-26: AAP-15 Phase 4 (function calling through an MCP bridge)
+
+OpenAI function calling now works with Claude, Codex and Antigravity, for Chat Completions and Responses, streaming too. The client's tools reach each agent through an MCP endpoint that the proxy hosts for that session. A tool call suspends the agent's turn; the client's next request with the results resumes it.
+
+**Repository** `api-acp-proxy`, branch `AAP-15_function-calling` (stacked on `AAP-14_image-generation` at `9d11a14`, PR #10 open):
+- `src/tool-bridge.ts` (new):
+  - `ToolBridgeHub` serves `/mcp/<token>`, with a 32-byte random token per agent session and 404 for an unknown token. Request bodies are capped.
+  - `BridgeSession` answers `initialize` (echoing the protocol version), `ping`, and `tools/list` with every tool marked `readOnlyHint: true`. `server/discover` and other unknown methods get `-32601`, notifications 202, GET 405, DELETE 200.
+  - `tools/call` is answered as SSE: a `: keepalive` comment at once and every 20 s, then one `message` event with the result.
+  - State is per token, so Antigravity's reconnect works.
+  - The hub learns the real listening address from the server and maps a wildcard bind to `127.0.0.1`.
+- `src/server.ts`:
+  - Routes `/mcp/<token>` before the API-key check (the token is the credential).
+  - Rejects tools for a provider that can't take them (400 `model_not_capable`) before a stream starts.
+  - Chat output: `finish_reason: "tool_calls"`, `message.tool_calls` and `delta.tool_calls`.
+  - Responses output: `function_call` items, with `output_item.added`, `function_call_arguments.delta` / `.done` and `output_item.done`.
+- `src/acp-provider.ts`:
+  - A request with tools gets a fresh session (never a warm one) whose `session/new` names the `client` MCP server and merges the descriptor's `bridgeSessionMeta` into `_meta`.
+  - Tool calls are batched until 150 ms after the latest one. The turn is then suspended, with the pending prompt and the held MCP calls kept and keyed by call id. Suspended turns count against the kept-session cap.
+  - The suspension timeout is `min(server.toolResultTimeoutMs, toolCallLimitMs − 30 s)`. On expiry the held calls get an error result, the turn is cancelled and the session disposed.
+  - Resume requires the same model, the same tools and the same earlier history, ending with the tool-call message and one result per id. Anything else uses a fresh session with the whole history as text.
+  - `parallel_tool_calls: false` returns the first call, and the others get an MCP error.
+  - `client` tool updates are tracked per id and never forwarded.
+- `src/provider.ts`: `toolCallLimitMs`, `bridgeSessionMeta`, `allowTool(permission, tracked)`, `Provider.toolCalling`, and the tool fields on the generate options and result.
+- `src/providers/claude.ts`:
+  - `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` in `claudeEnv`.
+  - Bridge sessions get `allowedTools: ["mcp__client__*"]`.
+  - Fallback permission rule: `_meta.claudeCode.mcpServer.name === "client"`.
+- `src/providers/antigravity.ts`: `toolCallLimitMs` 180 000. Allows `toolCall._meta.mcp.server === "client"` with `is_mcp_tool_call`.
+- `src/providers/codex.ts`: `toolCallLimitMs` 300 000. Allows `_meta.is_mcp_tool_approval` only when the tracked `tool_call` with that id has `rawInput.server === "client"`. Every rule answers only with `allow_once`, only in sessions that have tools.
+- `src/api.ts`:
+  - **Chat:** `tools` (`type: "function"`), `tool_choice`, `parallel_tool_calls`, assistant `tool_calls` with null content, and `role: "tool"` messages.
+  - **Responses:** `tools` (`function` next to `image_generation`), `tool_choice`, `parallel_tool_calls`, `function_call` / `function_call_output` items, and message items with `type` / `id` / `status`.
+  - **Text form of tool history:** `[tool call <id>] name args`, `[tool result <id>]`.
+  - **Tool choice:** `none` creates no bridge. `required` or a named function adds an instruction line only.
+- `src/controller.ts`, `src/acp.ts`, `src/router.ts`: the controller owns the hub (passed to providers through `RuntimeContext.toolBridge` and to the server) and closes it on stop. The router gains `canCallTools(model)`.
+- `src/config.ts`, `src/settings.ts`: `server.toolResultTimeoutMs` (default 600 000, env `PROXY_TOOL_RESULT_TIMEOUT_MS`).
+- `README.md`: function calling, timeouts per agent, the suspension and fallback, the usage note. `ROADMAP.md`: tools are now accepted.
+- Tests:
+  - `tests/tool-calling.test.ts` (new, 42 tests).
+  - `tests/fixtures/fake-acp.mjs`: `FAKE_ACP_MCP=claude|agy|codex` with `_CALLS`, `_TEXT`, `_ONCE` and `_STRAY` options.
+  - `tests/proxy.test.ts`: the "unsupported field" example is now `functions`. `tests/settings.test.ts` covers the new setting.
+- `.claude/tickets/AAP-11-images-and-tools/plan.md`: Phase 4 status, deviations and the live table.
+
+**Live check** (port 18915, OpenAI JS SDK 7.20, tools `get_weather(city)` and `add(a, b)`, `PROXY_CODEX_ISOLATED_HOME=0`):
+
+| API | Model | Round trips | Time |
+|---|---|---|---|
+| chat | `claude/haiku` | 2 (both tools in round 1) | 3.2 s |
+| chat, streamed, first result held 90 s | `claude/haiku` | 2 | 94.3 s |
+| chat | `codex/gpt-5.6-luna` | 2 (both tools in round 1) | 11.4 s |
+| Responses | `codex/gpt-5.6-luna` | 2 (both tools in round 1) | 10.7 s |
+| chat | `antigravity/gemini-3.8-flash-low` | 4 (it retried a call with a wrong argument name) | 25.5 s |
+
+All five answers were correct. The 90 s hold ran past Claude's 60 s JSON limit; the SSE reply and the idle-timeout env carried it.
+
+**Deviations**
+- Tools combined with `image_generation` or chat `modalities` are rejected with 400 `unsupported_parameter`.
+- Responses message input items accept `type: "message"`, `id` and `status`, because clients send the proxy's own output items back.
+- A cancelled suspended turn sends `session/cancel` before answering its held calls with an error, so the agent does not continue on the error.
+- In the live runs, Codex returned both tools in one batch, where the spike had seen them strictly one after another. The 150 ms batching handles both.
+- `toolResultTimeoutMs` is set in the settings file or by env only; there is no settings-window field.
+- A response that ends with tool calls reports estimated usage. The final response carries the agent's usage for the whole prompt, which is inflated for Claude (noted in the README).
+- The proxy does not validate tool arguments against the schema; Antigravity once sent `location` instead of `city` and retried.
+
+**Verification**
+- `npm run typecheck`: clean.
+- `npx vitest run`: 257 passed, 1 skipped (18 files).
+- `npm run build`: succeeded.
+- I ran all three on the final tree.
+- Exercised only by the fake agent, not live:
+  - Claude's permission fallback (it isn't needed with `allowedTools`).
+  - The full 20 s keepalive and `closeAll` (unit level).
+  - Antigravity's 180 s and Codex's 300 s limits (descriptor tests and the injectable timeout test).
+  - Codex's approval path appears to have run in the live Codex loop (it completed), but it wasn't inspected separately.
+
+**Follow-ups**
+- Optional: validate tool arguments against the declared schema before returning a tool call.
+- Still pending: the Codex isolated-home live check after the user's first Codex login (AAP-12).
+
+**Status:** committed on `AAP-15_function-calling` (cut on `AAP-14_image-generation`, which is merged in PR #10), pushed, with a PR against `master`.
+
 ## 2026-10-26: AAP-14 Phase 3 (image generation)
 
 Antigravity and Codex now generate images through `/v1/images/generations`, the Responses `image_generation` tool and Chat `modalities`. The live check produced a dolphin from each.
@@ -60,7 +142,7 @@ Antigravity and Codex now generate images through `/v1/images/generations`, the 
 - The live proxy was stopped with `kill -TERM`, which on Windows ends the process without a graceful shutdown. No agent processes were left, and the three Antigravity sessions were purged with the proxy's own purge.
 - Still pending: the Codex isolated-home live check after the user's first Codex login (AAP-12).
 
-**Status:** committed on `AAP-14_image-generation`, pushed, with a PR against `master`.
+**Status:** committed as `9d11a14` on `AAP-14_image-generation`, merged to `master` in PR #10.
 
 ## 2026-10-26: AAP-13 Phase 2 (image input)
 
@@ -121,7 +203,7 @@ Chat Completions and Responses now accept images. They reach Codex, Claude and A
 - Optional: a cap on images per request.
 - The Codex isolated-home live check still waits for the user's first Codex login (AAP-12).
 
-**Status:** committed as `dabba93` on `AAP-13_image-input`, PR #8 open against `master`.
+**Status:** committed as `dabba93` on `AAP-13_image-input`, merged to `master` in PR #8.
 
 ## 2026-10-26: AAP-12 Phase 1 (agent hardening)
 

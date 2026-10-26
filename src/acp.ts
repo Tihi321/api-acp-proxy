@@ -23,4 +23,6 @@ export interface AcpLike {
   hasModel?(model: string): boolean;
   /** Whether the model's provider can generate images (a bridge without this method is asked and answers 400 itself). */
   canGenerateImages?(model: string): boolean;
+  /** Whether the model's provider can be given function tools (a bridge without this method is asked and answers 400 itself). */
+  canCallTools?(model: string): boolean;
 }

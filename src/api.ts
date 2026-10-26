@@ -4,16 +4,21 @@ import { ImageError, loadImage } from "./images.js";
 
 // Content parts are checked one by one in `convertContent`, so an unknown part type answers `unsupported_content` instead of a schema error.
 const messageContentSchema = z.union([z.string(), z.array(z.object({ type: z.string() }).passthrough()).min(1)]);
+const chatToolCallSchema = z.object({ id: z.string().min(1), type: z.literal("function"), function: z.object({ name: z.string().min(1), arguments: z.string() }) });
 const chatMessageSchema = z.object({
-  role: z.enum(["system", "developer", "user", "assistant"]),
-  content: messageContentSchema,
+  role: z.enum(["system", "developer", "user", "assistant", "tool"]),
+  /** Null or absent only on an assistant message that carries tool calls (checked in `convertChatMessage`). */
+  content: messageContentSchema.nullish(),
+  tool_calls: z.array(chatToolCallSchema).optional(),
+  tool_call_id: z.string().min(1).optional(),
+  name: z.string().optional(),
 }).strict();
 const textPartSchema = z.object({ text: z.string() });
 const chatImagePartSchema = z.object({ image_url: z.object({ url: z.string().min(1), detail: z.string().nullish() }).passthrough() });
 const responsesImagePartSchema = z.object({ image_url: z.string().min(1), detail: z.string().nullish() });
 
-const unsupportedChatFields = ["tools", "tool_choice", "functions", "function_call", "audio", "logprobs", "top_logprobs", "prediction", "service_tier", "n", "temperature", "top_p", "stop", "presence_penalty", "frequency_penalty", "seed", "logit_bias"] as const;
-const unsupportedResponseFields = ["tools", "tool_choice", "temperature", "top_p", "parallel_tool_calls", "truncation", "reasoning", "include", "background", "stream_options"] as const;
+const unsupportedChatFields = ["functions", "function_call", "audio", "logprobs", "top_logprobs", "prediction", "service_tier", "n", "temperature", "top_p", "stop", "presence_penalty", "frequency_penalty", "seed", "logit_bias"] as const;
+const unsupportedResponseFields = ["temperature", "top_p", "truncation", "reasoning", "include", "background", "stream_options"] as const;
 
 // Fields that only tune sampling. The agents behind the proxy cannot honour them, so by default they are
 // rejected; with `ignoreSampling` they are dropped instead, for clients that send them on every request.
@@ -53,14 +58,20 @@ export const chatRequestSchema = z.object({
   response_format: chatResponseFormatSchema.nullish(),
 }).passthrough();
 
+// `type`, `id` and `status` are there because clients send our own output items back as input.
 const responseMessageSchema = z.object({
+  type: z.literal("message").optional(),
+  id: z.string().optional(),
+  status: z.string().optional(),
   role: z.enum(["system", "developer", "user", "assistant"]),
   content: messageContentSchema,
 }).strict();
+const responseFunctionCallSchema = z.object({ type: z.literal("function_call"), call_id: z.string().min(1), name: z.string().min(1), arguments: z.string(), id: z.string().optional(), status: z.string().optional() }).strict();
+const responseFunctionOutputSchema = z.object({ type: z.literal("function_call_output"), call_id: z.string().min(1), output: z.union([z.string(), z.array(z.object({ type: z.string() }).passthrough())]), id: z.string().optional(), status: z.string().optional() }).strict();
 
 export const responsesRequestSchema = z.object({
   model: z.string(),
-  input: z.union([z.string(), z.array(responseMessageSchema).min(1)]),
+  input: z.union([z.string(), z.array(z.union([responseMessageSchema, responseFunctionCallSchema, responseFunctionOutputSchema])).min(1)]),
   instructions: z.string().optional(),
   stream: z.boolean().optional().default(false),
   store: z.boolean().optional().default(false),
@@ -72,9 +83,16 @@ export const responsesRequestSchema = z.object({
 export type ChatRequest = z.infer<typeof chatRequestSchema>;
 export type ResponsesRequest = z.infer<typeof responsesRequestSchema>;
 export type Role = "system" | "developer" | "user" | "assistant";
+/** A tool call of an assistant message: `id` is the proxy's `call_<random>`, `arguments` the JSON text. */
+export type ToolCall = { id: string; name: string; arguments: string };
+/** A function tool of the client's request. */
+export interface ToolDef { name: string; description?: string; parameters?: unknown }
+/** `tool_choice`: `none` leaves the tools out altogether; `required` and a named function are only an instruction to the agent. */
+export type ToolChoice = "none" | "auto" | "required" | { name: string };
 /** A piece of a message; images are always base64 `data` (never a URI) because the agents reject or hang on a `uri`. */
 export type Part = { type: "text"; text: string } | { type: "image"; mimeType: string; data: string };
-export type Message = { role: Role; parts: Part[] };
+/** `role: "tool"` is a tool result (`toolCallId`); an assistant message may carry `toolCalls` (and no text). */
+export type Message = { role: Role | "tool"; parts: Part[]; toolCalls?: ToolCall[]; toolCallId?: string };
 export const textMessage = (role: Role, text: string): Message => ({ role, parts: [{ type: "text", text }] });
 /** The text parts of a message joined; images are left out. */
 export const messageText = (message: Message): string => message.parts.map((part) => part.type === "text" ? part.text : "").join("");
@@ -121,12 +139,12 @@ function rejectUnsupported(obj: Record<string, unknown>, fields: readonly string
 }
 
 /** `generateImages`: the request asked the agent for images (chat `modalities` with "image", Responses `image_generation` tool). */
-type NormalizedRequest = { model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; generateImages: boolean };
+type NormalizedRequest = { model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; generateImages: boolean; /** The function tools to hand the agent (absent without tools or with `tool_choice: "none"`). */ functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean };
 
 function unsupportedContent(message: string, param: string): ApiError { return new ApiError(400, "unsupported_content", message, param); }
 
 /** Turns message content into parts: text stays text, an image URL is decoded or downloaded to base64 (user messages only). Anything else is `unsupported_content`. */
-async function convertContent(content: z.infer<typeof messageContentSchema>, role: Role, api: "chat" | "responses", param: string, options: NormalizeOptions): Promise<Part[]> {
+async function convertContent(content: z.infer<typeof messageContentSchema>, role: Role | "tool", api: "chat" | "responses", param: string, options: NormalizeOptions): Promise<Part[]> {
   if (typeof content === "string") return [{ type: "text", text: content }];
   const textTypes = api === "chat" ? ["text"] : ["text", "input_text", "output_text"];
   const imageType = api === "chat" ? "image_url" : "input_image";
@@ -154,44 +172,140 @@ function chatModalities(value: unknown): boolean {
   return value.includes("image");
 }
 
-/** Responses `tools`: true when it is a non-empty list of `image_generation` tools (other tools, or an empty list, are left to the unsupported-parameter check). `partial_images` is a 400. */
-function responsesImageTool(data: Record<string, unknown>): boolean {
+/** Responses `tools`: `image_generation` tools or function tools (not both in one request); anything else, or an empty list, is a 400. `partial_images` is a 400. */
+function responsesTools(data: Record<string, unknown>): { image: boolean; functions: ToolDef[] } {
   const tools = data.tools;
-  if (!Array.isArray(tools) || !tools.length || !tools.every((tool) => tool && typeof tool === "object" && (tool as { type?: unknown }).type === "image_generation")) return false;
-  for (const tool of tools as Array<{ partial_images?: unknown }>) if (tool.partial_images != null && tool.partial_images !== 0) throw new ApiError(400, "unsupported_parameter", "Partial images are not supported; the image is returned whole.", "tools");
-  return true;
+  if (tools === undefined || tools === null) return { image: false, functions: [] };
+  if (!Array.isArray(tools) || !tools.length) throw toolsError("Parameter 'tools' is not supported by this proxy.");
+  let image = false;
+  const functions: ToolDef[] = [];
+  for (const tool of tools) {
+    if (tool && typeof tool === "object" && (tool as { type?: unknown }).type === "image_generation") {
+      if ((tool as { partial_images?: unknown }).partial_images != null && (tool as { partial_images?: unknown }).partial_images !== 0) throw toolsError("Partial images are not supported; the image is returned whole.");
+      image = true;
+    } else functions.push(parseFunctionTool(tool, "responses"));
+  }
+  if (image && functions.length) throw toolsError("Function tools cannot be combined with the image_generation tool in one request.");
+  if (new Set(functions.map((tool) => tool.name)).size !== functions.length) throw toolsError("Tool names must be unique.", "invalid_request");
+  return { image, functions };
 }
 /** A `tool_choice` that agrees with the image tool being the only tool. */
 function imageToolChoice(choice: unknown): boolean { return choice === "auto" || choice === "required" || (typeof choice === "object" && choice !== null && (choice as { type?: unknown }).type === "image_generation"); }
+
+const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+function toolsError(message: string, code = "unsupported_parameter", param = "tools"): ApiError { return new ApiError(400, code, message, param); }
+
+/** One function tool: chat nests it under `function`, Responses puts the fields next to `type`. */
+function parseFunctionTool(raw: unknown, api: "chat" | "responses"): ToolDef {
+  const type = raw && typeof raw === "object" ? (raw as { type?: unknown }).type : undefined;
+  if (type !== "function") throw toolsError(api === "chat" ? "Only tools of type 'function' are supported." : "Only tools of type 'function' (and 'image_generation') are supported.");
+  const spec = (api === "chat" ? (raw as { function?: unknown }).function : raw) as Record<string, unknown> | undefined;
+  if (!spec || typeof spec !== "object" || typeof spec.name !== "string") throw toolsError("A function tool needs a name.", "invalid_request");
+  if (!TOOL_NAME.test(spec.name)) throw toolsError(`The tool name '${spec.name}' must be 1 to 64 letters, digits, '_' or '-'.`, "invalid_request");
+  if (spec.description !== undefined && spec.description !== null && typeof spec.description !== "string") throw toolsError("A tool description must be a string.", "invalid_request");
+  return { name: spec.name, ...(typeof spec.description === "string" && spec.description ? { description: spec.description } : {}), ...(spec.parameters && typeof spec.parameters === "object" ? { parameters: spec.parameters } : {}) };
+}
+
+/** `tool_choice` against the tools list: a string, or a named function (chat `{ type, function: { name } }`, Responses `{ type, name }`). */
+function parseToolChoice(choice: unknown, tools: ToolDef[], api: "chat" | "responses"): ToolChoice {
+  if (choice === undefined || choice === null) return "auto";
+  if (choice === "none" || choice === "auto" || choice === "required") return choice;
+  const named = choice && typeof choice === "object" && (choice as { type?: unknown }).type === "function" ? (api === "chat" ? (choice as { function?: { name?: unknown } }).function?.name : (choice as { name?: unknown }).name) : undefined;
+  if (typeof named !== "string") throw toolsError("tool_choice must be 'none', 'auto', 'required' or a named function.", "unsupported_parameter", "tool_choice");
+  if (!tools.some((tool) => tool.name === named)) throw toolsError(`tool_choice names '${named}', which is not in tools.`, "invalid_request", "tool_choice");
+  return { name: named };
+}
+
+/** The shared tail of both APIs: tools, `tool_choice` and `parallel_tool_calls` into the normalized fields (nothing for `none`: the agent gets no tools). */
+function toolFields(tools: ToolDef[], choice: unknown, parallel: unknown, api: "chat" | "responses"): Pick<NormalizedRequest, "functionTools" | "toolChoice" | "parallelToolCalls"> {
+  if (parallel !== undefined && parallel !== null && typeof parallel !== "boolean") throw toolsError("parallel_tool_calls must be a boolean.", "invalid_request", "parallel_tool_calls");
+  const parsedChoice = parseToolChoice(choice, tools, api);
+  if (parsedChoice === "none") return {};
+  return { functionTools: tools, toolChoice: parsedChoice, ...(typeof parallel === "boolean" ? { parallelToolCalls: parallel } : {}) };
+}
+
+/** Chat `tools`: only function tools; `tool_choice` without tools is rejected as before. */
+function chatTools(data: Record<string, unknown>): Pick<NormalizedRequest, "functionTools" | "toolChoice" | "parallelToolCalls"> {
+  const raw = data.tools;
+  if (raw === undefined || raw === null) {
+    if (data.tool_choice !== undefined && data.tool_choice !== null) throw toolsError("Parameter 'tool_choice' needs tools.", "unsupported_parameter", "tool_choice");
+    return {};
+  }
+  if (!Array.isArray(raw) || !raw.length) throw toolsError("Parameter 'tools' must be a non-empty array of function tools.");
+  const tools = raw.map((tool) => parseFunctionTool(tool, "chat"));
+  if (new Set(tools.map((tool) => tool.name)).size !== tools.length) throw toolsError("Tool names must be unique.", "invalid_request");
+  return toolFields(tools, data.tool_choice, data.parallel_tool_calls, "chat");
+}
+
+/** An assistant tool-call message, a tool result or a plain message of a chat request. */
+async function convertChatMessage(message: z.infer<typeof chatMessageSchema>, options: NormalizeOptions): Promise<Message> {
+  const bad = (text: string) => new ApiError(400, "invalid_request", text, "messages");
+  if (message.name !== undefined && message.role !== "tool") throw bad("Unrecognized key 'name' in a message.");
+  if (message.tool_calls && message.role !== "assistant") throw bad("Only assistant messages carry tool_calls.");
+  if (message.role === "tool") {
+    if (!message.tool_call_id) throw bad("A tool message needs a tool_call_id.");
+    if (message.content === undefined || message.content === null) throw bad("A tool message needs content.");
+    return { role: "tool", toolCallId: message.tool_call_id, parts: await convertContent(message.content, "tool", "chat", "messages", options) };
+  }
+  if (message.tool_call_id !== undefined) throw bad("Only tool messages carry a tool_call_id.");
+  const calls = message.tool_calls?.map((call) => ({ id: call.id, name: call.function.name, arguments: call.function.arguments }));
+  if (message.content === undefined || message.content === null) {
+    if (!calls?.length) throw bad("A message needs content.");
+    return { role: message.role, parts: [], toolCalls: calls };
+  }
+  return { role: message.role, parts: await convertContent(message.content, message.role, "chat", "messages", options), ...(calls?.length ? { toolCalls: calls } : {}) };
+}
 
 export async function normalizeChat(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Promise<Omit<ChatRequest, "model"> & NormalizedRequest> {
   const parsed = chatRequestSchema.safeParse(withoutFields(raw, ignorableChatFields, options.ignoreSampling));
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.", issueParam(parsed.error.issues[0]));
   rejectUnsupported(parsed.data, unsupportedChatFields);
   const generateImages = chatModalities(parsed.data.modalities);
+  const toolSpec = chatTools(parsed.data);
+  if (generateImages && toolSpec.functionTools) throw toolsError("Function tools cannot be combined with image output (modalities).");
   if (parsed.data.max_tokens !== undefined && parsed.data.max_completion_tokens !== undefined) throw new ApiError(400, "invalid_request", "Only one of max_tokens and max_completion_tokens may be provided.");
   validateModel(parsed.data.model, isKnownModel);
   const rf = parsed.data.response_format;
   const format = !rf || rf.type === "text" ? textFormat : jsonFormat(rf.type === "json_object" ? rf : { type: "json_schema", ...rf.json_schema });
   const maxOutputTokens = parsed.data.max_completion_tokens ?? parsed.data.max_tokens;
-  const conversation = await Promise.all(parsed.data.messages.map(async (message): Promise<Message> => ({ role: message.role, parts: await convertContent(message.content, message.role, "chat", "messages", options) })));
-  return { ...parsed.data, model: parsed.data.model, conversation, format, generateImages, ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}) };
+  const conversation = await Promise.all(parsed.data.messages.map((message) => convertChatMessage(message, options)));
+  return { ...parsed.data, model: parsed.data.model, conversation, format, generateImages, ...toolSpec, ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}) };
+}
+
+/** Responses input items: messages, and `function_call` / `function_call_output` items. A `function_call` joins the assistant message right before it (its text, in the same response), else it is an assistant message of its own. */
+async function convertResponsesInput(input: Array<z.infer<typeof responseMessageSchema> | z.infer<typeof responseFunctionCallSchema> | z.infer<typeof responseFunctionOutputSchema>>, options: NormalizeOptions): Promise<Message[]> {
+  const items = await Promise.all(input.map(async (item): Promise<{ message: Message } | { call: ToolCall }> => {
+    if ("role" in item) return { message: { role: item.role, parts: await convertContent(item.content, item.role, "responses", "input", options) } };
+    if (item.type === "function_call") return { call: { id: item.call_id, name: item.name, arguments: item.arguments } };
+    return { message: { role: "tool", toolCallId: item.call_id, parts: await convertContent(item.output, "tool", "responses", "input", options) } };
+  }));
+  const out: Message[] = [];
+  for (const entry of items) {
+    if ("message" in entry) { out.push(entry.message); continue; }
+    const last = out[out.length - 1];
+    if (last?.role === "assistant") (last.toolCalls ??= []).push(entry.call);
+    else out.push({ role: "assistant", parts: [], toolCalls: [entry.call] });
+  }
+  return out;
 }
 
 export async function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Promise<Omit<ResponsesRequest, "model"> & NormalizedRequest> {
   const parsed = responsesRequestSchema.safeParse(withoutFields(raw, ignorableResponseFields, options.ignoreSampling));
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.", issueParam(parsed.error.issues[0]));
-  const generateImages = responsesImageTool(parsed.data);
-  rejectUnsupported(parsed.data, unsupportedResponseFields.filter((field) => !(generateImages && (field === "tools" || (field === "tool_choice" && imageToolChoice(parsed.data.tool_choice))))));
+  const { image: generateImages, functions } = responsesTools(parsed.data);
+  rejectUnsupported(parsed.data, unsupportedResponseFields);
+  if (generateImages) { if (parsed.data.tool_choice != null && !imageToolChoice(parsed.data.tool_choice)) rejectUnsupported(parsed.data, ["tool_choice"]); rejectUnsupported(parsed.data, ["parallel_tool_calls"]); }
+  else if (!functions.length) rejectUnsupported(parsed.data, ["tool_choice", "parallel_tool_calls"]);
+  const toolSpec = functions.length ? toolFields(functions, parsed.data.tool_choice, parsed.data.parallel_tool_calls, "responses") : {};
   if (parsed.data.store === true) throw new ApiError(400, "unsupported_parameter", "Stored responses are not supported.", "store");
   if (parsed.data.previous_response_id !== undefined) throw new ApiError(400, "unsupported_parameter", "Persistent conversations are not supported.", "previous_response_id");
   validateModel(parsed.data.model, isKnownModel);
   const conversation: Message[] = [];
   if (parsed.data.instructions) conversation.push(textMessage("system", parsed.data.instructions));
   if (typeof parsed.data.input === "string") conversation.push(textMessage("user", parsed.data.input));
-  else conversation.push(...await Promise.all(parsed.data.input.map(async (message): Promise<Message> => ({ role: message.role, parts: await convertContent(message.content, message.role, "responses", "input", options) }))));
+  else conversation.push(...await convertResponsesInput(parsed.data.input, options));
   const tf = parsed.data.text?.format;
-  return { ...parsed.data, model: parsed.data.model, conversation, format: !tf || tf.type === "text" ? textFormat : jsonFormat(tf), generateImages, ...(parsed.data.max_output_tokens !== undefined ? { maxOutputTokens: parsed.data.max_output_tokens } : {}) };
+  return { ...parsed.data, model: parsed.data.model, conversation, format: !tf || tf.type === "text" ? textFormat : jsonFormat(tf), generateImages, ...toolSpec, ...(parsed.data.max_output_tokens !== undefined ? { maxOutputTokens: parsed.data.max_output_tokens } : {}) };
 }
 
 const imageRequestSchema = z.object({
@@ -251,22 +365,43 @@ export function formatInstructions(format: OutputFormat): string | undefined {
   return `${base} It must conform to this JSON Schema${format.name ? ` (${format.name})` : ""}${format.description ? `: ${format.description}` : ""}\n${JSON.stringify(format.schema)}`;
 }
 
+/** What a request with function tools tells the agent about them (see `buildPrompt`). */
+export interface ToolPrompt { choice?: ToolChoice; parallel?: boolean }
+
+/** The preamble of a prompt whose session has the client's tools: use only the `client` MCP server, nothing else. `tool_choice` and `parallel_tool_calls` are instructions only. */
+function toolsPreamble(tools: ToolPrompt): string {
+  const lines = ["This is an API request with tools. When a tool is needed, call it from the MCP server named \"client\" and use only those tools. Never run commands, access files, use the web or call any other tool. Respond with the answer only."];
+  if (tools.choice === "required") lines.push("You must call one of the client tools before you answer.");
+  else if (typeof tools.choice === "object") lines.push(`You must call the client tool "${tools.choice.name}" before you answer.`);
+  if (tools.parallel === false) lines.push("Call one tool at a time.");
+  return lines.join("\n");
+}
+
+/** One message of the prompt: `[role]` and its text, then its tool calls; a tool result is `[tool result <id>]`. A message without tool calls is exactly `[role]\n<text>`. */
+function messageBlock(message: Message): string {
+  const text = messageText(message);
+  const lines = [message.role === "tool" ? `[tool result ${message.toolCallId ?? ""}]` : `[${message.role}]`];
+  if (text !== "" || !message.toolCalls?.length) lines.push(text);
+  for (const call of message.toolCalls ?? []) lines.push(`[tool call ${call.id}] ${call.name} ${call.arguments}`);
+  return lines.join("\n");
+}
+
 /** One block of the prompt sent to the agent: text, or an image as base64 `data`. */
 export type PromptBlock = { type: "text"; text: string } | { type: "image"; mimeType: string; data: string };
 
 /**
  * The prompt as content blocks. The text is the preamble, a `[role]` block per message and the output format, joined by blank lines.
  * Each image follows the text of its message and ends the text block there, so a request without images is exactly one text block.
- * `generateImage` replaces the preamble with one that allows the agent's image tool.
+ * `generateImage` replaces the preamble with one that allows the agent's image tool; `tools` replaces it with one that allows the `client` MCP tools (and drops the provider's no-tools line).
  */
-export function buildPrompt(messages: Message[], instructions?: string, extraPreamble?: string, generateImage = false): PromptBlock[] {
+export function buildPrompt(messages: Message[], instructions?: string, extraPreamble?: string, generateImage = false, tools?: ToolPrompt): PromptBlock[] {
   const blocks: PromptBlock[] = [];
   const kind = hasImages(messages) ? "an API request with text and images" : "a text-only API request";
   // A request that allows an image is told to use only that tool (the agent-specific no-tools line would forbid it).
-  let texts = [generateImage ? "This is an API request that allows one generated image. If the request asks for an image, use your image generation tool once. Do not use any other tool, run commands, access files, or ask for other permissions. Respond with a short text answer only." : `This is ${kind}. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.${extraPreamble ? `\n${extraPreamble}` : ""}`];
+  let texts = [tools ? toolsPreamble(tools) : generateImage ? "This is an API request that allows one generated image. If the request asks for an image, use your image generation tool once. Do not use any other tool, run commands, access files, or ask for other permissions. Respond with a short text answer only." : `This is ${kind}. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.${extraPreamble ? `\n${extraPreamble}` : ""}`];
   const flush = () => { if (texts.length) blocks.push({ type: "text", text: texts.join("\n\n") }); texts = []; };
   for (const message of messages) {
-    texts.push(`[${message.role}]\n${messageText(message)}`);
+    texts.push(messageBlock(message));
     for (const part of message.parts) if (part.type === "image") { flush(); blocks.push({ type: "image", mimeType: part.mimeType, data: part.data }); }
   }
   if (instructions) texts.push(`[output format]\n${instructions}`);
