@@ -1,5 +1,68 @@
 # Changelog
 
+## 2026-10-26: AAP-12 Phase 1 (agent hardening)
+
+Codex now runs without shell tools, skills or plugins, in its own home by default. Claude's login-refresh clash becomes a retryable 503, and Antigravity gets a no-tools prompt line. A live check in the new Codex home is waiting for the user's first login.
+
+**Repository** `api-acp-proxy`, branch `AAP-12_agent-hardening` (stacked on `AAP-11_tool-spike` at `75bea33`):
+- `src/providers/codex.ts`:
+  - `hardenedCodexConfig()` merges the user's `CODEX_CONFIG` and then forces `approval_policy: never`, `sandbox_mode: read-only`, `skills.include_instructions: false`, and `features` `multi_agent`, `shell_tool`, `unified_exec` and `plugins` all false. A user value cannot weaken these.
+  - With `isolatedHome` (default on), Codex runs with `CODEX_HOME=<dataDir>/codex-home`, created if missing.
+  - On a fresh isolated home with no `auth.json` (checked with `existsSync` only) and no API key, the eager auth is skipped. The provider reports `needs_login` instead of opening a browser at every start, and the Log in button runs `chat-gpt`.
+- `src/provider.ts`:
+  - `AcpUnavailableError` takes an optional `retryAfterSeconds`.
+  - `ProviderDescriptor` gains `promptPreamble`, `loginRequired` and `defaultLoginMethod`.
+- `src/acp-provider.ts`:
+  - The eager start honours `loginRequired`.
+  - `login()` falls back to `defaultLoginMethod`.
+  - Prompts carry the descriptor's `promptPreamble`.
+- `src/api.ts`: `serializePrompt` takes an optional extra preamble line; other providers' prompts are unchanged.
+- `src/providers/claude.ts`: `mapError` maps "Failed to refresh OAuth token ... another Claude Code process is refreshing" to 503 `provider_busy` with `Retry-After: 30`.
+- `src/server.ts`: sends `Retry-After` for such errors (non-streaming responses only).
+- `src/providers/antigravity.ts`: a no-tools line in the preamble.
+- `src/settings.ts`, `src/shared/ipc.ts`, `src/renderer/settings.html`, `src/renderer/settings.ts`: the setting `providers.codex.isolatedHome` (default true, env `PROXY_CODEX_ISOLATED_HOME`) and a checkbox on the Codex card.
+- `README.md`:
+  - A Codex section covering the hardening, the separate home, the one extra login and how to log out.
+  - The env table row and the files table.
+  - Notes on Claude's busy error and the Antigravity prompt line.
+- Tests:
+  - `tests/codex.test.ts` (new): launch env, a hostile `CODEX_CONFIG`, and first login with no automatic `authenticate`.
+  - `tests/settings.test.ts`, `tests/claude.test.ts` (503 plus the header over HTTP) and `tests/antigravity.test.ts` (preamble only for Antigravity).
+  - `tests/fixtures/fake-acp.mjs`: `FAKE_ACP_PROMPT_ERROR`.
+- `.claude/tickets/AAP-11-images-and-tools/spike.md` ("Phase 1 (AAP-12) probe") and `plan.md` (Phase 1 status).
+
+**Probe findings** (details in `spike.md`)
+- **Shell:** `approval_policy: "untrusted"` is rejected by this Codex (0.154.0), and `"on-request"` still ran listings without asking. Only `features.shell_tool` plus `unified_exec` off removes the shell.
+- **Still working under the hardened config:** image generation (35.6 s, no permission), web search (8.3 s, no permission) and MCP approvals (`is_mcp_tool_approval`, blocked by `cancelled`). The skill list and the "Skill descriptions were shortened" text are gone.
+- **Isolated home:**
+  - User MCP servers (`cua_repl` and others) and plugin skills are gone.
+  - `~/.agents/skills` is still listed, because it is under the user profile and cannot be hidden. It is unreachable without a shell and without the skill list.
+  - `authenticate chat-gpt` opens the browser itself and prints no URL.
+- **Antigravity preamble:** no measurable gain. The proxy's generic preamble already stopped the tool attempts the spike saw with raw prompts. The line is kept as a guard.
+
+**Deviations**
+- The shell is stopped by feature switches, not an approval policy. `plugins` and `skills.include_instructions` were also turned off.
+- Codex has no `loginUrlPattern`, because no URL is printed, so the Codex card shows no login link.
+- Review fix: no automatic browser sign-in at start. The first run left eager auth on, which would open a ChatGPT tab at every start of a fresh isolated home.
+- `ROADMAP.md` is unchanged; it lists hub limits, not provider hardening.
+
+**Verification**
+- `npm run typecheck`: clean.
+- `npx vitest run`: 168 passed, 1 skipped (15 files).
+- `npm run build`: succeeded.
+- I ran all three on the final tree after the review fix.
+- Live probes for the shell, image generation, search, MCP approval and the Antigravity timings ran on the user's normal Codex home.
+- Not verified:
+  - A live prompt in the isolated home, pending the user's Codex login: no skills or MCP visible, image generation and search, `generated_images` landing in that home.
+  - That deleting `codex-home` logs out (it assumes Codex's default file credential store).
+  - Which of the two shell feature switches alone is enough.
+
+**Follow-ups**
+- After merging, the user logs in to Codex once for the proxy (Log in button on the Codex card), and then the isolated-home live check runs.
+- Probe leftovers: a Codex image in `~/.codex/generated_images/01a179d6-...` and the AAP-11 Antigravity sessions. Nothing was deleted.
+
+**Status:** uncommitted.
+
 ## 2026-10-26: plan revised after the spike
 
 The user confirmed they still use Codex. `plan.md` phases 1 to 5 were rewritten from `spike.md` and now run as phases 1 to 6 (AAP-12 to AAP-17):

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpProvider } from "../src/acp-provider.js";
-import { ApiError } from "../src/api.js";
+import { ApiError, serializePrompt } from "../src/api.js";
 import { antigravityDescriptor, antigravityRegistration, purgeRecordedSessions, recordSession, resolveAntigravityExecutable, type AntigravityOptions } from "../src/providers/antigravity.js";
 import { ProviderAuthRequiredError, ProviderNotInstalledError, ProviderTermsRequiredError, defaultRuntimeContext, type ProviderStatus, type RuntimeContext } from "../src/provider.js";
 
@@ -46,6 +46,23 @@ describe("Antigravity registration", () => {
     const descriptor = antigravityDescriptor(defaultRuntimeContext(), { settings: {}, env: {} });
     expect(descriptor).toMatchObject({ id: "antigravity", ownedBy: "google", exposeUnprefixed: false, authMode: "eager", readOnlyMode: "required", sessionTimeoutMs: 180000, warmSessions: 1 });
     expect(descriptor.modeCandidates).toEqual(["read-only", "readonly", "default"]);
+  });
+});
+
+describe("Antigravity prompt", () => {
+  it("adds the no-tools line after the generic preamble, and only for Antigravity", async () => {
+    const s = setup();
+    const log = path.join(s.dataDir, "requests.log");
+    Object.assign(process.env, { FAKE_ACP_AGY: "1", FAKE_ACP_LOG: log });
+    const provider = make(s);
+    await provider.generate("fake-model", user);
+    const text = (readLog(log).find((entry) => entry.method === "session/prompt")?.params.prompt as Array<{ text: string }>)[0]!.text;
+    const line = antigravityDescriptor(defaultRuntimeContext(), { settings: {}, env: {} }).promptPreamble!;
+    expect(line).toMatch(/do not call any tool/i);
+    expect(text).toBe(serializePrompt(user, undefined, line));
+    expect(text.startsWith("This is a text-only API request.")).toBe(true);
+    expect(text.split("\n")[1]).toBe(line);
+    expect(serializePrompt(user)).not.toContain(line);
   });
 });
 

@@ -73,6 +73,26 @@ All of that comes from the user's own Codex home, plus `approval_policy: "never"
    - The Claude refresh error maps to 503 `provider_busy`.
    - The fake agent gets `FAKE_ACP_PROMPT_ERROR=<json>` to return a given error.
 
+**Status (2026-10-26): implemented, one live check pending a user login.** Details in `spike.md` ("Phase 1 (AAP-12) probe").
+- [x] 1 probe: shell (4 configs), image generation, web search and MCP approval under the chosen config, empty `CODEX_HOME`, login mechanics (without opening a browser), skills/plugins/MCP isolation (app-server calls), Antigravity before/after.
+- [x] 2 `src/providers/codex.ts`: `CODEX_HOME=<dataDir>/codex-home` (created) when `providers.codex.isolatedHome` (default `true`); `hardenedCodexConfig()` merges the user's `CODEX_CONFIG` first and forces the safety keys on top. Setting wired through `src/settings.ts` (`PROXY_CODEX_ISOLATED_HOME`, reported in `overridden`), the registration, `src/shared/ipc.ts` and a checkbox on the Codex card (`settings.html`, `settings.ts`).
+- [x] 3 login: the existing `login()` / eager `authenticate chat-gpt` path is unchanged; no `loginUrlPattern` (see deviations). README has a new "Codex" section (home location, one extra login after upgrading, logout by deleting the folder, API keys, safety notes).
+- [x] 4 Claude `mapError` (`provider_busy`, 503, `Retry-After: 30`); `AcpUnavailableError` gained an optional `retryAfterSeconds`, read in the `src/server.ts` error handler (non-streaming only; a stream that has started carries the error as an SSE event).
+- [x] 5 Antigravity: new `ProviderDescriptor.promptPreamble`, appended after the generic line by `serializePrompt(messages, instructions, extraPreamble)`; other providers' prompts are byte-identical (tested).
+- [x] 6 tests: `tests/codex.test.ts` (new), `tests/settings.test.ts`, `tests/claude.test.ts`, `tests/antigravity.test.ts`; fake agent `FAKE_ACP_PROMPT_ERROR=<json>`.
+- [x] 7 docs: README (Codex section, env row, files table, Claude busy error, Antigravity safety note). `ROADMAP.md` untouched (it lists hub limits, not provider hardening).
+- [x] Review fix: no automatic browser sign-in at start (see deviations).
+- [ ] **Pending a user login of the proxy's Codex home:** live prompt in the isolated home (no skills, plugins or user MCP tools, image generation and search work there, files land in `<codex home>/generated_images`).
+
+Deviations from the plan text:
+- **The shell is stopped by `features.shell_tool=false` + `features.unified_exec=false`, not by an approval policy.** `"untrusted"` is rejected by this Codex (`-32603`, "no longer supported") and `"on-request"` still lets read-only `exec_command` run without a request. Two more keys were added: `features.plugins=false` and `skills.include_instructions=false`.
+- **The isolated home does not hide `~/.agents/skills`** (it is under the user profile, not `CODEX_HOME`; 90 skills still show up in `skills/list`). Plugin skills, plugin MCP servers (`cua_repl` etc.) are gone. The model no longer sees any skill list because of `skills.include_instructions=false`, which also removes the "Skill descriptions were shortened" answer text, and without a shell it cannot read a skill file.
+- **No `loginUrlPattern` for Codex:** codex-acp opens the browser itself and prints no URL, so the Codex card shows no login link.
+- **Review fix (no browser at start):** `authenticate chat-gpt` opens a browser tab by itself, so with the eager auth every start of a fresh isolated home would open one. Now `chooseAuth` returns nothing for `chat-gpt` when the isolated home is in use, there is no `CODEX_API_KEY` / `OPENAI_API_KEY` and `<codex home>/auth.json` does not exist (`existsSync` only, never read). New optional descriptor fields: `loginRequired(env)` (the eager step then blocks auth: state `needs_login` with "Log in to Codex for the proxy...", requests 503 `provider_auth_required`) and `defaultLoginMethod` (`login()` falls back to it, so the Log in button runs `chat-gpt` instead of the first advertised method, `api-key`). With `auth.json`, an API key or `isolatedHome: false` nothing changes. Tests: `tests/codex.test.ts` "Codex first login".
+- The `"web_search": "disabled"` question under the hardened config was not re-probed (few live prompts); web search stays on.
+- Antigravity preamble: the measured gain is nil. The spike's cancelled tool calls came from raw prompts; with the existing generic preamble Antigravity did not try a tool in 5 runs. Kept as a guard.
+- The image tool still cannot be gated and now also runs in the isolated home (works with the shell off, 35 s). Phase 3's Codex `imageFolder` is `<CODEX_HOME>/generated_images` for the isolated home (the probe only saw it under `~/.codex`).
+
 ## Phase 2: image input (AAP-13)
 
 All three agents advertise `promptCapabilities.image: true` and accept base64 PNG (2.5 to 4.6 s for a small image).

@@ -31,7 +31,7 @@ export interface SettingsView {
     workRoot?: string; launchAtLogin: boolean;
   };
   providers: {
-    codex: { enabled: boolean; authMethodId?: string };
+    codex: { enabled: boolean; authMethodId?: string; isolatedHome?: boolean };
     antigravity: {
       enabled: boolean; executablePath?: string; geminiHome?: string; apiKey?: string; authMethodId?: string;
       termsAcknowledgedAt?: string; purgeSessions?: boolean; lastAuthMethodId?: string;

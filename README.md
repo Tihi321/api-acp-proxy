@@ -36,6 +36,7 @@ The app lives in the system tray and starts the proxy on launch. A second launch
 | `logs\proxy.log` | Rotating log (5 MB x 3) |
 | `agents\antigravity-acp\` | Antigravity server downloaded from the registry, plus `install.json` |
 | `models-cache.json` | Last discovered model lists, so `/v1/models` is fast after a restart |
+| `codex-home` | Codex's own home for the proxy (its login, sessions and system skills); see [Codex](#codex) |
 | `antigravity-sessions.json` | Session ids created by the proxy, used for purging |
 
 ## Headless CLI
@@ -48,7 +49,7 @@ npm run dev        # tsx, for development
 npm run build && npm start   # compiled
 ```
 
-The default address is `http://127.0.0.1:8787`. On first start `settings.json` is created with defaults. For Codex with a ChatGPT subscription, complete the browser login that Codex requests and retry the request. In a browserless environment set `NO_BROWSER=1` and use an API-key login (`CODEX_API_KEY` or `OPENAI_API_KEY`). Login URLs requested by Antigravity are printed to the console.
+The default address is `http://127.0.0.1:8787`. On first start `settings.json` is created with defaults. For Codex with a ChatGPT subscription, press **Log in** on the Codex card once and complete the browser login (the proxy uses its own Codex home, so this is one extra login, see [Codex](#codex)), then retry the request. In a browserless environment set `NO_BROWSER=1` and use an API-key login (`CODEX_API_KEY` or `OPENAI_API_KEY`). Login URLs requested by Antigravity are printed to the console.
 
 ## Models and providers
 
@@ -78,6 +79,7 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 | `PROXY_IGNORE_SAMPLING` | `false` | Drop `temperature`, `top_p`, penalties, `seed` and the Responses `stream_options` instead of answering 400, for clients that always send them (settings: `server.ignoreSampling`) |
 | `PROXY_REUSE_SESSIONS` | `false` | Keep an agent session after a completed turn and continue it when the next request extends the same conversation, sending only the new messages (settings: `server.reuseSessions`) |
 | `PROXY_CODEX_ENABLED` | `true` | Enable the Codex provider (`1/0`, `true/false`, `yes/no`, `on/off`) |
+| `PROXY_CODEX_ISOLATED_HOME` | `true` | Run Codex with its own `CODEX_HOME` (`<data dir>/codex-home`) instead of `~/.codex`; see [Codex](#codex) (settings: `providers.codex.isolatedHome`) |
 | `PROXY_ACP_COMMAND` / `PROXY_ACP_ARGS` | dependency-resolved adapter | Custom Codex ACP executable and space-separated arguments |
 | `PROXY_CLAUDE_ENABLED` | `false` | Enable the Claude provider |
 | `PROXY_CLAUDE_EXECUTABLE` | unset | Path to a `claude` binary (sets `CLAUDE_CODE_EXECUTABLE`; overrides the `executablePath` setting) |
@@ -87,6 +89,16 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 | `PROXY_ANTIGRAVITY_COMMAND` | unset | Path to `agy_acp_server.exe` (overrides the `executablePath` setting) |
 | `PROXY_ANTIGRAVITY_ACCEPT_TERMS` | unset | Set to `1` to acknowledge the Antigravity terms headlessly |
 | `GEMINI_API_KEY`, `GEMINI_HOME` | unset | Passed through to the Antigravity server |
+
+## Codex
+
+Codex runs through `@agentclientprotocol/codex-acp` (bundled, with its own `codex` binary), in read-only mode with approvals set to "never".
+
+**Own Codex home.** By default (`providers.codex.isolatedHome`, env `PROXY_CODEX_ISOLATED_HOME`) the proxy starts Codex with `CODEX_HOME=<data dir>/codex-home` (`%APPDATA%api-acp-proxycodex-home` on Windows; the folder is created when missing). Your `~/.codex` is not read or written, so none of your Codex skills, plugins, plugin MCP servers or `config.toml` reach proxy requests. Without this, Codex read your skills, ran tools of your plugin MCP servers without asking and printed a "Skill descriptions were shortened" warning as answer text. Turn the setting off to keep using `~/.codex` as before (the shell removal below still applies).
+
+**Log in once.** The new home has no login. Until that login exists (no `auth.json` in the folder and no API key in the environment) the proxy does **not** start a sign-in by itself: Codex shows "needs login" and requests get 503 `provider_auth_required`, with no browser tab opened at start. Press **Log in** on the Codex card (`authenticate chat-gpt`): Codex then opens the ChatGPT sign-in page in your browser itself (the proxy never sees the URL or the tokens). Once `auth.json` exists, a restart signs in silently as before. **Existing users must log in once more after upgrading**, or turn the setting off. `CODEX_API_KEY` / `OPENAI_API_KEY` still work (auth method `api-key`, headless: also `NO_BROWSER=1`). To log out, stop the proxy and delete the `codex-home` folder (Codex keeps its login there by default, in `auth.json`).
+
+**Safety notes.** The proxy sets `approval_policy: "never"`, `sandbox_mode: "read-only"` and removes the shell tools (`features.shell_tool` and `features.unified_exec` are off; read-only `exec_command` reads used to run without any permission request even in read-only mode). Skill lists are left out of the prompt (`skills.include_instructions: false`), plugins and multi-agent are off. These keys win over a `CODEX_CONFIG` environment variable; its other keys are kept. Still on, because Codex gives no way to ask first: **web search** (OpenAI's own, per process; a `"web_search": "disabled"` in `CODEX_CONFIG` turns it off) and the built-in **image generation** tool (it writes into `<codex home>/generated_images`). MCP tool calls still ask for permission and the proxy answers "cancelled".
 
 ## Claude
 
@@ -98,6 +110,8 @@ Claude runs through `@agentclientprotocol/claude-agent-acp`, which is bundled to
 4. **Log in.** When nobody is signed in the provider shows "needs login" and requests get 503 `provider_auth_required`. The **Log in** button (methods `claude-ai-login` for a subscription and `console-login` for Anthropic Console billing) opens a console window that runs the bundled native `claude auth login` directly; when it finishes the agent restarts and picks up the new login. Headless, run `claude auth login` yourself, or the bundled binary: `node_modules/@anthropic-ai/claude-agent-sdk-<platform>-<arch>/claude auth login --claudeai`.
 
 Model ids are `claude/<id>` (for example `claude/default`, `claude/sonnet`); the list comes from the agent.
+
+**Busy login.** When another Claude Code process holds the OAuth refresh lock (`~/.claude/.oauth_refresh.lock`), the agent fails with "Failed to refresh OAuth token: another Claude Code process is refreshing it". The proxy answers 503 with code `provider_busy` and a `Retry-After: 30` header (the lock cleared after about a minute when seen); retry the request. In a stream that has already started, the error arrives as an SSE error event without the header.
 
 **Safety notes.** Sessions are text-only: the built-in tools are disabled, permission requests are answered with "cancelled", the `default` mode is used and `persistSession: false` keeps transcripts out of `~/.claude/projects`. Settings sources are disabled (`settingSources: []`), so hooks, MCP servers, CLAUDE.md, and the `apiKeyHelper` and `env` entries of `~/.claude/settings.json` are ignored for proxy requests; use the API key / OAuth token fields instead. The CLI still leaves an empty `<config>/projects/<cwd>` directory per session; the proxy removes it after each request (one may remain after a hard kill of the proxy).
 
@@ -113,7 +127,7 @@ Using a Claude subscription through third-party tooling may conflict with Anthro
 4. **Log in.** Auth method ids are `oauth-personal` (Log in with Google), `oauth-business`, `gemini-api-key` (set `GEMINI_API_KEY` or the API key field) and `agent-platform`. The proxy authenticates automatically when it can do so without interaction (an explicit method, an API key, or your last successful login). Otherwise the provider shows "needs login" and requests get 503 `auth_required` until you press **Login** (or run the CLI and open the URL it prints). The server does not open a browser itself: it prints an `accounts.google.com` authorize URL and waits for a loopback redirect (`http://127.0.0.1:<random port>/`); the app opens that URL for you, the CLI logs it. Tokens are cached by the server under `%USERPROFILE%\.gemini\antigravity-acp` (or `GEMINI_HOME`).
 5. **Models** depend on your plan and the server version (for example `gemini-3.8-flash-high|medium|low` with 1.3.0, a single `gemini-3.8-flash` with 1.4.0). A model that your account cannot use returns 403 `model_not_available`.
 
-**Safety notes.** Antigravity has no read-only mode. The proxy uses the `default` mode (every tool permission is requested from the client) and answers all permission requests with "cancelled", advertises no filesystem or terminal capabilities, and runs sessions in an empty temporary directory.
+**Safety notes.** Antigravity has no read-only mode. The proxy uses the `default` mode (every tool permission is requested from the client) and answers all permission requests with "cancelled", advertises no filesystem or terminal capabilities, and runs sessions in an empty temporary directory. The server always offers `search_web`, `read_url_content` and `run_command` and asked for them even on plain questions (each cancelled call cost seconds), so every Antigravity prompt carries one extra preamble line telling it not to call any tool.
 
 **Session purge.** The server keeps every session on disk (`<GEMINI_HOME>\antigravity-acp\conversations`, `brain`). With `purgeSessions` (default on) the proxy deletes the files of the sessions it created after the server stops. The proxy stops the whole process tree on exit and, after a hard crash, kills orphaned Antigravity processes of its own install on the next start.
 

@@ -267,6 +267,9 @@ export class AcpProvider implements Provider {
             this.blockAuth(error);
             return;
           }
+        } else {
+          const required = descriptor.loginRequired?.(this.authMethods, process.env);
+          if (required) { this.blockAuth(new ProviderAuthRequiredError(required)); return; }
         }
       }
       if (this.loggedOut) this.setState("needs_login", "Not logged in."); else this.setState("ready");
@@ -440,7 +443,8 @@ export class AcpProvider implements Provider {
     if (this.descriptor.externalLogin) return this.externalLogin(methodId);
     const agent = await this.connect();
     const usable = this.authMethods.filter((method) => method.type !== "terminal");
-    const chosen = methodId ?? this.descriptor.chooseAuth(this.authMethods, process.env) ?? usable[0]?.id;
+    const preferred = this.descriptor.defaultLoginMethod;
+    const chosen = methodId ?? this.descriptor.chooseAuth(this.authMethods, process.env) ?? (preferred && usable.some((method) => method.id === preferred) ? preferred : undefined) ?? usable[0]?.id;
     if (!chosen) throw new AcpUnavailableError(`${this.displayName} did not advertise a usable authentication method.`);
     if (this.authMethods.find((method) => method.id === chosen)?.type === "terminal") throw new AcpUnavailableError(`The '${chosen}' authentication method requires a terminal and is not supported.`);
     this.userLogins++;
@@ -506,7 +510,7 @@ export class AcpProvider implements Provider {
       }
       if (aborted) return cancelled();
       promptSent = true;
-      const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: serializePrompt(fresh, options?.instructions) }] }));
+      const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: serializePrompt(fresh, options?.instructions, this.descriptor.promptPreamble) }] }));
       let usage = result.usage ?? null;
       let cumulative = reused?.usage;
       if (usage && this.descriptor.usageScope === "session") { cumulative = usage; usage = usageDelta(usage, reused?.usage); }

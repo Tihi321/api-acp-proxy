@@ -82,6 +82,18 @@ describe("resolveConfig", () => {
     expect(overridden).toEqual(["server.reuseSessions"]);
   });
 
+  it("runs Codex in an isolated home by default; PROXY_CODEX_ISOLATED_HOME overrides it", () => {
+    expect(defaultSettings().providers.codex.isolatedHome).toBe(true);
+    expect(resolveConfig(defaultSettings(), {}).providers.codex?.isolatedHome).toBe(true);
+    const off = resolveConfig(defaultSettings(), { PROXY_CODEX_ISOLATED_HOME: "0" });
+    expect(off.providers.codex?.isolatedHome).toBe(false);
+    expect(off.overridden).toEqual(["providers.codex.isolatedHome"]);
+    const stored = mergeSettings(defaultSettings(), { providers: { codex: { isolatedHome: false } } });
+    expect(resolveConfig(stored, {}).providers.codex?.isolatedHome).toBe(false);
+    expect(resolveConfig(stored, { PROXY_CODEX_ISOLATED_HOME: "true" }).providers.codex?.isolatedHome).toBe(true);
+    expect(resolveConfig(defaultSettings(), { PROXY_CODEX_ISOLATED_HOME: "maybe" }).overridden).toEqual([]);
+  });
+
   it("ignores invalid env values and keeps the settings value", () => {
     const { config, overridden } = resolveConfig(mergeSettings(defaultSettings(), { server: { port: 4321 } }), { PROXY_PORT: "nope", PROXY_CODEX_ENABLED: "maybe" });
     expect(config.port).toBe(4321);
