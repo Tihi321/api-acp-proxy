@@ -111,6 +111,8 @@ export class ProviderRouter implements AcpLike {
 
   hasModel(id: string): boolean { return this.resolve(id) !== undefined; }
 
+  canGenerateImages(id: string): boolean { return this.resolve(id)?.provider.imageGeneration === true; }
+
   private entries(): ListedModel[] {
     const owners = this.unprefixedOwners();
     const out: ListedModel[] = [];

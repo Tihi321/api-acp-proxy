@@ -16,4 +16,5 @@ What is open for the proxy as the creative hub (`C:\projects\Personal\creative-h
 - [x] No usage numbers in the stream: `stream_options.include_usage` adds the final usage chunk; usage comes from the agent, or an estimate when it reports none. (AAP-08)
 - [x] Each request is a fresh agent session: opt-in `PROXY_REUSE_SESSIONS` / `server.reuseSessions` continues the session of the same conversation and sends only the new messages. (AAP-10)
 - [x] Images are accepted (chat `image_url`, Responses `input_image`; PNG, JPEG, GIF, WebP; base64 or an http(s) URL the proxy downloads). (AAP-13)
+- [x] Images can be generated: `POST /v1/images/generations`, Responses `image_generation` tool, chat `modalities` (Antigravity and Codex). (AAP-14)
 - [ ] Audio, files and tools are still rejected. Not needed by the hub's apps.

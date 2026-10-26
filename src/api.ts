@@ -12,7 +12,7 @@ const textPartSchema = z.object({ text: z.string() });
 const chatImagePartSchema = z.object({ image_url: z.object({ url: z.string().min(1), detail: z.string().nullish() }).passthrough() });
 const responsesImagePartSchema = z.object({ image_url: z.string().min(1), detail: z.string().nullish() });
 
-const unsupportedChatFields = ["tools", "tool_choice", "functions", "function_call", "audio", "modalities", "logprobs", "top_logprobs", "prediction", "service_tier", "n", "temperature", "top_p", "stop", "presence_penalty", "frequency_penalty", "seed", "logit_bias"] as const;
+const unsupportedChatFields = ["tools", "tool_choice", "functions", "function_call", "audio", "logprobs", "top_logprobs", "prediction", "service_tier", "n", "temperature", "top_p", "stop", "presence_penalty", "frequency_penalty", "seed", "logit_bias"] as const;
 const unsupportedResponseFields = ["tools", "tool_choice", "temperature", "top_p", "parallel_tool_calls", "truncation", "reasoning", "include", "background", "stream_options"] as const;
 
 // Fields that only tune sampling. The agents behind the proxy cannot honour them, so by default they are
@@ -120,7 +120,8 @@ function rejectUnsupported(obj: Record<string, unknown>, fields: readonly string
   for (const field of fields) if (obj[field] !== undefined && obj[field] !== false && obj[field] !== null) throw new ApiError(400, "unsupported_parameter", `Parameter '${field}' is not supported by this proxy.`, field);
 }
 
-type NormalizedRequest = { model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number };
+/** `generateImages`: the request asked the agent for images (chat `modalities` with "image", Responses `image_generation` tool). */
+type NormalizedRequest = { model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; generateImages: boolean };
 
 function unsupportedContent(message: string, param: string): ApiError { return new ApiError(400, "unsupported_content", message, param); }
 
@@ -146,23 +147,42 @@ async function convertContent(content: z.infer<typeof messageContentSchema>, rol
   }));
 }
 
+/** Chat `modalities`: only "text" and "image" are accepted; true when "image" is among them. */
+function chatModalities(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (!Array.isArray(value) || value.some((entry) => entry !== "text" && entry !== "image")) throw new ApiError(400, "unsupported_parameter", "Parameter 'modalities' only supports \"text\" and \"image\" in this proxy.", "modalities");
+  return value.includes("image");
+}
+
+/** Responses `tools`: true when it is a non-empty list of `image_generation` tools (other tools, or an empty list, are left to the unsupported-parameter check). `partial_images` is a 400. */
+function responsesImageTool(data: Record<string, unknown>): boolean {
+  const tools = data.tools;
+  if (!Array.isArray(tools) || !tools.length || !tools.every((tool) => tool && typeof tool === "object" && (tool as { type?: unknown }).type === "image_generation")) return false;
+  for (const tool of tools as Array<{ partial_images?: unknown }>) if (tool.partial_images != null && tool.partial_images !== 0) throw new ApiError(400, "unsupported_parameter", "Partial images are not supported; the image is returned whole.", "tools");
+  return true;
+}
+/** A `tool_choice` that agrees with the image tool being the only tool. */
+function imageToolChoice(choice: unknown): boolean { return choice === "auto" || choice === "required" || (typeof choice === "object" && choice !== null && (choice as { type?: unknown }).type === "image_generation"); }
+
 export async function normalizeChat(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Promise<Omit<ChatRequest, "model"> & NormalizedRequest> {
   const parsed = chatRequestSchema.safeParse(withoutFields(raw, ignorableChatFields, options.ignoreSampling));
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.", issueParam(parsed.error.issues[0]));
   rejectUnsupported(parsed.data, unsupportedChatFields);
+  const generateImages = chatModalities(parsed.data.modalities);
   if (parsed.data.max_tokens !== undefined && parsed.data.max_completion_tokens !== undefined) throw new ApiError(400, "invalid_request", "Only one of max_tokens and max_completion_tokens may be provided.");
   validateModel(parsed.data.model, isKnownModel);
   const rf = parsed.data.response_format;
   const format = !rf || rf.type === "text" ? textFormat : jsonFormat(rf.type === "json_object" ? rf : { type: "json_schema", ...rf.json_schema });
   const maxOutputTokens = parsed.data.max_completion_tokens ?? parsed.data.max_tokens;
   const conversation = await Promise.all(parsed.data.messages.map(async (message): Promise<Message> => ({ role: message.role, parts: await convertContent(message.content, message.role, "chat", "messages", options) })));
-  return { ...parsed.data, model: parsed.data.model, conversation, format, ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}) };
+  return { ...parsed.data, model: parsed.data.model, conversation, format, generateImages, ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}) };
 }
 
 export async function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Promise<Omit<ResponsesRequest, "model"> & NormalizedRequest> {
   const parsed = responsesRequestSchema.safeParse(withoutFields(raw, ignorableResponseFields, options.ignoreSampling));
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.", issueParam(parsed.error.issues[0]));
-  rejectUnsupported(parsed.data, unsupportedResponseFields);
+  const generateImages = responsesImageTool(parsed.data);
+  rejectUnsupported(parsed.data, unsupportedResponseFields.filter((field) => !(generateImages && (field === "tools" || (field === "tool_choice" && imageToolChoice(parsed.data.tool_choice))))));
   if (parsed.data.store === true) throw new ApiError(400, "unsupported_parameter", "Stored responses are not supported.", "store");
   if (parsed.data.previous_response_id !== undefined) throw new ApiError(400, "unsupported_parameter", "Persistent conversations are not supported.", "previous_response_id");
   validateModel(parsed.data.model, isKnownModel);
@@ -171,8 +191,58 @@ export async function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck
   if (typeof parsed.data.input === "string") conversation.push(textMessage("user", parsed.data.input));
   else conversation.push(...await Promise.all(parsed.data.input.map(async (message): Promise<Message> => ({ role: message.role, parts: await convertContent(message.content, message.role, "responses", "input", options) }))));
   const tf = parsed.data.text?.format;
-  return { ...parsed.data, model: parsed.data.model, conversation, format: !tf || tf.type === "text" ? textFormat : jsonFormat(tf), ...(parsed.data.max_output_tokens !== undefined ? { maxOutputTokens: parsed.data.max_output_tokens } : {}) };
+  return { ...parsed.data, model: parsed.data.model, conversation, format: !tf || tf.type === "text" ? textFormat : jsonFormat(tf), generateImages, ...(parsed.data.max_output_tokens !== undefined ? { maxOutputTokens: parsed.data.max_output_tokens } : {}) };
 }
+
+const imageRequestSchema = z.object({
+  model: z.string(),
+  prompt: z.string().min(1),
+  n: z.number().int().nullish(),
+  size: z.string().nullish(),
+  quality: z.string().nullish(),
+  background: z.string().nullish(),
+  response_format: z.string().nullish(),
+  output_format: z.enum(["png", "jpeg", "webp"]).nullish(),
+  stream: z.boolean().nullish(),
+  partial_images: z.number().nullish(),
+}).passthrough();
+
+export interface ImageGenerationRequest { model: string; conversation: Message[]; outputFormat?: string }
+
+const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
+
+/** The hint lines of an image request: size as an aspect ratio (the agents take a ratio, not pixels), quality and background as given. */
+function imageHints(size: string | null | undefined, quality: string | null | undefined, background: string | null | undefined): string[] {
+  const hints: string[] = [];
+  if (size && size !== "auto") {
+    const match = /^(\d{2,5})x(\d{2,5})$/i.exec(size);
+    if (!match) throw new ApiError(400, "invalid_request", "Parameter 'size' must be 'auto' or WIDTHxHEIGHT, for example 1024x1024.", "size");
+    const width = Number(match[1]), height = Number(match[2]), divisor = gcd(width, height);
+    hints.push(`Aspect ratio: ${width / divisor}:${height / divisor} (requested size ${width}x${height}).`);
+  }
+  if (quality && quality !== "auto") hints.push(`Quality: ${quality}.`);
+  if (background && background !== "auto") hints.push(`Background: ${background}.`);
+  return hints;
+}
+
+/** `POST /v1/images/generations`: one image from a prompt. Edits (`image`, `mask`), `n` above 1, URL answers and streaming are 400s. */
+export function normalizeImageGeneration(raw: unknown, isKnownModel?: ModelCheck): ImageGenerationRequest {
+  const parsed = imageRequestSchema.safeParse(raw);
+  if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.", typeof parsed.error.issues[0]?.path[0] === "string" ? parsed.error.issues[0].path[0] : undefined);
+  const data = parsed.data as Record<string, unknown> & z.infer<typeof imageRequestSchema>;
+  const reject = (param: string, message: string): never => { throw new ApiError(400, "unsupported_parameter", message, param); };
+  if (data.n != null && data.n !== 1) reject("n", "Only n = 1 is supported: the agents generate one image per request.");
+  if (data.response_format != null && data.response_format !== "b64_json") reject("response_format", "Only response_format 'b64_json' is supported; the proxy has no place to host image URLs.");
+  for (const field of ["mask", "image", "images"]) if (data[field] != null) reject(field, "Image edits are not supported; only generations from a prompt are.");
+  if (data.stream === true) reject("stream", "Streaming image generation is not supported.");
+  if (data.partial_images != null && data.partial_images !== 0) reject("partial_images", "Partial images are not supported; the image is returned whole.");
+  validateModel(data.model, isKnownModel);
+  const text = [`Generate an image: ${data.prompt}`, ...imageHints(data.size, data.quality, data.background)].join("\n");
+  return { model: data.model, conversation: [textMessage("user", text)], ...(data.output_format ? { outputFormat: data.output_format } : {}) };
+}
+
+/** The `output_format` name of a generated image's MIME type. */
+export const imageFormatName = (mimeType: string): string => mimeType.split("/")[1]?.replace("jpg", "jpeg") || "png";
 
 export function formatInstructions(format: OutputFormat): string | undefined {
   if (format.type === "text") return undefined;
@@ -187,11 +257,13 @@ export type PromptBlock = { type: "text"; text: string } | { type: "image"; mime
 /**
  * The prompt as content blocks. The text is the preamble, a `[role]` block per message and the output format, joined by blank lines.
  * Each image follows the text of its message and ends the text block there, so a request without images is exactly one text block.
+ * `generateImage` replaces the preamble with one that allows the agent's image tool.
  */
-export function buildPrompt(messages: Message[], instructions?: string, extraPreamble?: string): PromptBlock[] {
+export function buildPrompt(messages: Message[], instructions?: string, extraPreamble?: string, generateImage = false): PromptBlock[] {
   const blocks: PromptBlock[] = [];
   const kind = hasImages(messages) ? "an API request with text and images" : "a text-only API request";
-  let texts = [`This is ${kind}. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.${extraPreamble ? `\n${extraPreamble}` : ""}`];
+  // A request that allows an image is told to use only that tool (the agent-specific no-tools line would forbid it).
+  let texts = [generateImage ? "This is an API request that allows one generated image. If the request asks for an image, use your image generation tool once. Do not use any other tool, run commands, access files, or ask for other permissions. Respond with a short text answer only." : `This is ${kind}. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.${extraPreamble ? `\n${extraPreamble}` : ""}`];
   const flush = () => { if (texts.length) blocks.push({ type: "text", text: texts.join("\n\n") }); texts = []; };
   for (const message of messages) {
     texts.push(`[${message.role}]\n${messageText(message)}`);

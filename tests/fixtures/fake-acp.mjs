@@ -1,6 +1,7 @@
 import readline from "node:readline";
 import { spawn } from "node:child_process";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 // Switches (all optional, defaults reproduce the original single-provider fake):
 //   FAKE_ACP_DELAY=1                 prompts take 500 ms before answering
@@ -22,7 +23,15 @@ import { appendFileSync, writeFileSync } from "node:fs";
 //   FAKE_ACP_AUTH_STATUS=<kind>      push an _auth/status_update notification {authStatus:{kind,label}} right after initialize (label "Fake account" unless kind is none)
 //   FAKE_ACP_CUMULATIVE=1            report usage cumulatively per session (inputTokens 2 * turns so far, outputTokens turns), like claude-agent-acp
 //   FAKE_ACP_IMAGE=1                 advertise promptCapabilities.image; answer "<text> images:<n>" with n = the image blocks of the prompt; an image block without data fails with -32602
-//   FAKE_ACP_LOG=<file>              append every request as a JSON line {method, params}
+//   FAKE_ACP_IMAGE_GEN=agy|codex     every prompt generates an image like that agent does (spike section 3). agy: tool_call, then a permission request with the options
+//                                    allow_always / allow / deny; allowed (allow or allow_always) -> writes a JPEG to <GEMINI_HOME>/antigravity-acp/brain/<sessionId>/ and completes with inline data,
+//                                    uri and rawOutput.imagePath; cancelled or denied -> the call fails and nothing is written. codex: no permission; writes a PNG to
+//                                    <CODEX_HOME>/generated_images/thread-<sessionId>/ and completes with a "Revised prompt:" text block and an image block (data also in rawOutput.result).
+//   FAKE_ACP_IMAGE_GEN_OPTIONS=always-only   agy offers only the allow_always option
+//   FAKE_ACP_IMAGE_GEN_OUTSIDE=<file>        write the image to <file> and report that path (outside the agent's image folder; the folder itself is still created)
+//   FAKE_ACP_IMAGE_GEN_BYTES=<n>     pad the image to n bytes (a 2300000-byte codex image makes a ~6 MB update line)
+//   FAKE_ACP_IMAGE_GEN_NONE=1        no tool call at all: the agent only answers "I cannot generate that image."
+//   FAKE_ACP_LOG=<file>              append every request as a JSON line {method, params}; permission answers as {method: "permission_response", params: <the response result>}
 const env = process.env;
 const pending = new Map();
 const models = new Map();
@@ -38,6 +47,56 @@ const finish = (id, reason = "end_turn", sessionId) => {
   send({ jsonrpc: "2.0", id, result: { stopReason: reason, usage: { inputTokens: 2 * n, outputTokens: n, totalTokens: 3 * n } } });
 };
 const imageCounts = new Map();
+const waiters = new Map();
+const TINY_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+const TINY_JPEG = Buffer.from("/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=", "base64");
+const update = (sessionId, body) => send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: body } });
+/** Writes the image (padded when asked) and returns its path: in the agent's folder, or at FAKE_ACP_IMAGE_GEN_OUTSIDE. */
+const writeImage = (dir, name, bytes) => {
+  const padded = Number(env.FAKE_ACP_IMAGE_GEN_BYTES || 0) > bytes.length ? Buffer.concat([bytes, Buffer.alloc(Number(env.FAKE_ACP_IMAGE_GEN_BYTES) - bytes.length, 0x61)]) : bytes;
+  mkdirSync(dir, { recursive: true });
+  const target = env.FAKE_ACP_IMAGE_GEN_OUTSIDE || path.join(dir, name);
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, padded);
+  return { file: target, data: padded.toString("base64") };
+};
+const sayDone = (sessionId, id, text) => {
+  if (!pending.has(sessionId)) return;
+  pending.delete(sessionId);
+  update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+  finish(id, "end_turn", sessionId);
+};
+const generateImage = (sessionId, id) => {
+  const toolCallId = `imgcall-${sessionId}`;
+  if (env.FAKE_ACP_IMAGE_GEN_NONE === "1") { setTimeout(() => sayDone(sessionId, id, "I cannot generate that image."), 20); return; }
+  if (env.FAKE_ACP_IMAGE_GEN === "codex") {
+    update(sessionId, { sessionUpdate: "tool_call", toolCallId, kind: "other", title: "Image generation", status: "in_progress", rawInput: { id: toolCallId } });
+    const written = writeImage(path.join(env.CODEX_HOME ?? "", "generated_images", `thread-${sessionId}`), `${toolCallId}.png`, TINY_PNG);
+    setTimeout(() => {
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status: "completed", content: [
+        { type: "content", content: { type: "text", text: "Revised prompt: a cartoon dolphin leaping from the sea" } },
+        { type: "content", content: { type: "image", data: written.data, mimeType: "image/png", uri: written.file } },
+      ], rawOutput: { status: "completed", revisedPrompt: "a cartoon dolphin leaping from the sea", result: written.data, savedPath: written.file } });
+      sayDone(sessionId, id, "Here is your image.");
+    }, 20);
+    return;
+  }
+  const input = { AspectRatio: "4:3", ImageName: "dolphin", Prompt: "a cartoon dolphin" };
+  update(sessionId, { sessionUpdate: "tool_call", toolCallId, title: "Run generate_image?", kind: "other", status: "pending", rawInput: input });
+  const options = [{ optionId: "allow_always", name: "Allow Always", kind: "allow_always" }, { optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }];
+  const requestId = 9100 + Math.floor(Math.random() * 100000);
+  waiters.set(requestId, (result) => {
+    const allowed = result?.outcome?.outcome === "selected" && ["allow", "allow_always"].includes(result.outcome.optionId);
+    if (!allowed) { update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status: "failed", rawOutput: "Rejected by user" }); sayDone(sessionId, id, "The image tool was denied."); return; }
+    update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, kind: "other", status: "in_progress", title: "Running generate_image", rawInput: { prompt: input.Prompt, image_name: input.ImageName, aspect_ratio: input.AspectRatio } });
+    const written = writeImage(path.join(env.GEMINI_HOME ?? "", "antigravity-acp", "brain", sessionId), `dolphin_${Date.now()}.jpg`, TINY_JPEG);
+    setTimeout(() => {
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status: "completed", content: [{ type: "content", content: { type: "image", data: written.data, mimeType: "image/jpeg", uri: "file://" + written.file } }], rawOutput: { imageName: "dolphin", imagePath: written.file, prompt: input.Prompt, aspectRatio: input.AspectRatio } });
+      sayDone(sessionId, id, "Here is your cartoon dolphin.");
+    }, 20);
+  });
+  send({ jsonrpc: "2.0", id: requestId, method: "session/request_permission", params: { sessionId, toolCall: { toolCallId, kind: "other", status: "pending", title: "Run generate_image?", rawInput: input }, options: env.FAKE_ACP_IMAGE_GEN_OPTIONS === "always-only" ? options.slice(0, 1) : options } });
+};
 const promptDone = (sessionId, id) => {
   const text = (env.FAKE_ACP_ECHO === "1" ? `echo:${models.get(sessionId) ?? ""}:${sessionId}:${authedWith ?? "-"}` : "fake response") + (env.FAKE_ACP_IMAGE === "1" ? ` images:${imageCounts.get(sessionId) ?? 0}` : "");
   send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
@@ -58,7 +117,12 @@ const newSession = (id) => {
 };
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line); const { id, method, params = {} } = message;
-  if (!method) return;
+  if (!method) {
+    if (env.FAKE_ACP_LOG && message.result?.outcome) appendFileSync(env.FAKE_ACP_LOG, JSON.stringify({ method: "permission_response", params: message.result }) + "\n");
+    const waiter = waiters.get(id);
+    if (waiter) { waiters.delete(id); waiter(message.result); }
+    return;
+  }
   if (env.FAKE_ACP_LOG) appendFileSync(env.FAKE_ACP_LOG, JSON.stringify({ method, params }) + "\n");
   if (method === "initialize") {
     send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { ...(env.FAKE_ACP_IMAGE === "1" ? { promptCapabilities: { image: true } } : {}), sessionCapabilities: agy ? { list: {}, resume: {} } : { delete: true } }, agentInfo: agy ? { name: "antigravity-acp", title: "Google Antigravity", version: "1.3.0" } : { name: "fake", version: "1" }, ...(env.FAKE_ACP_AUTH_METHODS ? { authMethods: JSON.parse(env.FAKE_ACP_AUTH_METHODS) } : {}) } });
@@ -88,6 +152,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       if (env.FAKE_ACP_PROMPT_AUTH === "1") { pending.delete(sessionId); fail(id, -32000, "Authentication required"); return; }
       if (env.FAKE_ACP_PROMPT_ERROR) { pending.delete(sessionId); const e = JSON.parse(env.FAKE_ACP_PROMPT_ERROR); fail(id, e.code, e.message, e.data); return; }
       if (env.FAKE_ACP_ENTITY_NOT_FOUND === "1") { pending.delete(sessionId); fail(id, -32603, "Requested entity was not found"); return; }
+      if (env.FAKE_ACP_IMAGE_GEN) { generateImage(sessionId, id); return; }
       if (env.FAKE_ACP_REQUIRE_PERMISSION === "1") send({ jsonrpc: "2.0", id: 9001, method: "session/request_permission", params: { sessionId, toolCall: { toolCallId: "tool", title: "run command", kind: "execute", status: "pending", content: [] }, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] } });
       setTimeout(() => { if (pending.has(sessionId)) { pending.delete(sessionId); promptDone(sessionId, id); } }, 20);
     };

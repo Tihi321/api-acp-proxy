@@ -1,5 +1,67 @@
 # Changelog
 
+## 2026-10-26: AAP-14 Phase 3 (image generation)
+
+Antigravity and Codex now generate images through `/v1/images/generations`, the Responses `image_generation` tool and Chat `modalities`. The live check produced a dolphin from each.
+
+**Repository** `api-acp-proxy`, branch `AAP-14_image-generation`. It was cut on `AAP-13_image-input` and fast-forwarded to `master` at `26612ee` once PR #8 and PR #9 were merged.
+- `src/acp-provider.ts`:
+  - **Permissions are per session.** `answerPermission` looks up the rule of the session the request belongs to. Only the session of an image request gets one, and it is removed when the turn ends. When the rule allows a request, the proxy picks its `allow_once` option, never `allow_always`; everything else stays `cancelled`.
+  - **Images:** collected from completed `tool_call_update` image blocks, with Codex's "Revised prompt:" text.
+  - **Agent's file:** deleted after the turn.
+  - **Image requests:** don't reuse sessions. One sent to a provider without the capability gets 400 `model_not_capable`.
+- `src/generated-images.ts` (new):
+  - `toFilePath` reads `file://C:\...`, `file:///C:/...` and plain paths.
+  - `deleteGeneratedFile` deletes only a regular file whose real path (symlinks and junctions followed) is strictly inside the agent's image folder. It optionally prunes the emptied parent folder, and it never throws.
+- `src/provider.ts`:
+  - New types `GeneratedImage` and `ImageGeneration`.
+  - New fields: `GenerationResult.images`, `GenerateOptions.images`, `ProviderDescriptor.imageGeneration` (`allow`, `imageFolder`, `pruneEmptyParent`) and `Provider.imageGeneration`.
+- `src/router.ts`, `src/acp.ts`: `canGenerateImages(model)`, so the server can reject an incapable model before a stream starts.
+- `src/providers/antigravity.ts`: allows `title === "Run generate_image?"` with `kind === "other"`; the image folder is `<GEMINI_HOME>/antigravity-acp/brain`.
+- `src/providers/codex.ts`: no permission rule (Codex asks none); the image folder is `<CODEX_HOME>/generated_images` (the isolated home, `$CODEX_HOME` or `~/.codex`), and the emptied thread folder is pruned.
+- `src/api.ts`:
+  - `normalizeImageGeneration` for the new endpoint.
+  - Chat `modalities: ["text", "image"]` and the Responses `image_generation` tool, both set `generateImages`.
+  - `buildPrompt` takes a flag that switches to the image preamble and leaves out the provider's no-tools line.
+- `src/server.ts`:
+  - `POST /v1/images/generations` returns `{ created, data: [{ b64_json, revised_prompt? }], output_format }`. `size` becomes an aspect-ratio hint, and `quality` / `background` become hints.
+  - It returns 400 for `n` ≠ 1, `response_format` other than `b64_json`, `mask` / `image` / `images`, `stream: true`, `partial_images`, a bad `size`, and an incapable model. It returns 502 `no_image_generated` with the agent's text.
+  - Responses adds `image_generation_call` items, streaming and not. Chat adds `message.images` / `delta.images`.
+- `tests/image-generation.test.ts` (new, 28 tests) and `tests/fixtures/fake-acp.mjs`: `FAKE_ACP_IMAGE_GEN=agy|codex` with options `_OPTIONS`, `_OUTSIDE`, `_BYTES` and `_NONE`. The fake also logs permission answers.
+- `README.md`: an "Image generation" block under Supported API, the Antigravity safety note and the intro. `ROADMAP.md`: one line.
+- `.claude/tickets/AAP-11-images-and-tools/plan.md`: Phase 3 status, deviations and the live-check table.
+
+**Live check** (headless CLI, temporary settings, `PROXY_CODEX_ISOLATED_HOME=0`, prompt "a cartoon dolphin jumping out of the sea"):
+
+| Request | Model | Time | Result | Agent's file |
+|---|---|---|---|---|
+| `/v1/images/generations` | `antigravity/gemini-3.8-flash-low` | 22.0 s | JPEG, 824,189 bytes | deleted |
+| `/v1/images/generations` | `codex/gpt-5.6-luna` | 30.4 s | PNG, 2,088,340 bytes, with a revised prompt | deleted, together with its thread folder |
+| `/v1/responses` with `image_generation` | `antigravity/gemini-3.8-flash-low` | 22.2 s | JPEG, 920,944 bytes | deleted |
+
+**Deviations**
+- Image requests use their own preamble, which allows one image tool call and no other tool, and they leave out Antigravity's no-tools line, which would forbid the image tool.
+- Sessions with images are not kept for reuse.
+- In Responses streaming with the image tool, the message text arrives in one delta after the image items. Without the tool, streaming is unchanged.
+- Additions beyond the plan:
+  - The image endpoint also rejects `stream: true`, `partial_images` and the edit fields.
+  - Responses accepts `tool_choice` of `auto`, `required` or `{type: "image_generation"}` when the image tool is present, and `partial_images: 0`.
+- Not done: `capabilities.imageGeneration` in `ProviderStatus`. The router and the provider expose it instead.
+
+**Verification**
+- `npm run typecheck`: clean.
+- `npx vitest run`: 214 passed, 1 skipped (17 files).
+- `npm run build`: succeeded.
+- I ran all three on the final tree.
+- The SDK's ndjson limit is 32 MiB per line; a 6.1 MB update line is tested.
+- Not run: the `RUN_LIVE_SMOKE` test. The live check above was done by hand.
+
+**Follow-ups**
+- The live proxy was stopped with `kill -TERM`, which on Windows ends the process without a graceful shutdown. No agent processes were left, and the three Antigravity sessions were purged with the proxy's own purge.
+- Still pending: the Codex isolated-home live check after the user's first Codex login (AAP-12).
+
+**Status:** committed on `AAP-14_image-generation`, pushed, with a PR against `master`.
+
 ## 2026-10-26: AAP-13 Phase 2 (image input)
 
 Chat Completions and Responses now accept images. They reach Codex, Claude and Antigravity as base64 image blocks; each agent described a test image in the live check.
@@ -59,7 +121,7 @@ Chat Completions and Responses now accept images. They reach Codex, Claude and A
 - Optional: a cap on images per request.
 - The Codex isolated-home live check still waits for the user's first Codex login (AAP-12).
 
-**Status:** uncommitted.
+**Status:** committed as `dabba93` on `AAP-13_image-input`, PR #8 open against `master`.
 
 ## 2026-10-26: AAP-12 Phase 1 (agent hardening)
 
