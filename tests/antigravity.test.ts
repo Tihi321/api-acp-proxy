@@ -3,13 +3,13 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpProvider } from "../src/acp-provider.js";
-import { ApiError, serializePrompt } from "../src/api.js";
+import { ApiError, serializePrompt, textMessage } from "../src/api.js";
 import { antigravityDescriptor, antigravityRegistration, purgeRecordedSessions, recordSession, resolveAntigravityExecutable, type AntigravityOptions } from "../src/providers/antigravity.js";
 import { ProviderAuthRequiredError, ProviderNotInstalledError, ProviderTermsRequiredError, defaultRuntimeContext, type ProviderStatus, type RuntimeContext } from "../src/provider.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const root = path.resolve(".claude/temp/antigravity-tests", String(process.pid));
-const user = [{ role: "user" as const, content: "hello" }];
+const user = [textMessage("user", "hello")];
 const providers: AcpProvider[] = [];
 let counter = 0;
 

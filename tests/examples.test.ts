@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createProxyServer } from "../src/server.js";
 import type { AcpLike } from "../src/acp.js";
-import type { TextMessage } from "../src/api.js";
+import { messageText } from "../src/api.js";
 import type { ProxyConfig } from "../src/config.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -19,14 +19,14 @@ const config: ProxyConfig = {
   apiKey: "secret",
 };
 
-type RecordedCall = TextMessage[];
+type RecordedCall = Array<{ role: string; content: string }>;
 let calls: RecordedCall[] = [];
 let server: ReturnType<typeof createProxyServer> | undefined;
 
 const fake: AcpLike = {
   async generate(_model, messages, callbacks) {
-    calls.push(messages.map((message) => ({ ...message })));
-    const last = messages.at(-1)?.content;
+    calls.push(messages.map((message) => ({ role: message.role, content: messageText(message) })));
+    const last = messages.at(-1) ? messageText(messages.at(-1)!) : undefined;
     if (last === "bad request") throw new Error("synthetic request failure");
     callbacks?.onText?.("streamed response");
     return {

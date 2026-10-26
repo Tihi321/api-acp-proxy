@@ -111,6 +111,40 @@ All three agents advertise `promptCapabilities.image: true` and accept base64 PN
    - Fake agent: `FAKE_ACP_IMAGE=1` advertises the capability, echoes the image count, and fails `-32602` on a uri-only block.
 6. **Live check**: describe `.claude/temp/aap11/red-circle.png` through `/v1/chat/completions` on each agent.
 
+**Status (2026-10-26): implemented and live-checked.** Typecheck, build and the whole suite pass (see below).
+- [x] 1 `src/api.ts` (`Message` / `Part`, `textMessage`, `messageText`, `hasImages`, `buildPrompt`; `normalizeChat` / `normalizeResponses` are now async; the parsed request's `textMessages` became `conversation`). New `src/images.ts`: `data:` decoding, guarded download (manual redirects, 15 s, `image/*`, 10 MB), magic-byte check. `createProxyServer(config, bridge, { fetch })` takes the download `fetch`; the controller passes `ctx.fetch` (Electron's `net.fetch`).
+- [x] 2 `src/acp-provider.ts`: the prompt is `buildPrompt()` content blocks; `promptCapabilities.image` is read from `initialize` and exposed as `status().capabilities.image` (`ProviderStatus.capabilities?`); a request with images for an agent without it throws `ApiError(400, unsupported_content, param messages)`, which `AcpProvider.generate` now passes through instead of wrapping into a 503. The server turns the param into `input` for Responses.
+- [x] 3 session reuse: the kept transcript is `{ role, text, images: sha256[] }` per message (no base64 kept); history matching compares the hashes.
+- [x] 4 config: default `maxBodyBytes` 20 MiB (`src/settings.ts`), README env table updated.
+- [x] 5 tests: `tests/images.test.ts` (18 tests), fake agent `FAKE_ACP_IMAGE=1`, existing tests moved to the new message type (`textMessage()` helper, async `normalize*`), settings default test.
+- [x] 6 docs: README (top sentence, env table, Supported API, a new "Images" block, session reuse), ROADMAP last item split into "images accepted" (done) and "audio, files and tools still rejected".
+- [x] 7 live check (below).
+
+Prompt layout: the first text block is the preamble, then a `[role]` block per message, joined by a blank line; each image becomes an `image` block right after the text of its message and ends the current text block, so the text that follows starts a new block; `[output format]` goes into the last text block. A request without images is exactly one text block, identical to before (asserted through `FAKE_ACP_LOG`).
+
+Deviations and decisions:
+- **Preamble for image requests:** the first sentence is "This is an API request with text and images." instead of "This is a text-only API request." (only when the request has images; the rest of the line is unchanged). A text-only request keeps the old wording byte for byte.
+- **Streaming and the capability guard:** the capability is only known once the agent has started, so for a streamed request the 400 `unsupported_content` arrives as an SSE error event (like every other error found after the stream began), not as an HTTP 400. Non-streaming requests get a real 400.
+- **Part parsing:** content parts are parsed one by one (the zod schemas only check `{ type: string }`), so any unknown type answers `unsupported_content` instead of a schema error. Images are only accepted in user messages (system / developer / assistant images answer `unsupported_content`). Chat text parts are no longer `.strict()`.
+- **Error codes:** `unsupported_content` (part type, MIME type or magic bytes, `file_id`, image in a non-user message, agent without the capability) and `invalid_image_url` (malformed or unreachable URL, bad base64, timeout, too many redirects, over 10 MB).
+- A `data:` URL whose declared type does not match its bytes is rejected; a downloaded image is typed by its bytes, not by its `Content-Type` (which only has to start with `image/`). `image/jpg` is accepted as an alias of `image/jpeg`.
+- No cap on the number of images per request, and no private-address filtering for downloads (the proxy fetches whatever URL the client names); documented in the README.
+- Not tested: the 15 s download timeout itself (it would cost 15 s of wall time); the other limits are.
+- Token estimates for requests without agent usage count only the text (images are left out of `serializePrompt`).
+
+Verification: `npm run typecheck` clean; `npm test` 15 files passed, 186 tests passed, 1 skipped (live smoke); `npm run build` succeeds.
+
+Live check (headless CLI on port 18913, a temporary `PROXY_SETTINGS_FILE` under `.claude/temp/aap13/live/`, `PROXY_CODEX_ISOLATED_HOME=0`, `CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT` / `NODE_OPTIONS` unset; `.claude/temp/aap11/red-circle.png` as a data URL, "What is in this image? One sentence."):
+
+| Endpoint | Model | Time | Answer |
+|---|---|---|---|
+| chat | `codex/gpt-5.6-luna` | 8.7 s | "A red circle is centered on a white background." |
+| chat | `claude/haiku` | 1.8 s | "A solid red circle on a white background, resembling the Japanese flag's disc." |
+| chat | `antigravity/gemini-3.8-flash-low` | 6.9 s | "The image shows a solid red circle centered on a white background." |
+| responses (`input_text` + `input_image`) | `claude/haiku` | 3.2 s | "A solid red circle on a white background, resembling the Japanese flag's disc." |
+
+Four prompts in total on the real accounts (plus the model listing). The proxy was stopped afterwards (the process was killed, so its Antigravity child was orphaned and killed by hand); no agent process of the run is left.
+
 ## Phase 3: image generation (AAP-14)
 
 What the agents do (spike section 3):

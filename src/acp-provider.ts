@@ -3,16 +3,20 @@ import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { client, methods, ndJsonStream, type ClientConnection, type ClientContext } from "@agentclientprotocol/sdk";
-import type { SessionConfigOption, SessionUpdate, Usage } from "@agentclientprotocol/sdk";
-import { serializePrompt, type TextMessage } from "./api.js";
+import type { ContentBlock, SessionConfigOption, SessionUpdate, Usage } from "@agentclientprotocol/sdk";
+import { createHash } from "node:crypto";
+import { ApiError, buildPrompt, hasImages, messageText, type Message } from "./api.js";
 import { killProcessTree } from "./process-tree.js";
 import { AcpUnavailableError, ProviderAuthRequiredError, ProviderNotInstalledError, ProviderTermsRequiredError } from "./provider.js";
 import type { AuthMethodInfo, GenerateOptions, GenerationCallbacks, GenerationResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext } from "./provider.js";
 
 type SessionHandler = (update: SessionUpdate) => void;
 interface PreparedSession { sessionId: string; cwd: string; modelOptionId?: string; readOnlyModeId?: string; }
+/** A message as kept for session reuse: its text and the SHA-256 of each image (never the base64 itself). */
+interface KeptMessage { role: Message["role"]; text: string; images: string[]; }
+function toKept(message: Message): KeptMessage { return { role: message.role, text: messageText(message), images: message.parts.flatMap((part) => part.type === "image" ? [createHash("sha256").update(part.data, "base64").digest("hex")] : []) }; }
 /** A finished turn's session kept for the next request of the same conversation; `transcript` holds the client-visible messages plus each raw answer. */
-interface KeptSession { agent: ClientContext; session: PreparedSession; model: string; transcript: TextMessage[]; usage?: Usage; timer: NodeJS.Timeout; }
+interface KeptSession { agent: ClientContext; session: PreparedSession; model: string; transcript: KeptMessage[]; usage?: Usage; timer: NodeJS.Timeout; }
 interface AuthInflight { methodId: string; agent: ClientContext; promise: Promise<void>; }
 const DEFAULT_MODE_CANDIDATES = ["read-only", "readonly"] as const;
 const DEFAULT_AUTH_TIMEOUT_MS = 10_000;
@@ -74,6 +78,8 @@ export class AcpProvider implements Provider {
   private state: ProviderState = "stopped";
   private error?: string;
   private agentVersion?: string;
+  /** `agentCapabilities.promptCapabilities.image` of the running agent (undefined until initialize). */
+  private imageInput?: boolean;
   private account?: string;
   /** The agent reported (via _auth/status_update) that nobody is signed in. */
   private loggedOut = false;
@@ -105,7 +111,7 @@ export class AcpProvider implements Provider {
   }
 
   status(): ProviderStatus {
-    return { id: this.id, name: this.displayName, state: this.state, ...(this.error ? { error: this.error } : {}), authMethods: this.authMethods, models: this.staticModels ?? this.discovered ?? [], ...(this.loginUrl ? { loginUrl: this.loginUrl } : {}), ...(this.agentVersion ? { agentVersion: this.agentVersion } : {}), ...(this.account ? { account: this.account } : {}) };
+    return { id: this.id, name: this.displayName, state: this.state, ...(this.error ? { error: this.error } : {}), authMethods: this.authMethods, models: this.staticModels ?? this.discovered ?? [], ...(this.loginUrl ? { loginUrl: this.loginUrl } : {}), ...(this.agentVersion ? { agentVersion: this.agentVersion } : {}), ...(this.account ? { account: this.account } : {}), ...(this.imageInput !== undefined ? { capabilities: { image: this.imageInput } } : {}) };
   }
 
   onStatus(listener: (status: ProviderStatus) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
@@ -228,7 +234,7 @@ export class AcpProvider implements Provider {
     const spec = await descriptor.launch(this.ctx);
     const child = spawn(spec.command, spec.args, { stdio: ["pipe", "pipe", "pipe"], env: spec.env ?? process.env, cwd: spec.cwd, windowsHide: true, detached: process.platform !== "win32" });
     this.child = child;
-    this.loginUrl = undefined; this.openedUrl = undefined; this.agentVersion = undefined; this.authInflight = undefined; this.authBlock = undefined; this.stderrBuffer = ""; this.account = undefined; this.loggedOut = false;
+    this.loginUrl = undefined; this.openedUrl = undefined; this.agentVersion = undefined; this.authInflight = undefined; this.authBlock = undefined; this.stderrBuffer = ""; this.account = undefined; this.loggedOut = false; this.imageInput = undefined;
     const childFailure = new Promise<never>((_, reject) => child.once("error", reject));
     childFailure.catch(() => undefined);
     child.stderr.on("data", (chunk) => this.onStderr(chunk));
@@ -256,6 +262,7 @@ export class AcpProvider implements Provider {
       const initialized = await Promise.race([this.agent.request(methods.agent.initialize, { protocolVersion: 1, clientInfo: { name: "api-acp-proxy", version: "0.1.0" }, clientCapabilities: {} }), childFailure]);
       this.authMethods = (initialized.authMethods ?? []).map((method) => ({ id: method.id, name: method.name, ...(method.description ? { description: method.description } : {}), ...("type" in method && method.type ? { type: String(method.type) } : {}) }));
       if (!this.authMethods.length && descriptor.loginMethods) this.authMethods = descriptor.loginMethods;
+      this.imageInput = initialized.agentCapabilities?.promptCapabilities?.image === true;
       const version = initialized.agentInfo?.version;
       if (version) { this.agentVersion = version; this.emitStatus(); }
       if (descriptor.authMode === "eager") {
@@ -303,7 +310,7 @@ export class AcpProvider implements Provider {
   }
 
   /** Keeps a session after a completed turn; the oldest one is evicted over the cap and an idle one is disposed after retainedIdleMs. */
-  private keep(agent: ClientContext, session: PreparedSession, model: string, transcript: TextMessage[], usage: Usage | undefined): void {
+  private keep(agent: ClientContext, session: PreparedSession, model: string, transcript: KeptMessage[], usage: Usage | undefined): void {
     const limit = Math.max(1, this.options.retainedSessions ?? DEFAULT_RETAINED_SESSIONS);
     while (this.kept.length >= limit) { const oldest = this.kept.shift()!; clearTimeout(oldest.timer); void this.disposeSession(oldest.agent, oldest.session); }
     const entry: KeptSession = { agent, session, model, transcript, usage, timer: setTimeout(() => {
@@ -316,15 +323,16 @@ export class AcpProvider implements Provider {
   }
 
   /** Removes and returns the kept session whose transcript is the request's history up to its last assistant message, with the messages after it. */
-  private takeKept(agent: ClientContext, model: string, messages: TextMessage[]): { entry: KeptSession; fresh: TextMessage[] } | undefined {
+  private takeKept(agent: ClientContext, model: string, messages: Message[]): { entry: KeptSession; fresh: Message[] } | undefined {
     const last = messages.map((message) => message.role).lastIndexOf("assistant");
     if (last < 0 || last + 1 >= messages.length) return undefined;
+    const sentHistory = messages.slice(0, last + 1).map(toKept);
     const index = this.kept.findIndex((entry) => entry.agent === agent && entry.model === model && entry.transcript.length === last + 1 && entry.transcript.every((kept, position) => {
-      const sent = messages[position]!;
+      const sent = sentHistory[position]!;
       if (kept.role !== sent.role) return false;
-      if (kept.role !== "assistant") return kept.content === sent.content;
-      const content = sent.content.trim();
-      return content !== "" && kept.content.includes(content);
+      if (kept.role !== "assistant") return kept.text === sent.text && kept.images.length === sent.images.length && kept.images.every((hash, at) => hash === sent.images[at]);
+      const content = sent.text.trim();
+      return content !== "" && sent.images.length === 0 && kept.text.includes(content);
     }));
     if (index < 0) return undefined;
     const [entry] = this.kept.splice(index, 1);
@@ -470,13 +478,13 @@ export class AcpProvider implements Provider {
     }
   }
 
-  async generate(model: string, messages: TextMessage[], callbacks: GenerationCallbacks = {}, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
+  async generate(model: string, messages: Message[], callbacks: GenerationCallbacks = {}, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
     let agent: ClientContext | undefined;
     let session: PreparedSession | undefined;
     let aborted = signal?.aborted ?? false;
     let promptSent = false;
     let reused: KeptSession | undefined;
-    let keepWith: { transcript: TextMessage[]; usage?: Usage } | undefined;
+    let keepWith: { transcript: KeptMessage[]; usage?: Usage } | undefined;
     let fresh = messages;
     const cancelled = (): GenerationResult => ({ text: "", stopReason: "cancelled", usage: null });
     const abort = async () => {
@@ -489,6 +497,7 @@ export class AcpProvider implements Provider {
     try {
       agent = await this.start();
       if (aborted) return cancelled();
+      if (hasImages(messages) && !this.imageInput) throw new ApiError(400, "unsupported_content", `${this.displayName} does not accept image input.`, "messages");
       const hit = this.options.reuseSessions ? this.takeKept(agent, model, messages) : undefined;
       if (hit) { reused = hit.entry; session = reused.session; fresh = hit.fresh; }
       else { session = this.warm.shift() ?? await this.createSession(agent); this.refillWarm(); }
@@ -510,18 +519,19 @@ export class AcpProvider implements Provider {
       }
       if (aborted) return cancelled();
       promptSent = true;
-      const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: serializePrompt(fresh, options?.instructions, this.descriptor.promptPreamble) }] }));
+      const prompt: ContentBlock[] = buildPrompt(fresh, options?.instructions, this.descriptor.promptPreamble);
+      const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt }));
       let usage = result.usage ?? null;
       let cumulative = reused?.usage;
       if (usage && this.descriptor.usageScope === "session") { cumulative = usage; usage = usageDelta(usage, reused?.usage); }
-      if (this.options.reuseSessions && result.stopReason === "end_turn" && !aborted) keepWith = { transcript: [...messages, { role: "assistant", content: text }], usage: cumulative };
+      if (this.options.reuseSessions && result.stopReason === "end_turn" && !aborted) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
       return { text, stopReason: result.stopReason, usage };
     } catch (error) {
       if (aborted && !promptSent) return cancelled();
       if (aborted) throw new AcpUnavailableError("The request was cancelled.", error);
       const mapped = this.descriptor.mapError?.(error, model);
       if (mapped) throw mapped;
-      if (error instanceof AcpUnavailableError) throw error;
+      if (error instanceof AcpUnavailableError || error instanceof ApiError) throw error;
       throw new AcpUnavailableError(`The ${this.displayName} ACP backend failed to process the request.`, error);
     } finally {
       signal?.removeEventListener("abort", abort);

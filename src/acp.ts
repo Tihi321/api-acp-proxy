@@ -1,6 +1,6 @@
 import { AcpProvider } from "./acp-provider.js";
 import type { ModelId, ProxyConfig } from "./config.js";
-import type { TextMessage } from "./api.js";
+import type { Message } from "./api.js";
 import { codexDescriptor } from "./providers/codex.js";
 import { defaultRuntimeContext, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type RuntimeContext } from "./provider.js";
 import { createLogger } from "./logger.js";
@@ -17,7 +17,7 @@ export class AcpBridge extends AcpProvider {
 
 export interface ModelEntry { id: string; ownedBy?: string; }
 export interface AcpLike {
-  generate(model: ModelId, messages: TextMessage[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
+  generate(model: ModelId, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   close?(): Promise<void>;
   listModels?(): Promise<ModelEntry[]>;
   hasModel?(model: string): boolean;
