@@ -9,7 +9,6 @@ import { silentLogger, type Logger } from "../logger.js";
 import { sweepOrphans } from "../process-tree.js";
 import type { AuthMethodInfo, ProviderDescriptor, RuntimeContext } from "../provider.js";
 import type { SettingsPatch } from "../settings.js";
-import { BRIDGE_SERVER_NAME } from "../tool-bridge.js";
 import { agentsDir, readInstallInfo } from "./antigravity-installer.js";
 
 export interface AntigravityOptions {
@@ -117,6 +116,14 @@ export function purgeRecordedSessions(options: { dataDir: string; geminiHome: st
 
 // --- descriptor ----------------------------------------------------------------------------------------------------
 
+/** An MCP tool call of Antigravity names its server and tool in `_meta.mcp`; its `rawInput` is `{ arguments, ...arguments }`. */
+function agyTarget(call: { _meta?: Record<string, unknown> | null; rawInput?: unknown }, labels: readonly string[]): { server: string; tool: string; arguments?: unknown } | undefined {
+  const mcp = (call._meta as { mcp?: { server?: unknown; tool?: unknown } } | null | undefined)?.mcp;
+  if (typeof mcp?.server !== "string" || typeof mcp.tool !== "string" || !labels.includes(mcp.server)) return undefined;
+  const input = call.rawInput as { arguments?: unknown } | null | undefined;
+  return { server: mcp.server, tool: mcp.tool, arguments: input?.arguments ?? call.rawInput };
+}
+
 /** Google Antigravity through the official ACP server (agy_acp_server). */
 export function antigravityDescriptor(ctxForHooks: RuntimeContext, options: AntigravityOptions): ProviderDescriptor {
   const settings = options.settings;
@@ -197,7 +204,12 @@ export function antigravityDescriptor(ctxForHooks: RuntimeContext, options: Anti
       imageFolder: () => path.join(home(), "antigravity-acp", "brain"),
     },
     // Its permission request repeats the `tool_call` with `_meta.mcp.server`. It gives up on a tool call after 3 minutes (fixed).
-    allowTool: (permission) => { const meta = permission.toolCall._meta as { mcp?: { server?: unknown }; is_mcp_tool_call?: unknown } | null | undefined; return meta?.mcp?.server === BRIDGE_SERVER_NAME && (meta.is_mcp_tool_call === true || (permission._meta as { is_mcp_tool_call?: unknown } | null | undefined)?.is_mcp_tool_call === true); },
+    allowTool: (permission, _tracked, mcp) => {
+      const meta = permission.toolCall._meta as { is_mcp_tool_call?: unknown } | null | undefined;
+      const target = agyTarget(permission.toolCall, mcp.labels);
+      return target !== undefined && (meta?.is_mcp_tool_call === true || (permission._meta as { is_mcp_tool_call?: unknown } | null | undefined)?.is_mcp_tool_call === true) && mcp.allows(target.server, target.tool);
+    },
+    mcpTarget: agyTarget,
     toolCallLimitMs: 180_000,
     mapError(error, model) {
       const text = [error instanceof Error ? error.message : String(error), JSON.stringify((error as { data?: unknown } | null)?.data ?? "")].join(" ");

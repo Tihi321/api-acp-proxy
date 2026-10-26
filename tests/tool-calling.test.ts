@@ -200,7 +200,7 @@ describe("chat tool calls", () => {
   it("asks for the Claude permission only without allowedTools, and allows only the client server", async () => {
     const d = dirs();
     Object.assign(process.env, { FAKE_ACP_CLAUDE: "1", FAKE_ACP_MCP: "claude", FAKE_ACP_MCP_STRAY: "1" });
-    const base = await start(d, [claude(d, {}, { bridgeSessionMeta: undefined })]);
+    const base = await start(d, [claude(d, {}, { mcpSessionMeta: undefined })]);
     const first = await send(base, "/v1/chat/completions", chat(CLAUDE_MODEL));
     expect(first.body.choices[0].message.tool_calls).toHaveLength(2);
     expect(requests(d, "session/new")[0]._meta.claudeCode.options).not.toHaveProperty("allowedTools");

@@ -1,4 +1,4 @@
-import { defaultSettings, resolveConfig } from "./settings.js";
+import { defaultSettings, resolveConfig, type McpServerSetting } from "./settings.js";
 
 export const MODEL_IDS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] as const;
 export type ModelId = string;
@@ -20,6 +20,8 @@ export interface ProxyConfig {
   reuseSessions?: boolean;
   /** How long a turn suspended on a tool call waits for the client's result (shorter for agents that give up sooner). */
   toolResultTimeoutMs?: number;
+  /** `settings.mcpServers`: the MCP servers a Responses request may name by label. */
+  mcpServers?: Record<string, McpServerSetting>;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ProxyConfig {

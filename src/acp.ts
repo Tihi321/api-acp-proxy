@@ -25,4 +25,6 @@ export interface AcpLike {
   canGenerateImages?(model: string): boolean;
   /** Whether the model's provider can be given function tools (a bridge without this method is asked and answers 400 itself). */
   canCallTools?(model: string): boolean;
+  /** Whether the model's provider can be given remote MCP servers (a bridge without this method is asked and answers 400 itself). */
+  canUseMcp?(model: string): boolean;
 }
