@@ -10,7 +10,8 @@ export interface GenerateOptions { instructions?: string; }
 export interface GenerationCallbacks { onText?: (text: string) => void; onUsage?: (usage: Usage) => void; }
 
 export class AcpUnavailableError extends Error {
-  constructor(message: string, public readonly backendCause?: unknown, public readonly code?: string) { super(message); this.name = "AcpUnavailableError"; }
+  /** `retryAfterSeconds` becomes the `Retry-After` header of the 503 answer. */
+  constructor(message: string, public readonly backendCause?: unknown, public readonly code?: string, public readonly retryAfterSeconds?: number) { super(message); this.name = "AcpUnavailableError"; }
 }
 export class ProviderNotInstalledError extends AcpUnavailableError {
   constructor(message: string, cause?: unknown) { super(message, cause, "provider_not_installed"); this.name = "ProviderNotInstalledError"; }
@@ -69,6 +70,10 @@ export interface ProviderDescriptor {
   launch(ctx: RuntimeContext): LaunchSpec | Promise<LaunchSpec>;
   /** Returns the auth method id to use without user interaction, or undefined when interactive login is needed. */
   chooseAuth(methods: AuthMethodInfo[], env: NodeJS.ProcessEnv): string | undefined;
+  /** Returns a message when the agent cannot log in without the user (e.g. a fresh isolated home): an eager provider then reports needs_login instead of starting an interactive login on its own. Checked only when chooseAuth returned nothing. */
+  loginRequired?(methods: AuthMethodInfo[], env: NodeJS.ProcessEnv): string | undefined;
+  /** Method login() uses when none was given and chooseAuth returned nothing (default: the first advertised method). */
+  defaultLoginMethod?: string;
   /** Mode ids that count as the safe/read-only mode, in order of preference. Default ["read-only", "readonly"]. */
   modeCandidates?: readonly string[];
   /** stderr lines of the agent are logged at this level (default info). */
@@ -97,6 +102,8 @@ export interface ProviderDescriptor {
   loginMethods?: AuthMethodInfo[];
   /** When present, login() runs this (e.g. a console window) instead of ACP authenticate; on success the agent is restarted. */
   externalLogin?(ctx: RuntimeContext, methodId: string): Promise<void>;
+  /** Extra line appended to the generic text-only preamble of every prompt for this agent. */
+  promptPreamble?: string;
   /** Translates a backend error into a proxy error (e.g. an ApiError 403). */
   mapError?(error: unknown, model: string): Error | undefined;
 }

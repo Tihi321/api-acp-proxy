@@ -40,6 +40,7 @@ const fields: FieldSpec[] = [
   { path: "server.reuseSessions", kind: "bool", scope: "server" },
   { path: "providers.codex.enabled", kind: "bool", scope: "codex" },
   { path: "providers.codex.authMethodId", kind: "select", scope: "codex", optional: true },
+  { path: "providers.codex.isolatedHome", kind: "bool", scope: "codex" },
   { path: "providers.antigravity.enabled", kind: "bool", scope: "antigravity" },
   { path: "providers.antigravity.authMethodId", kind: "select", scope: "antigravity", optional: true },
   { path: "providers.antigravity.executablePath", kind: "text", scope: "antigravity", optional: true },

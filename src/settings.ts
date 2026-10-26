@@ -29,6 +29,8 @@ export const settingsSchema = z.object({
       authMethodId: z.string().optional(),
       acpCommand: z.string().optional(),
       acpArgs: z.array(z.string()).default([]),
+      /** Run Codex with its own CODEX_HOME (`<dataDir>/codex-home`: no user skills, plugins or MCP servers; needs its own login). Off keeps ~/.codex. */
+      isolatedHome: z.boolean().default(true),
     }).default({}),
     antigravity: z.object({
       enabled: z.boolean().default(false),
@@ -190,6 +192,7 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
   apply("server.ignoreSampling", parseBool(env.PROXY_IGNORE_SAMPLING), (v) => { server.ignoreSampling = v; });
   apply("server.reuseSessions", parseBool(env.PROXY_REUSE_SESSIONS), (v) => { server.reuseSessions = v; });
   apply("providers.codex.enabled", parseBool(env.PROXY_CODEX_ENABLED), (v) => { providers.codex.enabled = v; });
+  apply("providers.codex.isolatedHome", parseBool(env.PROXY_CODEX_ISOLATED_HOME), (v) => { providers.codex.isolatedHome = v; });
   apply("providers.codex.acpCommand", env.PROXY_ACP_COMMAND || undefined, (v) => { providers.codex.acpCommand = v; });
   apply("providers.codex.acpArgs", env.PROXY_ACP_ARGS ? env.PROXY_ACP_ARGS.split(" ").filter(Boolean) : undefined, (v) => { providers.codex.acpArgs = v; });
   apply("providers.antigravity.enabled", parseBool(env.PROXY_ANTIGRAVITY_ENABLED), (v) => { providers.antigravity.enabled = v; });

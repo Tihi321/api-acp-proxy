@@ -179,7 +179,7 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike): Server 
     } catch (error) {
       if (response.headersSent) { response.end(); return; }
       if (error instanceof ApiError) { json(response, error.status, errorEnvelope(error)); return; }
-      if (error instanceof AcpUnavailableError) { json(response, 503, { error: { message: error.message, type: "server_error", code: error.code ?? "backend_unavailable", param: null } }); return; }
+      if (error instanceof AcpUnavailableError) { if (error.retryAfterSeconds) response.setHeader("Retry-After", String(error.retryAfterSeconds)); json(response, 503, { error: { message: error.message, type: "server_error", code: error.code ?? "backend_unavailable", param: null } }); return; }
       json(response, 500, errorEnvelope(error instanceof Error ? error : new Error(String(error))));
     }
   });
