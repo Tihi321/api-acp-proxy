@@ -1,5 +1,73 @@
 # Changelog
 
+## 2026-10-26: AAP-17 Phase 6 (web search)
+
+Chat `web_search_options` and the Responses `web_search` tool now turn on the agents' own web search. Claude and Antigravity search only when a request asks; Codex always can. Answers come with `url_citation` annotations, and Responses also returns `web_search_call` items. The live check passed on all three agents.
+
+**Repository** `api-acp-proxy`, branch `AAP-17_web-search` (from `origin/master` at `219c106`; AAP-12 to AAP-16 merged):
+- `src/provider.ts`: `ProviderDescriptor.webSearch` (`sessionMeta`, `allow`, `search`).
+- `src/acp-provider.ts`:
+  - A search request gets a fresh session with the search meta. It is never kept for reuse.
+  - Search permissions go through the existing per-session rules, answered with `allow_once` only.
+  - `web_search_call` results are collected from the `kind: "search"` tool calls.
+  - `mergeMeta` joins arrays (so Claude's `tools` / `allowedTools` from search, MCP servers and function tools merge), and `trackToolCall` merges `_meta`, so Claude's `toolResponse` survives the final update.
+  - A debug log line records each permission decision (kind, title, outcome; never the body).
+- `src/providers/claude.ts`: the search session gets `tools: ["WebSearch"]` and `allowedTools: ["WebSearch"]`, never `WebFetch`. A fallback rule allows only `WebSearch`.
+- `src/providers/antigravity.ts`: allows only `kind === "search"` with `title === "Run search_web?"`. `read_url_content` and `run_command` stay cancelled.
+- `src/providers/codex.ts`: search is always on; nothing to enable, and it can't be turned off per request.
+- `src/api.ts`:
+  - Chat `web_search_options` and Responses `web_search` / `web_search_preview` (at most one per request) are accepted.
+  - `search_context_size` is checked and ignored. `user_location` and `filters.allowed_domains` are validated and become hint lines.
+  - A search-only preamble replaces the generic one and leaves out Antigravity's no-tools line.
+  - `include: ["web_search_call.action.sources"]` is accepted, and so is `tool_choice` of `auto`, `required` or `{ type: "web_search" }`.
+  - Search with `image_generation` or chat `modalities` gets a 400.
+- `src/citations.ts` (new): `url_citation` annotations from the Markdown links and bare http(s) URLs actually present in the answer, indexed in UTF-16 units (`text.slice(start, end)` is the cited text).
+- `src/server.ts`:
+  - **Responses, items:** a `web_search_call` item per search, shaped `{ id, type, status, action: { type: "search", query, sources? } }`, placed before the message. Streaming sends `output_item.added`, `web_search_call.in_progress` / `.searching` / `.completed` and `output_item.done`.
+  - **Responses, citations:** in `content[].annotations`, and streamed as `response.output_text.annotation.added`.
+  - **Chat:** `message.annotations`, and in streaming one `delta.annotations` chunk before the finish chunk.
+  - **Capability check:** `model_not_capable` is checked before a stream starts.
+- `src/router.ts`, `src/acp.ts`: `canSearchWeb`.
+- `tests/web-search.test.ts` (new, 29 tests). `tests/fixtures/fake-acp.mjs`: `FAKE_ACP_SEARCH=claude|agy|codex`. `tests/image-generation.test.ts`, `tests/tool-calling.test.ts`: the "unsupported Responses tool" example is now `file_search`.
+- `README.md`:
+  - A "Web search" block covering the request shapes, what each agent does, timings, citations, and what is not enforced (domains, context size, Codex always on).
+  - The Codex home path now renders as `%APPDATA%\api-acp-proxy\codex-home`.
+- `ROADMAP.md`: one line.
+- `.claude/tickets/AAP-11-images-and-tools/plan.md`: Phase 6 status, decisions and the live table.
+
+**Live check** (headless CLI, temporary settings, `PROXY_CODEX_ISOLATED_HOME=0`, prompt "What is the latest stable version of Node.js? Search the web."):
+
+| API | Model | Time | Searches | Citations |
+|---|---|---|---|---|
+| Responses | `claude/haiku` | 17.4 s | 2 items, 10 sources each | 9 annotations, 4 distinct URLs |
+| Responses | `codex/gpt-5.6-luna` | 11.7 s | 1, no sources | 1 |
+| Responses | `antigravity/gemini-3.8-flash-low` | 19.9 s | 1 | 2 |
+| Chat `web_search_options` | `codex/gpt-5.6-luna` | 14.6 s | n/a | 1 |
+
+`allowedTools: ["WebSearch"]` suppresses Claude's permission request; the debug log showed none during both searches. Antigravity asked once (`Run search_web?`), and that request was allowed once.
+
+**Deviations**
+- Search may be combined with function tools and `mcp` servers instead of being rejected: the meta and permission rules merge, and the tool-set key for kept or suspended sessions includes search. A search made before a function call is reported with the response that ends in that call.
+- `action.sources` uses OpenAI's `[{ type: "url", url }]` shape, so Claude's page titles are not on the item.
+- Antigravity's grounding links are not turned into `sources`, because its search result text is not returned. They appear as annotations only when the answer contains them.
+
+**Verification**
+- `npm run typecheck`: clean.
+- `npx vitest run`: 320 passed, 1 skipped (20 files).
+- `npm run build`: succeeded.
+- I ran all three on the final tree.
+- Not run:
+  - plain-prompt baselines in this check (the timings match the spike);
+  - Codex with `"web_search": "disabled"` under the hardened config;
+  - the `RUN_LIVE_SMOKE` test.
+- Live-check cleanup: killing the proxy orphaned Antigravity's processes, which were stopped by hand. The proxy's orphan sweep would also catch them at the next start. Both Antigravity sessions were purged.
+
+**Follow-ups**
+- Optional: a graceful stop for the headless CLI on Windows, since `kill` skips the shutdown hook and orphans Antigravity's child processes. This came up in every live check.
+- Still pending: the Codex check in its own home, after the user's first Codex login (AAP-12).
+
+**Status:** committed on `AAP-17_web-search`, pushed, with a PR against `master`.
+
 ## 2026-10-26: AAP-16 Phase 5 (remote MCP servers)
 
 Responses requests can give the agent MCP servers: an http(s) URL in the request, or a label configured in `settings.json` (http, sse or stdio). The agent calls them itself during its turn, and each call comes back as an `mcp_call` output item. This works with Claude, Codex and Antigravity.
@@ -78,7 +146,7 @@ Responses requests can give the agent MCP servers: an http(s) URL in the request
 - Optional: a settings-window editor for `mcpServers`, and encrypted storage for header and env values.
 - Still pending: the Codex isolated-home live check after the user's first Codex login (AAP-12).
 
-**Status:** committed on `AAP-16_remote-mcp` (cut on `AAP-15_function-calling`, which is merged in PR #11), pushed, with a PR against `master`.
+**Status:** committed as `db1de08` on `AAP-16_remote-mcp`, merged to `master` in PR #12.
 
 ## 2026-10-26: AAP-15 Phase 4 (function calling through an MCP bridge)
 

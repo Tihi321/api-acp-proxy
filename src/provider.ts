@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import type { RequestPermissionRequest, Usage, StopReason } from "@agentclientprotocol/sdk";
-import type { Message, ToolCall, ToolChoice, ToolDef } from "./api.js";
+import type { Message, ToolCall, ToolChoice, ToolDef, WebSearchRequest } from "./api.js";
 import type { McpServerSpec } from "./mcp-config.js";
 import { silentLogger, type Logger } from "./logger.js";
 import type { ToolBridgeHub } from "./tool-bridge.js";
@@ -11,9 +11,11 @@ export interface GeneratedImage { mimeType: string; data: string; revisedPrompt?
 /** `images` is set only when the request asked for generated images. `stopReason` is `"tool_calls"` when the turn is suspended on `toolCalls` (the agent waits for the client's results). */
 /** A call the agent made to one of the request's remote MCP servers, built from its `tool_call` / `tool_call_update` updates. `output` is what the update carried (Antigravity: only a placeholder); `error` is set for a failed call. */
 export interface McpCallResult { server: string; name: string; /** The JSON text of the arguments. */ arguments: string; output: string | null; error: string | null; status: "completed" | "failed" | "incomplete"; }
-export interface GenerationResult { text: string; stopReason: StopReason | "tool_calls"; usage: Usage | null; images?: GeneratedImage[]; toolCalls?: ToolCall[]; /** The remote MCP calls the agent made during this response (only for a request with `mcpServers`). */ mcpCalls?: McpCallResult[]; }
+/** A web search the agent ran, from its `tool_call` updates: `sources` are the pages the agent reported for it (Claude only). */
+export interface WebSearchResult { query: string; status: "completed" | "failed"; sources?: Array<{ title?: string; url: string }>; }
+export interface GenerationResult { text: string; stopReason: StopReason | "tool_calls"; usage: Usage | null; images?: GeneratedImage[]; toolCalls?: ToolCall[]; /** The remote MCP calls the agent made during this response (only for a request with `mcpServers`). */ mcpCalls?: McpCallResult[]; /** The web searches the agent ran during this response (only for a request with `webSearch`). */ searches?: WebSearchResult[]; }
 /** `instructions` is extra prompt text kept out of the client-visible messages; `images` lets the agent generate images (its image permission is allowed for this request only). `tools` gives the agent the client's function tools through the MCP bridge (`toolChoice` and `parallelToolCalls` as the request said). */
-export interface GenerateOptions { instructions?: string; images?: true; tools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** Remote MCP servers the agent may call inside its turn (a Responses `mcp` tool); the agent talks to them itself. */ mcpServers?: McpServerSpec[]; }
+export interface GenerateOptions { instructions?: string; images?: true; tools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** Remote MCP servers the agent may call inside its turn (a Responses `mcp` tool); the agent talks to them itself. */ mcpServers?: McpServerSpec[]; /** The request asked for web search: the agent may use its search tool (and nothing else on the web); the hints go into the prompt. */ webSearch?: WebSearchRequest; }
 export interface GenerationCallbacks { onText?: (text: string) => void; onUsage?: (usage: Usage) => void; }
 
 export class AcpUnavailableError extends Error {
@@ -119,6 +121,8 @@ export interface ProviderDescriptor {
   imageGeneration?: ImageGeneration;
   /** True for the agent's permission request for a tool of one of the session's MCP servers (`mcp.labels`: the `client` bridge and/or the request's remote servers) when `mcp.allows(server, tool)` (then answered with `allow_once`, only in a request that has tools). `tracked` holds the `tool_call` fields seen so far for the request's `toolCallId`. Absent: the agent cannot be given tools (400 `model_not_capable`). */
   allowTool?(permission: RequestPermissionRequest, tracked: TrackedToolCall | undefined, mcp: McpAccess): boolean;
+  /** The agent can search the web. Absent: a request for web search is a 400 `model_not_capable`. */
+  webSearch?: WebSearch;
   /** The MCP server (one of `labels`), tool and arguments of a tool call, from its tracked `tool_call` fields; undefined for any other call. */
   mcpTarget?(call: TrackedToolCall, labels: readonly string[]): { server: string; tool: string; arguments?: unknown } | undefined;
   /** Merged into the session `_meta` of a session that has MCP servers (Claude: `allowedTools`, so it asks no permission); `tools` is the tools the server may be asked for (absent: all). */
@@ -131,6 +135,15 @@ export interface ProviderDescriptor {
 export interface TrackedToolCall { toolCallId: string; title?: string; kind?: string; status?: string; rawInput?: unknown; rawOutput?: unknown; content?: unknown; _meta?: Record<string, unknown> | null; }
 /** What a session's tools may reach: the MCP server labels it has and which tools of a server the request allows. */
 export interface McpAccess { labels: readonly string[]; allows(server: string, tool: string): boolean; }
+
+export interface WebSearch {
+  /** Merged into the session `_meta` of a request that asks for search (Claude: its `tools` and `allowedTools`). Absent: search needs no session option (Antigravity always offers it, Codex always has it on). */
+  sessionMeta?: Record<string, unknown>;
+  /** True for the agent's permission request for its search tool (then answered with `allow_once`, only in a request that asked for search); `tracked` holds the `tool_call` fields seen for the request's `toolCallId`. Never true for a tool that reads a URL or runs a command. Absent: the agent asks no permission. */
+  allow?(permission: RequestPermissionRequest, tracked: TrackedToolCall | undefined): boolean;
+  /** The search a tracked `tool_call` is (its query and the pages it reported), or undefined for any other call. */
+  search(call: TrackedToolCall): { query: string; sources?: Array<{ title?: string; url: string }> } | undefined;
+}
 
 export interface ImageGeneration {
   /** True for the agent's permission request for its image tool (it is then answered with the `allow_once` option, only in a request that asked for images). Absent: the agent asks no permission. */
@@ -149,6 +162,8 @@ export interface Provider {
   readonly staticModels?: ModelInfo[];
   /** The agent can generate images. */
   readonly imageGeneration?: boolean;
+  /** The agent can search the web. */
+  readonly webSearchSupport?: boolean;
   /** The agent can be given the client's function tools. */
   readonly toolCalling?: boolean;
   /** The agent can be given remote MCP servers (it has a permission rule and a way to name their calls). */

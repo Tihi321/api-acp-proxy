@@ -92,6 +92,8 @@ export type Role = "system" | "developer" | "user" | "assistant";
 export type ToolCall = { id: string; name: string; arguments: string };
 /** A Responses `mcp` tool: `url` is its `server_url` (absent: the label names a server of the settings); `allowedTools` is `allowed_tools` and `neverTools` the `never.tool_names` of `require_approval` (absent: all tools). */
 export interface McpToolRequest { label: string; url?: string; headers?: Record<string, string>; allowedTools?: string[]; neverTools?: string[] }
+/** What a request that asks for web search says: the approximate location and the allowed domains become hint lines of the prompt (the agents cannot enforce either); `required` is a `tool_choice` that asks for a search. `search_context_size` is accepted and ignored. */
+export interface WebSearchRequest { location?: { city?: string; region?: string; country?: string; timezone?: string }; domains?: string[]; required?: boolean }
 /** A function tool of the client's request. */
 export interface ToolDef { name: string; description?: string; parameters?: unknown }
 /** `tool_choice`: `none` leaves the tools out altogether; `required` and a named function are only an instruction to the agent. */
@@ -146,7 +148,7 @@ function rejectUnsupported(obj: Record<string, unknown>, fields: readonly string
 }
 
 /** `generateImages`: the request asked the agent for images (chat `modalities` with "image", Responses `image_generation` tool). */
-type NormalizedRequest = { model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; generateImages: boolean; /** The function tools to hand the agent (absent without tools or with `tool_choice: "none"`). */ functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** The Responses `mcp` tools (matched with the settings by `resolveMcpServers`). */ mcpTools?: McpToolRequest[] };
+type NormalizedRequest = { model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; generateImages: boolean; /** Set when the request asked for web search (chat `web_search_options`, a Responses `web_search` tool). */ webSearch?: WebSearchRequest; /** The function tools to hand the agent (absent without tools or with `tool_choice: "none"`). */ functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** The Responses `mcp` tools (matched with the settings by `resolveMcpServers`). */ mcpTools?: McpToolRequest[] };
 
 function unsupportedContent(message: string, param: string): ApiError { return new ApiError(400, "unsupported_content", message, param); }
 
@@ -179,27 +181,83 @@ function chatModalities(value: unknown): boolean {
   return value.includes("image");
 }
 
+const SEARCH_TOOL_TYPES = ["web_search", "web_search_preview"];
+const SEARCH_CONTEXT_SIZES = ["low", "medium", "high"];
+const LOCATION_FIELDS = ["city", "region", "country", "timezone"] as const;
+const DOMAIN = /^[A-Za-z0-9*][A-Za-z0-9.*_\-/:]{0,199}$/;
+const plainObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+function searchError(message: string, param: string, code = "invalid_request"): ApiError { return new ApiError(400, code, message, param); }
+
+/** `user_location`: `{ type: "approximate", approximate: { city, ... } }` in chat, the same fields next to `type` in Responses (both are accepted in either). Single-line strings only: they go into the prompt. */
+function parseSearchLocation(value: unknown, param: string): WebSearchRequest["location"] {
+  if (value === undefined || value === null) return undefined;
+  if (!plainObject(value)) throw searchError("user_location must be an object.", param);
+  if (value.type !== undefined && value.type !== "approximate") throw searchError("user_location.type must be 'approximate'.", param);
+  const source = plainObject(value.approximate) ? value.approximate : value;
+  const location: NonNullable<WebSearchRequest["location"]> = {};
+  for (const field of LOCATION_FIELDS) {
+    const entry = source[field];
+    if (entry === undefined || entry === null) continue;
+    if (typeof entry !== "string" || entry.length > 100 || /[\u0000-\u001f\u007f]/.test(entry)) throw searchError(`user_location.${field} must be a single-line string of at most 100 characters.`, param);
+    if (entry.trim()) location[field] = entry.trim();
+  }
+  return Object.keys(location).length ? location : undefined;
+}
+
+/** The web search options shared by both APIs: `search_context_size` is checked and ignored, `user_location` and `filters.allowed_domains` become hints. */
+function parseWebSearch(raw: Record<string, unknown>, param: string, filters: boolean): WebSearchRequest {
+  const size = raw.search_context_size;
+  if (size !== undefined && size !== null && (typeof size !== "string" || !SEARCH_CONTEXT_SIZES.includes(size))) throw searchError("search_context_size must be 'low', 'medium' or 'high'.", param);
+  const location = parseSearchLocation(raw.user_location, param);
+  let domains: string[] | undefined;
+  if (filters && raw.filters !== undefined && raw.filters !== null) {
+    if (!plainObject(raw.filters)) throw searchError("filters must be an object.", param);
+    const allowed = raw.filters.allowed_domains;
+    if (allowed !== undefined && allowed !== null) {
+      if (!Array.isArray(allowed) || allowed.length > 100 || allowed.some((domain) => typeof domain !== "string" || !DOMAIN.test(domain))) throw searchError("filters.allowed_domains must be an array of at most 100 domain names.", param);
+      if (allowed.length) domains = [...new Set(allowed as string[])];
+    }
+  }
+  return { ...(location ? { location } : {}), ...(domains ? { domains } : {}) };
+}
+
+/** Chat `web_search_options` (an object, possibly empty): the request asks for web search. */
+function chatWebSearch(data: Record<string, unknown>): WebSearchRequest | undefined {
+  const options = data.web_search_options;
+  if (options === undefined || options === null) return undefined;
+  if (!plainObject(options)) throw searchError("Parameter 'web_search_options' must be an object.", "web_search_options");
+  return parseWebSearch(options, "web_search_options", false);
+}
+
+/** A `tool_choice` that agrees with web search being the only kind of tool: it is then an instruction only (`required`, or the web search tool by name). */
+function searchToolChoice(choice: unknown): boolean { return choice === "auto" || choice === "required" || (plainObject(choice) && typeof choice.type === "string" && SEARCH_TOOL_TYPES.includes(choice.type)); }
+
 /** Responses `tools`: `image_generation` tools, or function tools and `mcp` tools (the image tool cannot be combined with the others); anything else, or an empty list, is a 400. `partial_images` is a 400. */
-function responsesTools(data: Record<string, unknown>): { image: boolean; functions: ToolDef[]; mcp: McpToolRequest[] } {
+function responsesTools(data: Record<string, unknown>): { image: boolean; functions: ToolDef[]; mcp: McpToolRequest[]; search?: WebSearchRequest } {
   const tools = data.tools;
   if (tools === undefined || tools === null) return { image: false, functions: [], mcp: [] };
   if (!Array.isArray(tools) || !tools.length) throw toolsError("Parameter 'tools' is not supported by this proxy.");
   let image = false;
   const functions: ToolDef[] = [];
   const mcp: McpToolRequest[] = [];
+  let search: WebSearchRequest | undefined;
   for (const tool of tools) {
     const type = tool && typeof tool === "object" ? (tool as { type?: unknown }).type : undefined;
     if (type === "image_generation") {
       if ((tool as { partial_images?: unknown }).partial_images != null && (tool as { partial_images?: unknown }).partial_images !== 0) throw toolsError("Partial images are not supported; the image is returned whole.");
       image = true;
+    } else if (typeof type === "string" && SEARCH_TOOL_TYPES.includes(type)) {
+      if (search) throw toolsError("Only one web search tool is allowed per request.", "invalid_request");
+      search = parseWebSearch(tool as Record<string, unknown>, "tools", true);
     } else if (type === "mcp") mcp.push(parseMcpTool(tool as Record<string, unknown>));
     else functions.push(parseFunctionTool(tool, "responses"));
   }
   if (image && functions.length) throw toolsError("Function tools cannot be combined with the image_generation tool in one request.");
   if (image && mcp.length) throw toolsError("MCP tools cannot be combined with the image_generation tool in one request.");
+  if (image && search) throw toolsError("Web search cannot be combined with the image_generation tool in one request.");
   if (new Set(functions.map((tool) => tool.name)).size !== functions.length) throw toolsError("Tool names must be unique.", "invalid_request");
   if (new Set(mcp.map((tool) => tool.label)).size !== mcp.length) throw toolsError("MCP server labels must be unique within a request.", "invalid_request");
-  return { image, functions, mcp };
+  return { image, functions, mcp, ...(search ? { search } : {}) };
 }
 
 const APPROVAL_HELP = "The approval flow for MCP tools is not supported by this proxy: send require_approval: \"never\" (or { never: { tool_names: [...] } }) on every mcp tool.";
@@ -261,7 +319,7 @@ function toolsError(message: string, code = "unsupported_parameter", param = "to
 /** One function tool: chat nests it under `function`, Responses puts the fields next to `type`. */
 function parseFunctionTool(raw: unknown, api: "chat" | "responses"): ToolDef {
   const type = raw && typeof raw === "object" ? (raw as { type?: unknown }).type : undefined;
-  if (type !== "function") throw toolsError(api === "chat" ? "Only tools of type 'function' are supported." : "Only tools of type 'function', 'mcp' and 'image_generation' are supported.");
+  if (type !== "function") throw toolsError(api === "chat" ? "Only tools of type 'function' are supported." : "Only tools of type 'function', 'mcp', 'web_search' and 'image_generation' are supported.");
   const spec = (api === "chat" ? (raw as { function?: unknown }).function : raw) as Record<string, unknown> | undefined;
   if (!spec || typeof spec !== "object" || typeof spec.name !== "string") throw toolsError("A function tool needs a name.", "invalid_request");
   if (!TOOL_NAME.test(spec.name)) throw toolsError(`The tool name '${spec.name}' must be 1 to 64 letters, digits, '_' or '-'.`, "invalid_request");
@@ -326,13 +384,15 @@ export async function normalizeChat(raw: unknown, isKnownModel?: ModelCheck, opt
   const generateImages = chatModalities(parsed.data.modalities);
   const toolSpec = chatTools(parsed.data);
   if (generateImages && toolSpec.functionTools) throw toolsError("Function tools cannot be combined with image output (modalities).");
+  const webSearch = chatWebSearch(parsed.data);
+  if (generateImages && webSearch) throw new ApiError(400, "unsupported_parameter", "Web search cannot be combined with image output (modalities).", "web_search_options");
   if (parsed.data.max_tokens !== undefined && parsed.data.max_completion_tokens !== undefined) throw new ApiError(400, "invalid_request", "Only one of max_tokens and max_completion_tokens may be provided.");
   validateModel(parsed.data.model, isKnownModel);
   const rf = parsed.data.response_format;
   const format = !rf || rf.type === "text" ? textFormat : jsonFormat(rf.type === "json_object" ? rf : { type: "json_schema", ...rf.json_schema });
   const maxOutputTokens = parsed.data.max_completion_tokens ?? parsed.data.max_tokens;
   const conversation = await Promise.all(parsed.data.messages.map((message) => convertChatMessage(message, options)));
-  return { ...parsed.data, model: parsed.data.model, conversation, format, generateImages, ...toolSpec, ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}) };
+  return { ...parsed.data, model: parsed.data.model, conversation, format, generateImages, ...toolSpec, ...(webSearch && !(parsed.data.tools != null && toolSpec.functionTools === undefined) ? { webSearch } : {}), ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}) };
 }
 
 /** Responses input items: messages, and `function_call` / `function_call_output` items. A `function_call` joins the assistant message right before it (its text, in the same response), else it is an assistant message of its own. */
@@ -356,9 +416,13 @@ async function convertResponsesInput(input: Array<z.infer<typeof responseMessage
 export async function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Promise<Omit<ResponsesRequest, "model"> & NormalizedRequest> {
   const parsed = responsesRequestSchema.safeParse(withoutFields(raw, ignorableResponseFields, options.ignoreSampling));
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.", issueParam(parsed.error.issues[0]));
-  const { image: generateImages, functions, mcp } = responsesTools(parsed.data);
-  rejectUnsupported(parsed.data, unsupportedResponseFields);
+  const { image: generateImages, functions, mcp, search } = responsesTools(parsed.data);
+  // `include: ["web_search_call.action.sources"]` asks for what the web_search_call items carry anyway.
+  const include = parsed.data.include;
+  const sourcesOnly = search !== undefined && Array.isArray(include) && include.every((entry) => entry === "web_search_call.action.sources");
+  rejectUnsupported(sourcesOnly ? { ...parsed.data, include: undefined } : parsed.data, unsupportedResponseFields);
   if (generateImages) { if (parsed.data.tool_choice != null && !imageToolChoice(parsed.data.tool_choice)) rejectUnsupported(parsed.data, ["tool_choice"]); rejectUnsupported(parsed.data, ["parallel_tool_calls"]); }
+  else if (!functions.length && search) { if (parsed.data.tool_choice != null && !searchToolChoice(parsed.data.tool_choice)) rejectUnsupported(parsed.data, ["tool_choice"]); rejectUnsupported(parsed.data, ["parallel_tool_calls"]); }
   else if (!functions.length) rejectUnsupported(parsed.data, ["tool_choice", "parallel_tool_calls"]);
   // `tool_choice: "none"` leaves every tool out, the MCP tools too.
   const toolSpec = functions.length ? toolFields(functions, parsed.data.tool_choice, parsed.data.parallel_tool_calls, "responses") : {};
@@ -370,7 +434,7 @@ export async function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck
   if (typeof parsed.data.input === "string") conversation.push(textMessage("user", parsed.data.input));
   else conversation.push(...await convertResponsesInput(parsed.data.input, options));
   const tf = parsed.data.text?.format;
-  return { ...parsed.data, model: parsed.data.model, conversation, format: !tf || tf.type === "text" ? textFormat : jsonFormat(tf), generateImages, ...toolSpec, ...(mcp.length && !(functions.length && !toolSpec.functionTools) ? { mcpTools: mcp } : {}), ...(parsed.data.max_output_tokens !== undefined ? { maxOutputTokens: parsed.data.max_output_tokens } : {}) };
+  return { ...parsed.data, model: parsed.data.model, conversation, format: !tf || tf.type === "text" ? textFormat : jsonFormat(tf), generateImages, ...toolSpec, ...(mcp.length && !(functions.length && !toolSpec.functionTools) ? { mcpTools: mcp } : {}), ...(search && !(functions.length && !toolSpec.functionTools) ? { webSearch: { ...search, ...(!functions.length && (parsed.data.tool_choice === "required" || (plainObject(parsed.data.tool_choice) && parsed.data.tool_choice.type !== "function")) ? { required: true } : {}) } } : {}), ...(parsed.data.max_output_tokens !== undefined ? { maxOutputTokens: parsed.data.max_output_tokens } : {}) };
 }
 
 const imageRequestSchema = z.object({
@@ -434,15 +498,26 @@ export function formatInstructions(format: OutputFormat): string | undefined {
 export interface ToolPrompt { choice?: ToolChoice; parallel?: boolean; client?: boolean; mcp?: Array<{ label: string; tools?: string[] }> }
 
 /** The preamble of a prompt whose session has MCP servers (the `client` bridge and/or the request's remote servers): use only those servers' tools, nothing else. `tool_choice` and `parallel_tool_calls` are instructions only. */
-function toolsPreamble(tools: ToolPrompt): string {
+function toolsPreamble(tools: ToolPrompt, search?: WebSearchRequest): string {
   const labels = [...(tools.client === false ? [] : [BRIDGE_SERVER_NAME]), ...(tools.mcp ?? []).map((server) => server.label)];
   const named = labels.map((label) => `"${label}"`).join(", ");
   const lines = [`This is an API request with tools. When a tool is needed, call it from the MCP server${labels.length === 1 ? "" : "s"} named ${named} and use only those tools. Never run commands, access files, use the web or call any other tool. Respond with the answer only.`];
+  if (search) lines[0] = `This is an API request with tools and web search. When a tool is needed, call it from the MCP server${labels.length === 1 ? "" : "s"} named ${named}, and use web search only through your web search tool. Use no other tools: never read URLs or web pages, run commands, access files or ask for other permissions. Respond with the answer only.`;
   for (const server of tools.mcp ?? []) if (server.tools) lines.push(`From the MCP server "${server.label}" use only these tools: ${server.tools.join(", ")}.`);
   if (tools.choice === "required") lines.push("You must call one of the client tools before you answer.");
   else if (typeof tools.choice === "object") lines.push(`You must call the client tool "${tools.choice.name}" before you answer.`);
   if (tools.parallel === false) lines.push("Call one tool at a time.");
   return lines.join("\n");
+}
+
+/** The lines of a prompt for a request with web search: the location and the allowed domains as hints (the agents cannot enforce them), and an instruction to search when the request required it. */
+function searchHints(search: WebSearchRequest): string[] {
+  const lines: string[] = [];
+  const place = [search.location?.city, search.location?.region, search.location?.country].filter(Boolean).join(", ");
+  if (place || search.location?.timezone) lines.push(`The user's approximate location: ${[place, search.location?.timezone ? `timezone ${search.location.timezone}` : ""].filter(Boolean).join("; ")}.`);
+  if (search.domains?.length) lines.push(`When you search the web, prefer results from these domains: ${search.domains.join(", ")}.`);
+  if (search.required) lines.push("You must search the web before you answer.");
+  return lines;
 }
 
 /** One message of the prompt: `[role]` and its text, then its tool calls; a tool result is `[tool result <id>]`. A message without tool calls is exactly `[role]\n<text>`. */
@@ -460,13 +535,15 @@ export type PromptBlock = { type: "text"; text: string } | { type: "image"; mime
 /**
  * The prompt as content blocks. The text is the preamble, a `[role]` block per message and the output format, joined by blank lines.
  * Each image follows the text of its message and ends the text block there, so a request without images is exactly one text block.
- * `generateImage` replaces the preamble with one that allows the agent's image tool; `tools` replaces it with one that allows the `client` MCP tools (and drops the provider's no-tools line).
+ * `generateImage` replaces the preamble with one that allows the agent's image tool; `tools` replaces it with one that allows the `client` MCP tools (and drops the provider's no-tools line); `search` replaces it with one that allows web search and nothing else on the web (also without the provider's no-tools line), or adds that to the tools preamble.
  */
-export function buildPrompt(messages: Message[], instructions?: string, extraPreamble?: string, generateImage = false, tools?: ToolPrompt): PromptBlock[] {
+export function buildPrompt(messages: Message[], instructions?: string, extraPreamble?: string, generateImage = false, tools?: ToolPrompt, search?: WebSearchRequest): PromptBlock[] {
   const blocks: PromptBlock[] = [];
   const kind = hasImages(messages) ? "an API request with text and images" : "a text-only API request";
   // A request that allows an image is told to use only that tool (the agent-specific no-tools line would forbid it).
-  let texts = [tools ? toolsPreamble(tools) : generateImage ? "This is an API request that allows one generated image. If the request asks for an image, use your image generation tool once. Do not use any other tool, run commands, access files, or ask for other permissions. Respond with a short text answer only." : `This is ${kind}. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.${extraPreamble ? `\n${extraPreamble}` : ""}`];
+  const searchPreamble = `This is ${kind} that allows web search. If the request needs current information, use your web search tool. Do not read URLs or web pages, run commands, access files, use any other tool, or ask for other permissions. Respond with the answer only, and cite the pages you used as Markdown links [title](url).`;
+  let texts = [tools ? toolsPreamble(tools, search) : search ? searchPreamble : generateImage ? "This is an API request that allows one generated image. If the request asks for an image, use your image generation tool once. Do not use any other tool, run commands, access files, or ask for other permissions. Respond with a short text answer only." : `This is ${kind}. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.${extraPreamble ? `\n${extraPreamble}` : ""}`];
+  if (search) texts[0] += `${searchHints(search).map((line) => `\n${line}`).join("")}`;
   const flush = () => { if (texts.length) blocks.push({ type: "text", text: texts.join("\n\n") }); texts = []; };
   for (const message of messages) {
     texts.push(messageBlock(message));

@@ -55,6 +55,15 @@ export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArg
     },
     // Its image tool asks no permission (it cannot be gated); the file lands in <CODEX_HOME>/generated_images/<threadId>/.
     imageGeneration: { imageFolder: (ctx) => path.join(options.isolatedHome !== false ? path.join(ctx.dataDir, "codex-home") : process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "generated_images"), pruneEmptyParent: true },
+    // Its web search is always on (per process, no permission request): nothing to enable or allow; a request without search cannot turn it off. A search is a `tool_call` of kind "search" whose final update carries the query.
+    webSearch: {
+      search: (call) => {
+        if (call.kind !== "search") return undefined;
+        const input = call.rawInput as { query?: unknown; action?: { query?: unknown } | null } | null | undefined;
+        const query = [input?.action?.query, input?.query, call.title?.replace(/^Web search:\s*/, "")].find((candidate) => typeof candidate === "string" && candidate !== "" && candidate !== "Web search");
+        return { query: typeof query === "string" ? query : "" };
+      },
+    },
     // Its MCP approval request names only the tool call id and `is_mcp_tool_approval`: the server and tool come from the `tool_call` with that id (`rawInput.server` / `.tool`). Codex gives up on a call after 300 s (fixed).
     allowTool: (permission, tracked, mcp) => {
       const target = tracked ? codexTarget(tracked, mcp.labels) : undefined;

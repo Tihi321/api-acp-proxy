@@ -701,7 +701,7 @@ describe("request parsing", () => {
   it("rejects Responses tool combinations it cannot do", async () => {
     const rejects = async (body: Record<string, unknown>, param: string) => await expect(normalizeResponses({ ...base, input: "x", ...body })).rejects.toMatchObject({ status: 400, code: "unsupported_parameter", param });
     await rejects({ tools: [{ type: "image_generation" }, responsesTools[0]] }, "tools");
-    await rejects({ tools: [{ type: "web_search" }] }, "tools");
+    await rejects({ tools: [{ type: "file_search" }] }, "tools");
     await rejects({ tool_choice: "auto" }, "tool_choice");
     await rejects({ parallel_tool_calls: true }, "parallel_tool_calls");
     await rejects({ tools: responsesTools, tool_choice: { type: "image_generation" } }, "tool_choice");

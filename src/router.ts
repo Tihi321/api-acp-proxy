@@ -113,6 +113,8 @@ export class ProviderRouter implements AcpLike {
 
   canGenerateImages(id: string): boolean { return this.resolve(id)?.provider.imageGeneration === true; }
 
+  canSearchWeb(id: string): boolean { return this.resolve(id)?.provider.webSearchSupport === true; }
+
   canCallTools(id: string): boolean { return this.resolve(id)?.provider.toolCalling === true; }
 
   canUseMcp(id: string): boolean { return this.resolve(id)?.provider.mcpSupport === true; }
