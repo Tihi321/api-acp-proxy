@@ -155,3 +155,65 @@ A JSON-only server with `-32601` for `server/discover`, 405 for GET and 202 for 
 9. *Phase 5, "Codex: only if it can be switched per session"*: Codex search is **already on** for every request (no permission, per process config only); switching it off per request is impossible, and switching it off per process makes the model improvise with skills, user MCP tools and shell. Phase 5 has nothing to enable for Codex.
 10. *Ground rule "built-in tools stay off" for Codex*: not true today (read-only shell reads, user skills, plugin MCP tools and web search all run without a permission request). A Codex-specific hardening is out of scope for these phases but worth a follow-up ticket.
 11. *Phase 3 flow, "the agent calls a tool → the proxy ends the HTTP response"*: Antigravity's completed `tool_call_update` for an MCP call has only a placeholder, and the real call id is not in the `tools/call` (Claude and Codex give it). Match the MCP call to the ACP tool call by order within the session for Antigravity.
+
+
+## Phase 1 (AAP-12) probe (2026-10-26)
+
+Raw logs and dumps are in `.claude/temp/aap12/out/` (`<name>.log` / `.jsonl`); helper scripts in `.claude/temp/aap12/` (`codex.sh`, `sum.mjs`, `appserver.mjs`, `login-probe.mjs`). Codex launched like `src/providers/codex.ts` (codex-acp 1.12.0, bundled codex 0.154.0, `INITIAL_AGENT_MODE=read-only`, mode `read-only`, model `gpt-5.6-luna`), with the user's `~/.codex` login for everything that needs a model. About 10 live Codex prompts and 8 Antigravity ones.
+
+### Shell: which setting stops `exec_command`
+
+Prompt: "What files are in the current directory? Use a command."
+
+| `CODEX_CONFIG` | Result |
+|---|---|
+| provider config today (`approval_policy: never`, read-only) | Ran `Get-ChildItem` through the user's PowerShell profile (profile error), then `cmd /c dir /a`, with **no permission request**. Baseline. |
+| `approval_policy: "untrusted"` | codex rejects it at `session/new`: `-32603 ... approval_policy = "untrusted" is no longer supported; remove this setting`. Unusable. |
+| `approval_policy: "on-request"` | **Still ran** four read-only listings with no permission request. In a read-only sandbox reads are not an escalation, so the approval policy cannot stop them. |
+| `features: { shell_tool: false, unified_exec: false }` | **No shell tool at all**: the model said it cannot execute shell commands in this session. (In that run it called `mcp.cua_repl.js` from the user's plugin instead, which ran without a request; that is the isolation problem, below.) |
+
+`codex features list` (bundled 0.154.0) shows `shell_tool` and `unified_exec` (both `stable`, default true). `exec_command` belongs to `unified_exec`; both are turned off to be safe (which one alone is enough on Windows was not isolated). Also in the list: `plugins`, `skip_host_skill_discovery` (under development), `code_mode_host`, `multi_agent`. The config schema also has `skills.include_instructions`.
+
+**Chosen:** `features.shell_tool=false`, `features.unified_exec=false`, `features.plugins=false`, `skills.include_instructions=false`, on top of `approval_policy: never`, `sandbox_mode: read-only`, `multi_agent: false`. Checks under exactly that config (user `~/.codex` home, no isolation):
+- **Skills:** with `include_instructions: false` the model sees no skills and the "Skill descriptions were shortened" text is gone (asked for its skills and tools, the answer lists tools only). With the shell and plugins off but the instructions on, the model listed about 170 skill names and the warning came back as answer text.
+- **Tools the model still reports:** `exec` and `wait` (code mode, a JS sandbox), `request_user_input`, `apply_patch`, `create_goal` / `get_goal` / `update_goal`, `list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`, `view_image`, `image_gen__imagegen`, `web__run`. Asked to use `exec` to list a directory, it said it has no shell or filesystem-listing tool, and no tool call was reported. `apply_patch` (read-only sandbox) was not tempted.
+- **Image generation still works with no permission request:** "Generate an image of a cartoon dolphin..." gave one `tool_call` (`kind: other`, `title: Image generation`), an `image/png` block, 35.6 s, with the shell and skills gone (the spike's run read the imagegen `SKILL.md` through `exec_command` first; it does not need to). The file landed in `~/.codex/generated_images/<threadId>/` (this probe left the folder `01a179d6-bc8c-7840-9f15-8cf87760d48b` there, like the spike did; nothing under `~/.codex` was deleted). The `imagegen` system skill is installed by Codex itself into any new home (`<home>/skills/.system/`).
+- **Web search still works** with no permission request: `tool_call` `kind: search`, an answer with a link, 8.3 s.
+- **MCP calls still ask:** mcp-echo as `client` (`--mcp-url`): a `session/request_permission` with `_meta.is_mcp_tool_approval: true` and only `toolCallId`; answering `cancelled` gave `tool_call_update status: failed` and the model reported the call was cancelled. The server received no `tools/call`.
+
+### Dedicated `CODEX_HOME`
+
+- **The folder must exist:** `CODEX_HOME` pointing at a missing path makes codex fail with "failed to resolve CODEX_HOME". The provider creates it.
+- **First start with an empty home** (no login): `initialize` works (same capabilities, `auth.logout` supported, auth methods `api-key` and `chat-gpt`); `session/new` fails with `-32000 Authentication required` (the usual needs-login path). Codex fills the home with its sqlite files, `skills/.system/*` (imagegen, openai-docs, plugin-creator, review-agent, skill-creator, skill-installer) and a `.tmp/plugins-clone-*` (a git clone of the curated plugin marketplace; nothing is installed from it).
+- **`authenticate chat-gpt`** in codex-acp (`authenticateWithChatGpt`, read in `dist/index.js`): `account/read` (no account), then `account/login/start {type: "chatgpt"}`, then **codex-acp opens the browser itself** (`open(authUrl)`) and waits for the login to complete. So `authenticate chat-gpt` was **not run** against the isolated home (it would have opened the user's browser). The same app-server call was made directly instead (`login-probe.mjs`): `account/login/start` returned `{type: "chatgpt", authUrl: "https://auth.openai.com/oauth/authorize?...", redirect_uri: "http://localhost:1455/auth/callback"}` and was cancelled with `account/login/cancel` (`status: canceled`); the URL was never opened. Nothing is written to stderr, so there is **no URL on stderr to match**: no `loginUrlPattern` is possible or needed, because the agent opens the browser itself. No `auth.json` exists until a login completes. The default credential store is `file` (`cli_auth_credentials_store = "file"` in the config schema), so the login should land in `<codex home>/auth.json` (not verified: needs the login).
+- **Skills / plugins / MCP isolation**, checked without any login by calling the app-server directly (`appserver.mjs`: `initialize`, `skills/list`, `mcpServerStatus/list`, `account/read`; no model call):
+
+  | | user home (`~/.codex`) | isolated home |
+  |---|---|---|
+  | `codexHome` reported | `C:\Users\Infplane\.codex` | the isolated folder |
+  | MCP servers | `code-review`, `codex_app`, `codex_apps`, `cua_repl`, `node_repl` | **none** |
+  | skills | 225 (plugin skills such as `figma:*`, `computer-use`, `engineering:*`, plus user skills, plus 6 system skills) | 176: all plugin skills are gone, **but the 90 skills of `~/.agents/skills` are still discovered** (that folder is under the user profile, not under `CODEX_HOME`) |
+  | account | ChatGPT (logged in) | none, `requiresOpenaiAuth: true` |
+
+  `~/.agents/skills` could not be hidden: `-c features.skip_host_skill_discovery=true` and `-c skills.include_instructions=false` do not change `skills/list`, and pointing `USERPROFILE` / `HOME` at an empty folder has no effect on Windows. What does remove them from the model's view is `skills.include_instructions: false` in the session config (see above: no skill list in the prompt, and with the shell tools gone the model cannot read a skill file anyway). The same neutral cwd (`%TEMP%`) gave the same 176, so they are not from the project folder.
+  **Pending user login:** a live prompt in the isolated home (no skill, plugin or user MCP tool visible, image generation and search work there, `generated_images` lands in the isolated home) needs one ChatGPT login of the proxy's Codex home.
+- `features.plugins=false` in `CODEX_CONFIG` applies per session; the marketplace clone above is made at app-server start regardless.
+
+### Search with the hardened config
+
+Not re-probed with `"web_search": "disabled"`, to keep the live prompts few. The concern (the model improvising through skills, user MCP tools and the shell) is covered because all three are now removed or empty. Web search stays on (phase 6 decides about it).
+
+### Antigravity preamble
+
+The probe sends the raw prompt, while the proxy always prefixes the generic line ("This is a text-only API request. Do not use tools, ..."). `gemini-3.8-flash-low`, mode `default`, `--auth oauth-personal`, `session/prompt` time:
+
+| Prompt | Raw (what the spike probed) | Generic preamble (what the proxy sends today) | Generic + new Antigravity line |
+|---|---|---|---|
+| "What is the capital of France? One word." | 2.8 s, no tool calls | 3.0 s, no tool calls | 3.0 s, no tool calls |
+| "What is the latest stable version of Node.js?" | **20.8 s, 3 permission requests** (`search_web`, `read_url_content`, `node -v`), all cancelled | 8.3 s, 17.3 s, 5.8 s (3 runs), **no tool calls** | 5.8 s, 10.7 s (2 runs; a third failed at `session/new` with `IncompleteRead`), no tool calls |
+
+So the spike's ~13 s of cancelled calls came from raw prompts: with the existing generic preamble Antigravity did not try a tool in any of 5 runs. The new line did not change that (run-to-run time differences of 5.8 to 17.3 s for the same prompt are model latency noise). It is shipped as a cheap guard (later phases enable tools per request and will adjust the line), but the measured gain in this sample is nil.
+
+### Other
+
+- The Claude OAuth refresh error is mapped in `src/providers/claude.ts`; its text was not provoked live.

@@ -143,8 +143,8 @@ export function formatInstructions(format: OutputFormat): string | undefined {
   return `${base} It must conform to this JSON Schema${format.name ? ` (${format.name})` : ""}${format.description ? `: ${format.description}` : ""}\n${JSON.stringify(format.schema)}`;
 }
 
-export function serializePrompt(messages: TextMessage[], instructions?: string): string {
-  const preamble = "This is a text-only API request. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.";
+export function serializePrompt(messages: TextMessage[], instructions?: string, extraPreamble?: string): string {
+  const preamble = `This is a text-only API request. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.${extraPreamble ? `\n${extraPreamble}` : ""}`;
   const blocks = messages.map((message) => `[${message.role}]\n${message.content}`);
   if (instructions) blocks.push(`[output format]\n${instructions}`);
   return `${preamble}\n\n${blocks.join("\n\n")}`;

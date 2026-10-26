@@ -12,6 +12,8 @@ import type { AuthMethodInfo, ProviderDescriptor, RuntimeContext } from "../prov
 /** `settings.providers.claude`. */
 export interface ClaudeSettings { apiKey?: string; oauthToken?: string; configDir?: string; executablePath?: string; authMethodId?: string; termsAcknowledgedAt?: string; }
 
+/** `Retry-After` of the 503 sent while another Claude Code process holds the OAuth refresh lock (it cleared after about a minute in the spike). */
+const BUSY_RETRY_SECONDS = 30;
 const truthy = (value: string | undefined): boolean => value !== undefined && ["1", "true", "yes", "on"].includes(value.toLowerCase());
 const LOGIN_FLAGS: Record<string, string> = { "claude-ai-login": "--claudeai", "console-login": "--console" };
 const LOGIN_METHODS: AuthMethodInfo[] = [{ id: "claude-ai-login", name: "Claude subscription" }, { id: "console-login", name: "Anthropic Console (API billing)" }];
@@ -93,6 +95,11 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
       return { command: ctx.nodeRuntime.command, args: [...ctx.nodeRuntime.argsPrefix, adapterEntry(ctx)], env: claudeEnv(ctx, settings, env) };
     },
     onSessionDisposed: (cwd) => removeProjectLeftovers(settings, env, cwd),
+    mapError(error) {
+      const text = [error instanceof Error ? error.message : String(error), JSON.stringify((error as { data?: unknown } | null)?.data ?? "")].join(" ");
+      if (/Failed to refresh OAuth token/i.test(text) && /another Claude Code process is refreshing/i.test(text)) return new AcpUnavailableError("Claude is refreshing its login in another process. Retry in a few seconds.", error, "provider_busy", BUSY_RETRY_SECONDS);
+      return undefined;
+    },
     externalLogin: (ctx, methodId) => consoleLogin(ctx, settings, env, methodId),
   };
   return { ...descriptor, ...overrides };

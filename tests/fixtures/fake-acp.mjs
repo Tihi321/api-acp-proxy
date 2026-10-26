@@ -18,6 +18,7 @@ import { appendFileSync, writeFileSync } from "node:fs";
 //   FAKE_ACP_AUTH_DELAY_MS=<n>       delay the authenticate response (simulates a pending interactive OAuth flow)
 //   FAKE_ACP_CLAUDE=1                mimic claude-agent-acp: modes default/acceptEdits/plan/auto/bypassPermissions (no read-only), no authMethods
 //   FAKE_ACP_PROMPT_AUTH=1           session/prompt fails with -32000 (not logged in)
+//   FAKE_ACP_PROMPT_ERROR=<json>     session/prompt fails with that {code, message[, data]}, e.g. {"code":-32603,"message":"Failed to refresh OAuth token: ..."}
 //   FAKE_ACP_AUTH_STATUS=<kind>      push an _auth/status_update notification {authStatus:{kind,label}} right after initialize (label "Fake account" unless kind is none)
 //   FAKE_ACP_CUMULATIVE=1            report usage cumulatively per session (inputTokens 2 * turns so far, outputTokens turns), like claude-agent-acp
 //   FAKE_ACP_LOG=<file>              append every request as a JSON line {method, params}
@@ -80,6 +81,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const run = () => {
       if (!pending.has(sessionId)) return;
       if (env.FAKE_ACP_PROMPT_AUTH === "1") { pending.delete(sessionId); fail(id, -32000, "Authentication required"); return; }
+      if (env.FAKE_ACP_PROMPT_ERROR) { pending.delete(sessionId); const e = JSON.parse(env.FAKE_ACP_PROMPT_ERROR); fail(id, e.code, e.message, e.data); return; }
       if (env.FAKE_ACP_ENTITY_NOT_FOUND === "1") { pending.delete(sessionId); fail(id, -32603, "Requested entity was not found"); return; }
       if (env.FAKE_ACP_REQUIRE_PERMISSION === "1") send({ jsonrpc: "2.0", id: 9001, method: "session/request_permission", params: { sessionId, toolCall: { toolCallId: "tool", title: "run command", kind: "execute", status: "pending", content: [] }, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] } });
       setTimeout(() => { if (pending.has(sessionId)) { pending.delete(sessionId); promptDone(sessionId, id); } }, 20);

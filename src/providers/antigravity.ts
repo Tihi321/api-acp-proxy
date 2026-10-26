@@ -146,6 +146,7 @@ export function antigravityDescriptor(ctxForHooks: RuntimeContext, options: Anti
     warmSessions: 1,
     stderrLogLevel: "debug",
     loginUrlPattern: LOGIN_URL,
+    promptPreamble: "Do not call any tool, even if one seems useful: no web search, no reading URLs, no commands, no file access. Answer from your own knowledge.",
     async preflight(ctx) {
       if (!settings.termsAcknowledgedAt && !truthy(env.PROXY_ANTIGRAVITY_ACCEPT_TERMS)) {
         return { state: "terms_required", message: "Acknowledge the Google Antigravity terms before enabling this provider." };

@@ -4,7 +4,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpProvider } from "../src/acp-provider.js";
 import { claudeDescriptor, claudeRegistration, resolveClaudeBinary, type ClaudeSettings } from "../src/providers/claude.js";
-import { ProviderAuthRequiredError, ProviderTermsRequiredError, defaultRuntimeContext, type ProviderDescriptor, type ProviderStatus } from "../src/provider.js";
+import { AcpUnavailableError, ProviderAuthRequiredError, ProviderTermsRequiredError, defaultRuntimeContext, type ProviderDescriptor, type ProviderStatus } from "../src/provider.js";
+import { serializePrompt } from "../src/api.js";
+import { createProxyServer } from "../src/server.js";
+import type { AddressInfo } from "node:net";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const root = path.resolve(".claude/temp/claude-tests", String(process.pid));
@@ -89,6 +92,67 @@ describe("Claude sessions", () => {
     process.env.FAKE_ACP_CLAUDE = "1";
     await provider.listModels();
     expect(provider.status().authMethods.map((method) => method.id)).toEqual(["claude-ai-login", "console-login"]);
+  });
+});
+
+describe("Claude busy refresh", () => {
+  const refreshError = { code: -32603, message: "Failed to refresh OAuth token: another Claude Code process is refreshing it. Try again shortly." };
+
+  it("maps the OAuth refresh lock error to provider_busy with a 30 s retry hint", async () => {
+    Object.assign(process.env, { FAKE_ACP_CLAUDE: "1", FAKE_ACP_PROMPT_ERROR: JSON.stringify(refreshError) });
+    const { provider } = make();
+    const error = await provider.generate("fake-model", user).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AcpUnavailableError);
+    expect(error).toMatchObject({ code: "provider_busy", retryAfterSeconds: 30 });
+    expect(provider.status().state).not.toBe("needs_login");
+  });
+
+  it("also finds the text in the error data", async () => {
+    Object.assign(process.env, { FAKE_ACP_CLAUDE: "1", FAKE_ACP_PROMPT_ERROR: JSON.stringify({ code: -32603, message: "Internal error", data: { details: refreshError.message } }) });
+    const { provider } = make();
+    expect(await provider.generate("fake-model", user).catch((e: unknown) => e)).toMatchObject({ code: "provider_busy" });
+  });
+
+  it("leaves other internal errors as a plain backend failure", async () => {
+    Object.assign(process.env, { FAKE_ACP_CLAUDE: "1", FAKE_ACP_PROMPT_ERROR: JSON.stringify({ code: -32603, message: "Failed to refresh OAuth token: invalid grant" }) });
+    const { provider } = make();
+    const error = await provider.generate("fake-model", user).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AcpUnavailableError);
+    expect((error as AcpUnavailableError).code).toBeUndefined();
+    expect((error as AcpUnavailableError).retryAfterSeconds).toBeUndefined();
+  });
+
+  it("answers 503 provider_busy with a Retry-After: 30 header over HTTP", async () => {
+    Object.assign(process.env, { FAKE_ACP_CLAUDE: "1", FAKE_ACP_PROMPT_ERROR: JSON.stringify(refreshError) });
+    const { provider } = make();
+    const server = createProxyServer({ host: "127.0.0.1", port: 0, maxBodyBytes: 1024, timeoutMs: 5000, workRoot: root, acpArgs: [] }, { hasModel: () => true, generate: (model, messages, callbacks, signal, options) => provider.generate(model, messages, callbacks, signal, options) });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "fake-model", messages: [{ role: "user", content: "hi" }] }) });
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("30");
+      expect(await response.json()).toMatchObject({ error: { type: "server_error", code: "provider_busy" } });
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+  });
+
+  it("sends no Retry-After for other unavailable errors", async () => {
+    const server = createProxyServer({ host: "127.0.0.1", port: 0, maxBodyBytes: 1024, timeoutMs: 5000, workRoot: root, acpArgs: [] }, { generate: async () => { throw new AcpUnavailableError("down"); } });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-5.6-luna", messages: [{ role: "user", content: "hi" }] }) });
+      expect(response.status).toBe(503);
+      expect(response.headers.has("retry-after")).toBe(false);
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+  });
+});
+
+describe("Claude prompt", () => {
+  it("is the generic text-only prompt, byte for byte", async () => {
+    const { provider, log } = make();
+    Object.assign(process.env, { FAKE_ACP_CLAUDE: "1", FAKE_ACP_LOG: log });
+    await provider.generate("fake-model", user);
+    const prompt = readLog(log).find((entry) => entry.method === "session/prompt");
+    expect((prompt?.params.prompt as Array<{ text: string }>)[0]!.text).toBe(serializePrompt(user));
   });
 });
 
