@@ -203,6 +203,11 @@ export function antigravityDescriptor(ctxForHooks: RuntimeContext, options: Anti
       allow: (permission) => permission.toolCall.title === "Run generate_image?" && permission.toolCall.kind === "other",
       imageFolder: () => path.join(home(), "antigravity-acp", "brain"),
     },
+    // Its search tool is `search_web` (permission title "Run search_web?", kind "search"). Never `read_url_content` (kind "fetch") or `run_command` (kind "execute"), which it tries when search is denied.
+    webSearch: {
+      allow: (permission) => permission.toolCall.kind === "search" && permission.toolCall.title === "Run search_web?",
+      search: (call) => call.kind === "search" && /search_web/.test(call.title ?? "") ? { query: ((call.rawInput as { query?: unknown } | null | undefined)?.query as string | undefined) ?? "" } : undefined,
+    },
     // Its permission request repeats the `tool_call` with `_meta.mcp.server`. It gives up on a tool call after 3 minutes (fixed).
     allowTool: (permission, _tracked, mcp) => {
       const meta = permission.toolCall._meta as { is_mcp_tool_call?: unknown } | null | undefined;

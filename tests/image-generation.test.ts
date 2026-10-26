@@ -367,7 +367,7 @@ describe("Responses image_generation tool", () => {
     const partial = await send(base, "/v1/responses", resp(CODEX_MODEL, { tools: [{ type: "image_generation", partial_images: 2 }] }));
     expect(partial.status).toBe(400);
     expect(partial.body.error).toMatchObject({ code: "unsupported_parameter", param: "tools" });
-    for (const tools of [[{ type: "web_search" }], [{ type: "image_generation" }, { type: "function", name: "f" }], [], "image_generation"]) {
+    for (const tools of [[{ type: "file_search" }], [{ type: "image_generation" }, { type: "function", name: "f" }], [], "image_generation"]) {
       const rejected = await send(base, "/v1/responses", resp(CODEX_MODEL, { tools }));
       expect(rejected.status, JSON.stringify(tools)).toBe(400);
       expect(rejected.body.error).toMatchObject({ code: "unsupported_parameter", param: "tools" });

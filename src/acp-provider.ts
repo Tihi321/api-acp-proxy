@@ -11,7 +11,7 @@ import { killProcessTree } from "./process-tree.js";
 import type { McpServerSpec } from "./mcp-config.js";
 import { BRIDGE_SERVER_NAME, type BridgeSession, type HeldCall } from "./tool-bridge.js";
 import { AcpUnavailableError, ProviderAuthRequiredError, ProviderNotInstalledError, ProviderTermsRequiredError } from "./provider.js";
-import type { AuthMethodInfo, GeneratedImage, GenerateOptions, GenerationCallbacks, GenerationResult, McpAccess, McpCallResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext, TrackedToolCall } from "./provider.js";
+import type { AuthMethodInfo, GeneratedImage, GenerateOptions, GenerationCallbacks, GenerationResult, McpAccess, McpCallResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext, TrackedToolCall, WebSearchResult } from "./provider.js";
 
 type SessionHandler = (update: SessionUpdate) => void;
 /** Decides for one session whether a permission request is allowed; everything not allowed is cancelled. */
@@ -43,7 +43,7 @@ function trackToolCall(tracked: Map<string, TrackedToolCall>, update: ToolCallUp
   if (update.rawInput !== undefined) entry.rawInput = update.rawInput;
   if (update.rawOutput !== undefined) entry.rawOutput = update.rawOutput;
   if (update.content != null && update.content.length) entry.content = update.content;
-  if (update._meta != null) entry._meta = update._meta;
+  if (update._meta != null) entry._meta = mergeMeta(entry._meta ?? undefined, update._meta);
   tracked.set(update.toolCallId, entry);
 }
 
@@ -104,13 +104,13 @@ const DEFAULT_TOOL_RESULT_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_TOOL_CALL_MARGIN_MS = 30_000;
 const USAGE_FIELDS = ["inputTokens", "outputTokens", "totalTokens", "thoughtTokens", "cachedReadTokens", "cachedWriteTokens"] as const;
 
-/** `extra` merged into `base` (plain objects recursively, everything else replaced). */
+/** `extra` merged into `base` (plain objects recursively, arrays joined without duplicates, everything else replaced). */
 function mergeMeta(base: Record<string, unknown> | undefined, extra: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (!extra) return base;
   const out: Record<string, unknown> = { ...(base ?? {}) };
   for (const [key, value] of Object.entries(extra)) {
     const current = out[key];
-    out[key] = value && typeof value === "object" && !Array.isArray(value) && current && typeof current === "object" && !Array.isArray(current) ? mergeMeta(current as Record<string, unknown>, value as Record<string, unknown>) : value;
+    out[key] = Array.isArray(value) && Array.isArray(current) ? [...new Set([...current, ...value])] : value && typeof value === "object" && !Array.isArray(value) && current && typeof current === "object" && !Array.isArray(current) ? mergeMeta(current as Record<string, unknown>, value as Record<string, unknown>) : value;
   }
   return out;
 }
@@ -165,6 +165,8 @@ export class AcpProvider implements Provider {
   readonly staticModels?: ModelInfo[];
   /** The agent can generate images (its descriptor says so). */
   readonly imageGeneration: boolean;
+  /** The agent can search the web (its descriptor says so). */
+  readonly webSearchSupport: boolean;
   /** The agent can be given the client's function tools: its descriptor knows its permission rule and the proxy has a tool bridge. */
   readonly toolCalling: boolean;
   /** The agent can be given the request's remote MCP servers. */
@@ -217,6 +219,7 @@ export class AcpProvider implements Provider {
     this.exposeUnprefixed = descriptor.exposeUnprefixed;
     this.staticModels = descriptor.staticModels?.map((id) => ({ id }));
     this.imageGeneration = descriptor.imageGeneration !== undefined;
+    this.webSearchSupport = descriptor.webSearch !== undefined;
     this.toolCalling = descriptor.allowTool !== undefined && ctx.toolBridge !== undefined;
     this.mcpSupport = descriptor.allowTool !== undefined && descriptor.mcpTarget !== undefined;
     this.log = ctx.logger.child(`${descriptor.id}-acp`);
@@ -412,6 +415,7 @@ export class AcpProvider implements Provider {
     let allowed = false;
     try { allowed = this.permissionRules.get(params.sessionId)?.(params) === true; } catch { /* a failing rule means cancelled */ }
     const option = allowed ? params.options.find((candidate) => candidate.kind === "allow_once") : undefined;
+    this.log.debug(`Permission request (kind ${params.toolCall.kind ?? "?"}, title '${params.toolCall.title ?? "?"}'): ${option ? "allowed once" : "cancelled"}.`);
     return option ? { outcome: { outcome: "selected", optionId: option.optionId } } : { outcome: { outcome: "cancelled" } };
   }
 
@@ -502,11 +506,12 @@ export class AcpProvider implements Provider {
     }
   }
 
-  /** `bridge`: the session also gets the client's tools as the MCP server `client`; `mcp`: the request's remote MCP servers. The descriptor's `mcpSessionMeta` is merged into the session `_meta` for either. */
-  private async createSession(agent: ClientContext, bridge?: BridgeSession, mcp?: McpServerSpec[]): Promise<PreparedSession> {
+  /** `bridge`: the session also gets the client's tools as the MCP server `client`; `mcp`: the request's remote MCP servers. The descriptor's `mcpSessionMeta` is merged into the session `_meta` for either, its `webSearch.sessionMeta` for `search`. */
+  private async createSession(agent: ClientContext, bridge?: BridgeSession, mcp?: McpServerSpec[], search = false): Promise<PreparedSession> {
     const cwd = await mkdtemp(path.join(this.options.workRoot, "request-"));
     try {
-      const meta = bridge || mcp?.length ? mergeMeta(this.descriptor.sessionMeta, this.descriptor.mcpSessionMeta?.([...(bridge ? [{ label: BRIDGE_SERVER_NAME }] : []), ...(mcp ?? []).map(({ label, allowedTools }) => ({ label, ...(allowedTools ? { tools: allowedTools } : {}) }))])) : this.descriptor.sessionMeta;
+      const withMcp = bridge || mcp?.length ? mergeMeta(this.descriptor.sessionMeta, this.descriptor.mcpSessionMeta?.([...(bridge ? [{ label: BRIDGE_SERVER_NAME }] : []), ...(mcp ?? []).map(({ label, allowedTools }) => ({ label, ...(allowedTools ? { tools: allowedTools } : {}) }))])) : this.descriptor.sessionMeta;
+      const meta = search ? mergeMeta(withMcp, this.descriptor.webSearch?.sessionMeta) : withMcp;
       const mcpServers: McpServer[] = [...(bridge ? [{ type: "http" as const, name: BRIDGE_SERVER_NAME, url: bridge.url, headers: [] }] : []), ...(mcp ?? []).map(acpServer)];
       const session = await this.withAuth(agent, () => withTimeout(agent.request(methods.agent.session.new, { cwd, mcpServers, ...(meta ? { _meta: meta } : {}) }), this.descriptor.sessionTimeoutMs, `${this.displayName} session creation timed out.`));
       if (bridge) this.bridges.set(session.sessionId, bridge);
@@ -649,17 +654,21 @@ export class AcpProvider implements Provider {
     const reportedFiles = new Set<string>();
     // Remote MCP servers: a fresh session of their own (never warm, never kept); the agent calls them inside its turn.
     const mcp = options?.mcpServers?.length ? options.mcpServers : undefined;
+    // Web search: also a fresh session of its own (it may need session options), never kept; the agent searches inside its turn.
+    const search = options?.webSearch;
     const mcpTracked = new Map<string, TrackedToolCall>();
     try {
       if (wantImages && !imageSupport) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot generate images.`, "model");
+      if (search && !this.descriptor.webSearch) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot search the web.`, "model");
+      if (search && wantImages) throw new ApiError(400, "unsupported_parameter", "Web search cannot be combined with image generation.", "tools");
       if (mcp && !this.mcpSupport) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot call MCP servers through this proxy.`, "model");
       agent = await this.start();
       if (aborted) return cancelled();
       if (hasImages(messages) && !this.imageInput) throw new ApiError(400, "unsupported_content", `${this.displayName} does not accept image input.`, "messages");
       if (mcp) this.assertMcpTransports(mcp);
-      const hit = this.options.reuseSessions && !wantImages && !mcp ? this.takeKept(agent, model, messages) : undefined;
+      const hit = this.options.reuseSessions && !wantImages && !mcp && !search ? this.takeKept(agent, model, messages) : undefined;
       if (hit) { reused = hit.entry; session = reused.session; fresh = hit.fresh; }
-      else if (mcp) session = await this.createSession(agent, undefined, mcp);
+      else if (mcp || search) session = await this.createSession(agent, undefined, mcp, search !== undefined);
       else { session = this.warm.shift() ?? await this.createSession(agent); this.refillWarm(); }
       if (aborted) return cancelled();
       const sid = session.sessionId;
@@ -667,22 +676,25 @@ export class AcpProvider implements Provider {
         if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
           text += update.content.text;
           callbacks.onText?.(update.content.text);
-        } else if (mcp && (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")) trackToolCall(mcpTracked, update);
-        else if (imageSupport && update.sessionUpdate === "tool_call_update" && update.status === "completed") this.takeImages(update, wantImages ? generated : undefined, reportedFiles);
+        } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+          if (mcp || search) trackToolCall(mcpTracked, update);
+          if (!mcp && imageSupport && update.sessionUpdate === "tool_call_update" && update.status === "completed") this.takeImages(update, wantImages ? generated : undefined, reportedFiles);
+        }
       });
       if (wantImages && imageSupport?.allow) this.permissionRules.set(sid, imageSupport.allow);
-      if (mcp) this.permissionRules.set(sid, this.mcpRule(this.mcpAccess(mcp, false), mcpTracked));
+      if (mcp || search) this.permissionRules.set(sid, this.toolRule(mcp ? this.mcpAccess(mcp, false) : undefined, mcpTracked, search !== undefined));
       if (!reused && !await this.configureSession(agent, session, model, () => aborted)) return cancelled();
       if (aborted) return cancelled();
       promptSent = true;
-      const prompt: ContentBlock[] = buildPrompt(fresh, options?.instructions, this.descriptor.promptPreamble, wantImages, mcp ? { client: false, mcp: mcp.map(({ label, allowedTools }) => ({ label, ...(allowedTools ? { tools: allowedTools } : {}) })) } : undefined);
+      const prompt: ContentBlock[] = buildPrompt(fresh, options?.instructions, this.descriptor.promptPreamble, wantImages, mcp ? { client: false, mcp: mcp.map(({ label, allowedTools }) => ({ label, ...(allowedTools ? { tools: allowedTools } : {}) })) } : undefined, search);
       const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt }));
       let usage = result.usage ?? null;
       let cumulative = reused?.usage;
       if (usage && this.descriptor.usageScope === "session") { cumulative = usage; usage = usageDelta(usage, reused?.usage); }
-      if (this.options.reuseSessions && !wantImages && !mcp && result.stopReason === "end_turn" && !aborted) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
+      if (this.options.reuseSessions && !wantImages && !mcp && !search && result.stopReason === "end_turn" && !aborted) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
       const mcpCalls = mcp ? this.collectMcpCalls(mcpTracked, mcp.map((server) => server.label), undefined, true) : [];
-      return { text, stopReason: result.stopReason, usage, ...(wantImages ? { images: generated } : {}), ...(mcpCalls.length ? { mcpCalls } : {}) };
+      const searches = search ? this.collectSearches(mcpTracked, undefined, true) : [];
+      return { text, stopReason: result.stopReason, usage, ...(wantImages ? { images: generated } : {}), ...(mcpCalls.length ? { mcpCalls } : {}), ...(search ? { searches } : {}) };
     } catch (error) {
       if (aborted && !promptSent) return cancelled();
       if (aborted) throw new AcpUnavailableError("The request was cancelled.", error);
@@ -721,6 +733,28 @@ export class AcpProvider implements Provider {
     return (request) => this.descriptor.allowTool?.(request, tracked.get(request.toolCall.toolCallId), access) === true;
   }
 
+  /** The rule of a session that has MCP servers (`mcp`) and/or web search: an MCP tool as `mcpRule` decides, the search tool as the descriptor's `webSearch.allow` does; anything else is cancelled. */
+  private toolRule(mcp: McpAccess | undefined, tracked: Map<string, TrackedToolCall>, search: boolean): PermissionRule {
+    const forMcp = mcp ? this.mcpRule(mcp, tracked) : undefined;
+    const allowSearch = search ? this.descriptor.webSearch?.allow : undefined;
+    return (request) => forMcp?.(request) === true || allowSearch?.(request, tracked.get(request.toolCall.toolCallId)) === true;
+  }
+
+  /** The web searches in `tracked` that were not reported yet. Only finished ones, unless `final` (the turn is over: a search that never finished counts as failed). */
+  private collectSearches(tracked: Map<string, TrackedToolCall>, reported: Set<string> | undefined, final: boolean): WebSearchResult[] {
+    const out: WebSearchResult[] = [];
+    for (const call of tracked.values()) {
+      if (reported?.has(call.toolCallId)) continue;
+      const found = this.descriptor.webSearch?.search(call);
+      if (!found) continue;
+      const finished = call.status === "completed" || call.status === "failed";
+      if (!finished && !final) continue;
+      reported?.add(call.toolCallId);
+      out.push({ query: found.query, status: call.status === "completed" ? "completed" : "failed", ...(found.sources?.length ? { sources: found.sources } : {}) });
+    }
+    return out;
+  }
+
   /** The calls to the remote MCP servers in `tracked` that were not reported yet. Only finished calls, unless `final` (the turn is over: a call that never finished is `incomplete`). */
   private collectMcpCalls(tracked: Map<string, TrackedToolCall>, labels: readonly string[], reported: Set<string> | undefined, final: boolean): McpCallResult[] {
     const out: McpCallResult[] = [];
@@ -749,13 +783,13 @@ export class AcpProvider implements Provider {
   }
 
   /** The state of a prompt that has the client's tools: its update handler (text goes to the current sink, tool calls are only tracked and never forwarded), its permission rule and the bridge's call hook. */
-  private newTurn(agent: ClientContext, session: PreparedSession, model: string, bridge: BridgeSession, toolsKey: string, sink: GenerationCallbacks, baseUsage: Usage | undefined, mcp?: McpServerSpec[]): ToolTurn {
+  private newTurn(agent: ClientContext, session: PreparedSession, model: string, bridge: BridgeSession, toolsKey: string, sink: GenerationCallbacks, baseUsage: Usage | undefined, mcp?: McpServerSpec[], search = false): ToolTurn {
     const turn: ToolTurn = { agent, session, model, bridge, toolsKey, ...(mcp ? { mcp } : {}), reported: new Set(), sink, text: "", segment: 0, tracked: new Map(), pending: [], cancelled: false, baseUsage };
     this.handlers.set(session.sessionId, (update) => {
       if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") { turn.text += update.content.text; turn.sink.onText?.(update.content.text); }
       else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") trackToolCall(turn.tracked, update);
     });
-    this.permissionRules.set(session.sessionId, this.mcpRule(this.mcpAccess(mcp, true), turn.tracked));
+    this.permissionRules.set(session.sessionId, this.toolRule(this.mcpAccess(mcp, true), turn.tracked, search));
     bridge.onCall = (call) => { turn.pending.push(call); turn.arm?.(); };
     return turn;
   }
@@ -842,7 +876,9 @@ export class AcpProvider implements Provider {
     // Remote MCP servers next to the bridge: the same session, and the same tool set for reuse and resume only with the same servers.
     const mcp = options.mcpServers?.length ? options.mcpServers : undefined;
     if (mcp && !this.mcpSupport) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot call MCP servers through this proxy.`, "model");
-    const toolsKey = mcp ? JSON.stringify({ tools, mcp }) : JSON.stringify(tools);
+    const search = options.webSearch;
+    if (search && !this.descriptor.webSearch) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot search the web.`, "model");
+    const toolsKey = search ? JSON.stringify({ tools, ...(mcp ? { mcp } : {}), search: true }) : mcp ? JSON.stringify({ tools, mcp }) : JSON.stringify(tools);
     const mcpLabels = (mcp ?? []).map((server) => server.label);
     let agent: ClientContext | undefined;
     let session: PreparedSession | undefined;
@@ -869,15 +905,15 @@ export class AcpProvider implements Provider {
         let fresh = messages;
         if (hit) {
           session = hit.entry.session; fresh = hit.fresh;
-          turn = this.newTurn(agent, session, model, hit.entry.bridge!, toolsKey, callbacks, hit.entry.usage, mcp);
+          turn = this.newTurn(agent, session, model, hit.entry.bridge!, toolsKey, callbacks, hit.entry.usage, mcp, search !== undefined);
         } else {
           const bridge = hub.create(tools.map((tool) => ({ name: tool.name, ...(tool.description ? { description: tool.description } : {}), ...(tool.parameters ? { inputSchema: tool.parameters } : {}) })));
-          try { session = await this.createSession(agent, bridge, mcp); } catch (error) { bridge.dispose(); throw error; }
-          turn = this.newTurn(agent, session, model, bridge, toolsKey, callbacks, undefined, mcp);
+          try { session = await this.createSession(agent, bridge, mcp, search !== undefined); } catch (error) { bridge.dispose(); throw error; }
+          turn = this.newTurn(agent, session, model, bridge, toolsKey, callbacks, undefined, mcp, search !== undefined);
           if (!await this.configureSession(agent, session, model, () => aborted)) return cancelled();
         }
         if (aborted) return cancelled();
-        const prompt: ContentBlock[] = buildPrompt(fresh, options.instructions, undefined, false, { choice: options.toolChoice, parallel: options.parallelToolCalls, ...(mcp ? { mcp: mcp.map(({ label, allowedTools }) => ({ label, ...(allowedTools ? { tools: allowedTools } : {}) })) } : {}) });
+        const prompt: ContentBlock[] = buildPrompt(fresh, options.instructions, undefined, false, { choice: options.toolChoice, parallel: options.parallelToolCalls, ...(mcp ? { mcp: mcp.map(({ label, allowedTools }) => ({ label, ...(allowedTools ? { tools: allowedTools } : {}) })) } : {}) }, search);
         promptSent = true;
         turn.finished = this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: session!.sessionId, prompt })).then((result): PromptOutcome => ({ result }), (error): PromptOutcome => ({ error }));
       }
@@ -895,7 +931,8 @@ export class AcpProvider implements Provider {
           const result = this.suspend(turn, calls, messages.map(toKept));
           suspended = true;
           const mcpCalls = this.collectMcpCalls(turn.tracked, mcpLabels, turn.reported, false);
-          return mcpCalls.length ? { ...result, mcpCalls } : result;
+          const searches = search ? this.collectSearches(turn.tracked, turn.reported, false) : [];
+          return { ...result, ...(mcpCalls.length ? { mcpCalls } : {}), ...(searches.length ? { searches } : {}) };
         }
         for (const call of turn.pending.splice(0)) call.settle("The turn ended before this tool call was answered.", true);
         if (outcome.done.error !== undefined) throw outcome.done.error;
@@ -906,7 +943,8 @@ export class AcpProvider implements Provider {
         const text = turn.text.slice(turn.segment);
         if (this.options.reuseSessions && result.stopReason === "end_turn" && !aborted && !turn.cancelled) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
         const mcpCalls = this.collectMcpCalls(turn.tracked, mcpLabels, turn.reported, true);
-        return { text, stopReason: result.stopReason, usage, ...(mcpCalls.length ? { mcpCalls } : {}) };
+        const searches = search ? this.collectSearches(turn.tracked, turn.reported, true) : [];
+        return { text, stopReason: result.stopReason, usage, ...(mcpCalls.length ? { mcpCalls } : {}), ...(search ? { searches } : {}) };
       }
     } catch (error) {
       if (aborted && !promptSent) return cancelled();

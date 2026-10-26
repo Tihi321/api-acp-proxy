@@ -46,6 +46,15 @@ import path from "node:path";
 //   FAKE_ACP_REMOTE_CALLS=<json>     [{"server":"docs","name":"echo","arguments":{"q":"hi"}}, ...] (default: echo on every remote server)
 //   FAKE_ACP_REMOTE_FAIL=1           the remote tools/call answers an error: the completed update becomes a failed one
 //   FAKE_ACP_MCP_CAPS=<json>         agentCapabilities.mcpCapabilities (default {"http":true,"sse":true})
+//   FAKE_ACP_SEARCH=claude|agy|codex  every prompt searches the web like that agent does (spike section 5), then answers FAKE_ACP_SEARCH_TEXT. claude: only when the session _meta has tools: ["WebSearch"] (else "no search tool");
+//                                    tool_call (kind fetch, toolName WebSearch), query updates, a permission request (none when the session _meta allowedTools has "WebSearch"; always with FAKE_ACP_SEARCH_ASK=1),
+//                                    the results update (_meta.claudeCode.toolResponse with the pages) and the completed update. agy: tool_call "Run search_web?" (kind search), its permission request, running and completed
+//                                    updates (the completed text has [n] markers and grounding links). codex: kind search updates (empty query first, the query at the end), no permission. A denied search fails the call.
+//   FAKE_ACP_SEARCH_COUNT=<n>        searches per prompt (default 1)
+//   FAKE_ACP_SEARCH_TEXT=<text>      the answer (default: a sentence with a Markdown link and a bare URL)
+//   FAKE_ACP_SEARCH_STRAY=1          before searching, send permission requests that must not be allowed (claude: WebFetch; agy: read_url_content and run_command)
+//   FAKE_ACP_SEARCH_ASK=1            claude asks for permission even though allowedTools has WebSearch
+//                                    With FAKE_ACP_MCP / FAKE_ACP_REMOTE the search runs first and its answer text is the first result of the "got: ..." answer. Logged as {method: "mcp", params: {phase: "search-permission" | "search-stray" | "search-denied", ...}}.
 //   FAKE_ACP_LOG=<file>              append every request as a JSON line {method, params}; permission answers as {method: "permission_response", params: <the response result>}
 const env = process.env;
 const pending = new Map();
@@ -177,7 +186,9 @@ const runMcp = async (sessionId, promptId) => {
   const before = env.FAKE_ACP_MCP_TEXT ?? "Let me check. ";
   if (before) update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: before } });
   const allowedTools = state.meta?.claudeCode?.options?.allowedTools;
-  const remote = env.FAKE_ACP_REMOTE ? await runRemote(env.FAKE_ACP_REMOTE, sessionId, alive) : [];
+  const found = env.FAKE_ACP_SEARCH ? await runSearch(env.FAKE_ACP_SEARCH, sessionId, alive) : undefined;
+  if (!alive()) return;
+  const remote = [...(found ? [found] : []), ...(env.FAKE_ACP_REMOTE ? await runRemote(env.FAKE_ACP_REMOTE, sessionId, alive) : [])];
   if (!alive()) return;
   if (!state.ready) { await handshake(kind, state.url); state.ready = true; if (!alive()) return; }
   if (env.FAKE_ACP_MCP_STRAY === "1") { await strayPermissions(kind, sessionId); if (!alive()) return; }
@@ -217,6 +228,56 @@ const runMcp = async (sessionId, promptId) => {
     if (!alive()) return;
   }
   sayDone(sessionId, promptId, `got: ${texts.join(" | ")}`);
+};
+const SEARCH_TEXT = "Node.js 26 is the current release, see [Node.js releases](https://nodejs.org/en/about/previous-releases) and https://endoflife.date/nodejs.";
+/** One agent's web search (see FAKE_ACP_SEARCH); returns the answer text, or undefined when the turn was cancelled meanwhile. */
+const runSearch = async (kind, sessionId, alive) => {
+  const state = mcpSessions.get(sessionId);
+  const tools = state?.meta?.claudeCode?.options?.tools;
+  const allowedTools = state?.meta?.claudeCode?.options?.allowedTools ?? [];
+  if (kind === "claude" && !(Array.isArray(tools) && tools.includes("WebSearch"))) return "no search tool";
+  if (env.FAKE_ACP_SEARCH_STRAY === "1") {
+    const strays = kind === "claude" ? [{ toolCall: { toolCallId: "stray-fetch", name: "WebFetch", title: "Fetch https://nodejs.org", kind: "fetch", status: "pending", rawInput: { url: "https://nodejs.org" }, content: [] }, options: claudeOptions }]
+      : kind === "agy" ? [{ toolCall: { toolCallId: "stray-url", kind: "fetch", status: "pending", title: "Run read_url_content?", rawInput: { Url: "https://nodejs.org" } }, options: agyOptions }, { toolCall: { toolCallId: "stray-cmd", kind: "execute", status: "pending", title: "node -v", rawInput: { CommandLine: "node -v" } }, options: agyOptions }, { toolCall: { toolCallId: "stray-search-like", kind: "other", status: "pending", title: "Run search_web?", rawInput: { query: "x" } }, options: agyOptions }]
+      : [];
+    for (const stray of strays) { const result = await askPermission(sessionId, { toolCall: stray.toolCall }, stray.options); logMcp({ phase: "search-stray", toolCallId: stray.toolCall.toolCallId, allowed: wasAllowed(result) }); if (!alive()) return undefined; }
+  }
+  const count = Number(env.FAKE_ACP_SEARCH_COUNT || 1);
+  let denied = false;
+  for (let n = 1; n <= count; n++) {
+    const query = count > 1 ? `latest stable Node.js version ${n}` : "latest stable Node.js version";
+    const toolCallId = kind === "codex" ? `exec-search-${++mcpCallCounter}` : `search-${++mcpCallCounter}`;
+    const toolName = "WebSearch";
+    if (kind === "claude") {
+      const meta = { claudeCode: { toolName } };
+      update(sessionId, { sessionUpdate: "tool_call", toolCallId, _meta: meta, name: toolName, rawInput: {}, status: "pending", title: "Web search", kind: "fetch", content: [] });
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, _meta: meta, rawInput: { query }, title: `Search "${query}"` });
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, _meta: meta, rawInput: { query, mode: "standard" } });
+      if (env.FAKE_ACP_SEARCH_ASK === "1" || !allowedTools.includes("WebSearch")) {
+        const allowed = wasAllowed(await askPermission(sessionId, { toolCall: { toolCallId, name: toolName, status: "pending", rawInput: { query, mode: "standard" }, title: `Search "${query}"`, kind: "fetch", content: [] } }, claudeOptions));
+        logMcp({ phase: "search-permission", allowed });
+        if (!alive()) return undefined;
+        if (!allowed) { update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status: "failed", rawOutput: "Rejected by user" }); denied = true; continue; }
+      } else logMcp({ phase: "search-permission", asked: false });
+      const pages = [{ title: "Node.js releases", url: "https://nodejs.org/en/about/previous-releases" }, { title: "endoflife.date", url: "https://endoflife.date/nodejs" }];
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, _meta: { claudeCode: { toolResponse: { query, results: [{ tool_use_id: "srvtoolu_fake", content: pages }, "A summary of the results."], durationSeconds: 1.5, searchCount: 1 }, toolName } } });
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, _meta: meta, status: "completed", rawOutput: `Web search results for query: "${query}"\n\nLinks: ${JSON.stringify(pages)}` });
+    } else if (kind === "agy") {
+      update(sessionId, { sessionUpdate: "tool_call", toolCallId, title: "Run search_web?", kind: "search", status: "pending", rawInput: { query } });
+      const allowed = wasAllowed(await askPermission(sessionId, { toolCall: { toolCallId, kind: "search", status: "pending", title: "Run search_web?", rawInput: { query } } }, agyOptions));
+      logMcp({ phase: "search-permission", allowed });
+      if (!alive()) return undefined;
+      if (!allowed) { update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status: "failed", rawOutput: "Rejected by user" }); denied = true; continue; }
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, kind: "search", status: "in_progress", title: "Running search_web", rawInput: { query, domain: "", summary: "" } });
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status: "completed", content: [{ type: "content", content: { type: "text", text: "The latest release is v26.1.0[1].\n\nSources:\n[1] [nodejs.org](https://vertexaisearch.cloud.google.com/grounding-api-redirect/FAKE)" } }] });
+    } else {
+      update(sessionId, { sessionUpdate: "tool_call", toolCallId, kind: "search", title: "Web search", status: "in_progress", rawInput: { type: "webSearch", id: toolCallId, query: "", action: null } });
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId, title: `Web search: ${query}`, status: "completed", rawInput: { type: "webSearch", id: toolCallId, query, action: { type: "search", query, queries: null } } });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    if (!alive()) return undefined;
+  }
+  return denied ? "I could not search." : env.FAKE_ACP_SEARCH_TEXT ?? SEARCH_TEXT;
 };
 const generateImage = (sessionId, id) => {
   const toolCallId = `imgcall-${sessionId}`;
@@ -306,11 +367,12 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       if (env.FAKE_ACP_PROMPT_ERROR) { pending.delete(sessionId); const e = JSON.parse(env.FAKE_ACP_PROMPT_ERROR); fail(id, e.code, e.message, e.data); return; }
       if (env.FAKE_ACP_ENTITY_NOT_FOUND === "1") { pending.delete(sessionId); fail(id, -32603, "Requested entity was not found"); return; }
       if (env.FAKE_ACP_IMAGE_GEN) { generateImage(sessionId, id); return; }
+      if (env.FAKE_ACP_SEARCH && !env.FAKE_ACP_MCP && !env.FAKE_ACP_REMOTE) { const alive = () => pending.get(sessionId) === id; runSearch(env.FAKE_ACP_SEARCH, sessionId, alive).then((text) => { if (text !== undefined && alive()) sayDone(sessionId, id, text); }).catch((error) => sayDone(sessionId, id, "search error: " + String(error?.message ?? error))); return; }
       if (env.FAKE_ACP_REMOTE && !env.FAKE_ACP_MCP) {
         const kind = env.FAKE_ACP_REMOTE;
         const before = env.FAKE_ACP_MCP_TEXT ?? "Let me check. ";
         if (before) update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: before } });
-        runRemote(kind, sessionId, () => pending.get(sessionId) === id).then((texts) => { if (pending.get(sessionId) === id) sayDone(sessionId, id, `got: ${texts.join(" | ")}`); }).catch((error) => { logMcp({ phase: "error", message: String(error?.message ?? error) }); sayDone(sessionId, id, "mcp error: " + String(error?.message ?? error)); });
+        (async () => { const alive = () => pending.get(sessionId) === id; const found = env.FAKE_ACP_SEARCH ? await runSearch(env.FAKE_ACP_SEARCH, sessionId, alive) : undefined; return [...(found ? [found] : []), ...await runRemote(kind, sessionId, alive)]; })().then((texts) => { if (pending.get(sessionId) === id) sayDone(sessionId, id, `got: ${texts.join(" | ")}`); }).catch((error) => { logMcp({ phase: "error", message: String(error?.message ?? error) }); sayDone(sessionId, id, "mcp error: " + String(error?.message ?? error)); });
         return;
       }
       if (env.FAKE_ACP_MCP) { runMcp(sessionId, id).catch((error) => { logMcp({ phase: "error", message: String(error?.message ?? error) }); sayDone(sessionId, id, "mcp error: " + String(error?.message ?? error)); }); return; }

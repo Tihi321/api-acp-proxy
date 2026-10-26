@@ -19,4 +19,5 @@ What is open for the proxy as the creative hub (`C:\projects\Personal\creative-h
 - [x] Images can be generated: `POST /v1/images/generations`, Responses `image_generation` tool, chat `modalities` (Antigravity and Codex). (AAP-14)
 - [x] Function calling: chat `tools` and Responses `function_call` items, through an MCP server the proxy hosts for the agents (Codex, Claude, Antigravity). (AAP-15)
 - [x] Remote MCP servers: Responses `type: "mcp"` tools and `mcpServers` in the settings (http, sse, stdio), with `mcp_call` output items. (AAP-16)
+- [x] Web search: chat `web_search_options` and the Responses `web_search` tool, with `web_search_call` items and `url_citation` annotations (Claude, Antigravity; Codex always searches). (AAP-17)
 - [ ] Audio and files are still rejected. Not needed by the hub's apps.

@@ -7,6 +7,7 @@ import { AcpUnavailableError } from "./acp.js";
 import { MODEL_IDS, type ProxyConfig } from "./config.js";
 import { ApiError, errorEnvelope, extractJson, formatInstructions, imageFormatName, normalizeChat, normalizeImageGeneration, normalizeResponses, serializePrompt, type ModelCheck, type Message, type OutputFormat, type ToolChoice, type ToolDef } from "./api.js";
 import { beginSse, endSse, writeSse } from "./sse.js";
+import { extractCitations } from "./citations.js";
 import { resolveMcpServers } from "./mcp-servers.js";
 import { ToolBridgeHub } from "./tool-bridge.js";
 import { CHARS_PER_TOKEN, chatUsage, responsesUsage } from "./usage.js";
@@ -60,6 +61,11 @@ function requireMcp(bridge: AcpLike, model: string): void {
   if (bridge.canUseMcp && !bridge.canUseMcp(model)) throw new ApiError(400, "model_not_capable", `The model '${model}' cannot call MCP servers.`, "model");
 }
 
+/** A request with web search goes only to a model whose provider can search (a bridge that cannot tell lets the provider answer the 400). */
+function requireWebSearch(bridge: AcpLike, model: string): void {
+  if (bridge.canSearchWeb && !bridge.canSearchWeb(model)) throw new ApiError(400, "model_not_capable", `The model '${model}' cannot search the web.`, "model");
+}
+
 /** The generation options of a request's function tools (none for a request without them). */
 function toolOptions(parsed: { functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean }): GenerateOptions {
   return parsed.functionTools ? { tools: parsed.functionTools, ...(parsed.toolChoice ? { toolChoice: parsed.toolChoice } : {}), ...(parsed.parallelToolCalls !== undefined ? { parallelToolCalls: parsed.parallelToolCalls } : {}) } : {};
@@ -108,6 +114,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   const parsed = await normalizeChat(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling, fetch: fetchImpl });
   if (parsed.generateImages) requireImageGeneration(bridge, parsed.model);
   if (parsed.functionTools) requireToolCalling(bridge, parsed.model);
+  if (parsed.webSearch) requireWebSearch(bridge, parsed.model);
   const chatId = id("chatcmpl");
   const created = Math.floor(Date.now() / 1000);
   const abortController = new AbortController();
@@ -116,9 +123,11 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   request.once("aborted", () => abortController.abort());
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
-  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed) };
+  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}) };
   const asJson = parsed.format.type === "json";
   const promptText = serializePrompt(parsed.conversation, options.instructions);
+  /** `url_citation` annotations of the answer (only for a request with web search; none otherwise). */
+  const chatAnnotations = (result: GenerationResult) => parsed.webSearch ? extractCitations(finalText(parsed.format, result)).map(({ url, title, start_index, end_index }) => ({ type: "url_citation", url_citation: { start_index, end_index, url, title } })) : undefined;
   const chatToolCalls = (result: GenerationResult) => (result.toolCalls ?? []).map((call, index) => ({ index, id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } }));
   const chatImages = (result: GenerationResult) => (result.images ?? []).map((image, index) => ({ index, type: "image_url", image_url: { url: imageDataUrl(image) } }));
   const usageFor = (result: GenerationResult) => chatUsage({ ...result, text: finalText(parsed.format, result) }, promptText);
@@ -134,6 +143,9 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
       if (asJson && (result.text || !result.toolCalls?.length)) delta(finalText(parsed.format, result));
       const images = chatImages(result);
       if (images.length) chunk([{ index: 0, delta: { images }, finish_reason: null }]);
+      // The annotations come in one delta after the text (their indices refer to the whole answer).
+      const annotations = chatAnnotations(result);
+      if (annotations?.length) chunk([{ index: 0, delta: { annotations }, finish_reason: null }]);
       const toolCalls = chatToolCalls(result);
       if (toolCalls.length) chunk([{ index: 0, delta: { tool_calls: toolCalls }, finish_reason: null }]);
       const reason = mapStopReason(result.stopReason).chat;
@@ -153,7 +165,8 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
     const images = chatImages(result);
     const toolCalls = chatToolCalls(result);
     const content = finalText(parsed.format, result);
-    json(response, 200, { id: chatId, object: "chat.completion", created, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: toolCalls.length && !content ? null : content, ...(images.length ? { images } : {}), ...(toolCalls.length ? { tool_calls: toolCalls.map(({ index: _index, ...call }) => call) } : {}) }, finish_reason: reason }], usage: usageFor(result) });
+    const annotations = chatAnnotations(result);
+    json(response, 200, { id: chatId, object: "chat.completion", created, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: toolCalls.length && !content ? null : content, ...(annotations ? { annotations } : {}), ...(images.length ? { images } : {}), ...(toolCalls.length ? { tool_calls: toolCalls.map(({ index: _index, ...call }) => call) } : {}) }, finish_reason: reason }], usage: usageFor(result) });
   } finally { clearTimeout(timer); }
 }
 
@@ -164,6 +177,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   const parsed = await normalizeResponses(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling, fetch: fetchImpl });
   if (parsed.generateImages) requireImageGeneration(bridge, parsed.model);
   if (parsed.functionTools) requireToolCalling(bridge, parsed.model);
+  if (parsed.webSearch) requireWebSearch(bridge, parsed.model);
   // The `mcp` tools are matched with the settings before anything starts, so a bad label or URL is a real 400 even when streaming.
   const mcpServers = parsed.mcpTools ? resolveMcpServers(parsed.mcpTools, config.mcpServers) : undefined;
   if (mcpServers) requireMcp(bridge, parsed.model);
@@ -176,11 +190,11 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   request.once("aborted", () => abortController.abort());
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
-  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(mcpServers ? { mcpServers } : {}) };
+  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(mcpServers ? { mcpServers } : {}), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}) };
   const asJson = parsed.format.type === "json";
   const withTools = parsed.functionTools !== undefined;
-  // The message item comes after the generated images and the MCP calls, so its text is not streamed live (it is only known when the turn is over).
-  const deferred = parsed.generateImages || mcpServers !== undefined;
+  // The message item comes after the generated images, the web searches and the MCP calls, so its text is not streamed live (it is only known when the turn is over).
+  const deferred = parsed.generateImages || mcpServers !== undefined || parsed.webSearch !== undefined;
   const promptText = serializePrompt(parsed.conversation, options.instructions);
   /** A `function_call` output item per tool call the agent made; they come after the message. */
   const callItems = (result: GenerationResult) => (result.toolCalls ?? []).map((call) => ({ id: id("fc"), type: "function_call", status: "completed", call_id: call.id, name: call.name, arguments: call.arguments }));
@@ -188,7 +202,11 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   const imageItems = (result: GenerationResult) => (result.images ?? []).map((image) => ({ id: id("ig"), type: "image_generation_call", status: "completed", result: image.data, ...(image.revisedPrompt ? { revised_prompt: image.revisedPrompt } : {}), output_format: imageFormatName(image.mimeType) }));
   /** An `mcp_call` output item per call the agent made to a remote MCP server; they come before the message. */
   const mcpItems = (result: GenerationResult) => (result.mcpCalls ?? []).map((call) => ({ id: id("mcp"), type: "mcp_call", server_label: call.server, name: call.name, arguments: call.arguments, output: call.output, error: call.error, status: call.status }));
-  const messageItem = (result: GenerationResult, status: string) => ({ id: messageId, type: "message", status, role: "assistant", content: [{ type: "output_text", text: finalText(parsed.format, result), annotations: [] }] });
+  /** A `web_search_call` output item per search the agent ran; they come before the message. `sources` are the pages the agent reported (Claude). */
+  const searchItems = (result: GenerationResult) => (result.searches ?? []).map((search) => ({ id: id("ws"), type: "web_search_call", status: search.status, action: { type: "search", query: search.query, ...(search.sources?.length ? { sources: search.sources.map(({ url }) => ({ type: "url", url })) } : {}) } }));
+  /** `url_citation` annotations of the answer text (only for a request with web search; none otherwise). */
+  const annotationsOf = (text: string) => parsed.webSearch ? extractCitations(text).map((citation) => ({ type: "url_citation", ...citation })) : [];
+  const messageItem = (result: GenerationResult, status: string) => ({ id: messageId, type: "message", status, role: "assistant", content: [{ type: "output_text", text: finalText(parsed.format, result), annotations: annotationsOf(finalText(parsed.format, result)) }] });
   // A response that ends with tool calls has no message item when the agent said nothing before them.
   const base = (result: GenerationResult, status: string, items: unknown[] = [], calls: unknown[] = []) => ({ id: responseId, object: "response", created_at: created, status, model: parsed.model, output: [...items, ...(calls.length && !result.text ? [] : [messageItem(result, status)]), ...calls], incomplete_details: result.stopReason === "max_tokens" ? { reason: "max_output_tokens" } : null, usage: responsesUsage({ ...result, text: finalText(parsed.format, result) }, promptText), store: false });
   if (parsed.stream) {
@@ -213,9 +231,14 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
       if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
       const status = mapStopReason(result.stopReason).responseStatus;
       const text = finalText(parsed.format, result);
-      const items = [...imageItems(result), ...mcpItems(result)];
+      const items = [...imageItems(result), ...searchItems(result), ...mcpItems(result)];
       items.forEach((item, index) => {
-        if (item.type === "mcp_call") {
+        if (item.type === "web_search_call") {
+          event("response.output_item.added", { output_index: index, item: { ...item, status: "in_progress", action: { type: "search", query: (item as { action: { query: string } }).action.query } } });
+          event("response.web_search_call.in_progress", { item_id: item.id, output_index: index });
+          event("response.web_search_call.searching", { item_id: item.id, output_index: index });
+          if (item.status === "completed") event("response.web_search_call.completed", { item_id: item.id, output_index: index });
+        } else if (item.type === "mcp_call") {
           event("response.output_item.added", { output_index: index, item: { ...item, status: "in_progress", output: null, error: null } });
           event("response.mcp_call.in_progress", { item_id: item.id, output_index: index });
           event(item.status === "completed" ? "response.mcp_call.completed" : "response.mcp_call.failed", { item_id: item.id, output_index: index });
@@ -228,8 +251,10 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
       else if (withTools) { if (asJson && text) delta(text); if (!messageOpen && !calls.length) { messageOpen = true; openMessage(0); } }
       else if (asJson) delta(text, at);
       if (!withTools || messageOpen) {
+        const annotations = annotationsOf(text);
+        annotations.forEach((annotation, annotationIndex) => event("response.output_text.annotation.added", { item_id: messageId, output_index: at, content_index: 0, annotation_index: annotationIndex, annotation }));
         event("response.output_text.done", { item_id: messageId, output_index: at, content_index: 0, text });
-        event("response.content_part.done", { item_id: messageId, output_index: at, content_index: 0, part: { type: "output_text", text, annotations: [] } });
+        event("response.content_part.done", { item_id: messageId, output_index: at, content_index: 0, part: { type: "output_text", text, annotations } });
         event("response.output_item.done", { output_index: at, item: messageItem(result, status) });
       }
       calls.forEach((call, position) => {
@@ -249,7 +274,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   try {
     const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, undefined, abortController.signal);
     if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
-    json(response, 200, base(result, mapStopReason(result.stopReason).responseStatus, [...imageItems(result), ...mcpItems(result)], callItems(result)));
+    json(response, 200, base(result, mapStopReason(result.stopReason).responseStatus, [...imageItems(result), ...searchItems(result), ...mcpItems(result)], callItems(result)));
   } catch (error) { throw forResponses(error); }
   finally { clearTimeout(timer); }
 }

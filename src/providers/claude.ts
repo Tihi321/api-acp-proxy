@@ -72,6 +72,26 @@ async function removeProjectLeftovers(settings: ClaudeSettings, env: NodeJS.Proc
   await fsp.rmdir(dir).catch(() => undefined);
 }
 
+/** The tool name of a Claude `tool_call` / permission request (`_meta.claudeCode.toolName`, else the `name` of a permission's tool call). */
+function claudeToolName(call: { _meta?: Record<string, unknown> | null; name?: unknown }): string | undefined {
+  const name = (call._meta as { claudeCode?: { toolName?: unknown } } | null | undefined)?.claudeCode?.toolName ?? call.name;
+  return typeof name === "string" ? name : undefined;
+}
+
+/** The pages a WebSearch reported: `_meta.claudeCode.toolResponse.results` holds `{ content: [{ title, url }] }` objects (next to the answer text of the tool). */
+function searchSources(call: { _meta?: Record<string, unknown> | null }): Array<{ title?: string; url: string }> {
+  const results = (call._meta as { claudeCode?: { toolResponse?: { results?: unknown } } } | null | undefined)?.claudeCode?.toolResponse?.results;
+  const found = new Map<string, { title?: string; url: string }>();
+  for (const result of Array.isArray(results) ? results : []) {
+    const content = result && typeof result === "object" ? (result as { content?: unknown }).content : undefined;
+    for (const page of Array.isArray(content) ? content : []) {
+      const { title, url } = (page ?? {}) as { title?: unknown; url?: unknown };
+      if (typeof url === "string" && url && !found.has(url)) found.set(url, { ...(typeof title === "string" && title ? { title } : {}), url });
+    }
+  }
+  return [...found.values()];
+}
+
 /** The Claude Agent ACP adapter: text-only (built-in tools off, nothing persisted), credentials from ~/.claude, an API key or an OAuth token. */
 export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ProviderDescriptor> = {}): ProviderDescriptor {
   const descriptor: ProviderDescriptor = {
@@ -99,6 +119,17 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
     onSessionDisposed: (cwd) => removeProjectLeftovers(settings, env, cwd),
     // With `allowedTools` Claude asks no permission for the MCP tools of the session (the client bridge, the request's remote servers); the rule below is the fallback. No call limit (see claudeEnv).
     mcpSessionMeta: (servers) => ({ claudeCode: { options: { allowedTools: servers.flatMap(({ label, tools }) => tools ? tools.map((tool) => `mcp__${label}__${tool}`) : [`mcp__${label}__*`]) } } }),
+    // Search: the session's built-in tools become only WebSearch (never WebFetch), allowed up front; the permission rule is the fallback.
+    webSearch: {
+      sessionMeta: { claudeCode: { options: { tools: ["WebSearch"], allowedTools: ["WebSearch"] } } },
+      allow: (permission, tracked) => claudeToolName(permission.toolCall as { _meta?: Record<string, unknown> | null; name?: unknown }) === "WebSearch" || (tracked !== undefined && claudeToolName(tracked) === "WebSearch"),
+      search: (call) => {
+        if (claudeToolName(call) !== "WebSearch") return undefined;
+        const query = (call.rawInput as { query?: unknown } | null | undefined)?.query;
+        const sources = searchSources(call);
+        return { query: typeof query === "string" ? query : "", ...(sources.length ? { sources } : {}) };
+      },
+    },
     // The permission names the server (`mcpServer.name`) and the tool (`toolName`, `mcp__<server>__<tool>`).
     allowTool: (permission, _tracked, mcp) => {
       const meta = (permission.toolCall._meta as { claudeCode?: { toolName?: unknown; mcpServer?: { name?: unknown } } } | null | undefined)?.claudeCode;
