@@ -7,6 +7,9 @@ import { ApiError, serializePrompt, textMessage } from "../src/api.js";
 import { antigravityDescriptor, antigravityRegistration, purgeRecordedSessions, recordSession, resolveAntigravityExecutable, type AntigravityOptions } from "../src/providers/antigravity.js";
 import { ProviderAuthRequiredError, ProviderNotInstalledError, ProviderTermsRequiredError, defaultRuntimeContext, type ProviderStatus, type RuntimeContext } from "../src/provider.js";
 
+// Every provider start runs the Windows orphan sweep (a PowerShell Get-CimInstance call), which alone can take several seconds on a cold CI runner.
+vi.setConfig({ testTimeout: 30_000 });
+
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const root = path.resolve(".claude/temp/antigravity-tests", String(process.pid));
 const user = [textMessage("user", "hello")];
