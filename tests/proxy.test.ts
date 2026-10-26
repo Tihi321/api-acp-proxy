@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createProxyServer, mapStopReason } from "../src/server.js";
-import { extractJson, formatInstructions, normalizeChat, normalizeResponses, serializePrompt } from "../src/api.js";
+import { extractJson, formatInstructions, normalizeChat, normalizeResponses, serializePrompt, textMessage } from "../src/api.js";
 import type { AcpLike, GenerationResult } from "../src/acp.js";
 import type { ProxyConfig } from "../src/config.js";
 import OpenAI from "openai";
@@ -30,23 +30,23 @@ async function call(method: string, path: string, body?: unknown, bridge: AcpLik
 }
 
 describe("normalization", () => {
-  it("serializes all conversation roles", () => {
-    const normalized = normalizeChat({ model: "gpt-5.6-sol", messages: [{ role: "system", content: "be concise" }, { role: "user", content: [{ type: "text", text: "hello" }] }] });
-    expect(serializePrompt(normalized.textMessages)).toContain("[system]\nbe concise");
-    expect(normalizeResponses({ model: "gpt-5.6-luna", input: "hi", instructions: "answer" }).textMessages).toHaveLength(2);
+  it("serializes all conversation roles", async () => {
+    const normalized = await normalizeChat({ model: "gpt-5.6-sol", messages: [{ role: "system", content: "be concise" }, { role: "user", content: [{ type: "text", text: "hello" }] }] });
+    expect(serializePrompt(normalized.conversation)).toContain("[system]\nbe concise");
+    expect((await normalizeResponses({ model: "gpt-5.6-luna", input: "hi", instructions: "answer" })).conversation).toHaveLength(2);
   });
-  it("rejects unsupported behavior and unknown models", () => {
-    expect(() => normalizeChat({ model: "gpt-5.6-sol", messages: [{ role: "user", content: "x" }], temperature: 0 })).toThrow(/temperature/);
-    expect(() => normalizeResponses({ model: "nope", input: "x" })).toThrow(/does not exist/);
+  it("rejects unsupported behavior and unknown models", async () => {
+    await expect(normalizeChat({ model: "gpt-5.6-sol", messages: [{ role: "user", content: "x" }], temperature: 0 })).rejects.toThrow(/temperature/);
+    await expect(normalizeResponses({ model: "nope", input: "x" })).rejects.toThrow(/does not exist/);
   });
-  it("drops sampling fields with ignoreSampling, and still rejects behaviour-changing ones", () => {
+  it("drops sampling fields with ignoreSampling, and still rejects behaviour-changing ones", async () => {
     const body = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "x" }], temperature: 0.7, stream_options: { include_usage: true } };
-    const chat = normalizeChat(body, undefined, { ignoreSampling: true });
+    const chat = await normalizeChat(body, undefined, { ignoreSampling: true });
     expect(chat).not.toHaveProperty("temperature");
-    expect(() => normalizeChat({ ...body, tools: [{ type: "function" }] }, undefined, { ignoreSampling: true })).toThrow(/tools/);
-    expect(normalizeChat({ ...body, response_format: { type: "json_object" } }, undefined, { ignoreSampling: true }).format).toEqual({ type: "json" });
-    expect(normalizeResponses({ model: "gpt-5.6-luna", input: "x", temperature: 1 }, undefined, { ignoreSampling: true }).textMessages).toHaveLength(1);
-    expect(() => normalizeChat(body)).toThrow(/temperature/);
+    await expect(normalizeChat({ ...body, tools: [{ type: "function" }] }, undefined, { ignoreSampling: true })).rejects.toThrow(/tools/);
+    expect((await normalizeChat({ ...body, response_format: { type: "json_object" } }, undefined, { ignoreSampling: true })).format).toEqual({ type: "json" });
+    expect((await normalizeResponses({ model: "gpt-5.6-luna", input: "x", temperature: 1 }, undefined, { ignoreSampling: true })).conversation).toHaveLength(1);
+    await expect(normalizeChat(body)).rejects.toThrow(/temperature/);
   });
   it("maps ACP stop reasons to OpenAI completion semantics", () => {
     expect(mapStopReason("end_turn")).toEqual({ chat: "stop", responseStatus: "completed" });
@@ -59,17 +59,17 @@ describe("normalization", () => {
 describe("JSON output", () => {
   const schema = { type: "object", properties: { a: { type: "number" } }, required: ["a"] };
   const chatBody = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "hi" }] };
-  it("accepts response_format and text.format, and rejects bad shapes", () => {
-    expect(normalizeChat(chatBody).format).toEqual({ type: "text" });
-    expect(normalizeChat({ ...chatBody, response_format: { type: "text" } }).format).toEqual({ type: "text" });
-    expect(normalizeChat({ ...chatBody, response_format: { type: "json_object" } }).format).toEqual({ type: "json" });
-    expect(normalizeChat({ ...chatBody, response_format: { type: "json_schema", json_schema: { name: "out", schema, strict: true, description: "d" } } }).format).toEqual({ type: "json", name: "out", schema, description: "d" });
-    expect(normalizeResponses({ model: "gpt-5.6-sol", input: "x", text: { format: { type: "json_schema", name: "out", schema } } }).format).toEqual({ type: "json", name: "out", schema });
-    expect(normalizeResponses({ model: "gpt-5.6-sol", input: "x", text: { format: { type: "json_object" } } }).format).toEqual({ type: "json" });
-    expect(() => normalizeChat({ ...chatBody, response_format: { type: "xml" } })).toThrow();
-    expect(() => normalizeChat({ ...chatBody, response_format: { type: "json_schema" } })).toThrow();
-    expect(() => normalizeResponses({ model: "gpt-5.6-sol", input: "x", text: { verbosity: "low" } })).toThrow();
-    expect(() => normalizeChat({ ...chatBody, tools: [{ type: "function" }] })).toThrow(/tools/);
+  it("accepts response_format and text.format, and rejects bad shapes", async () => {
+    expect((await normalizeChat(chatBody)).format).toEqual({ type: "text" });
+    expect((await normalizeChat({ ...chatBody, response_format: { type: "text" } })).format).toEqual({ type: "text" });
+    expect((await normalizeChat({ ...chatBody, response_format: { type: "json_object" } })).format).toEqual({ type: "json" });
+    expect((await normalizeChat({ ...chatBody, response_format: { type: "json_schema", json_schema: { name: "out", schema, strict: true, description: "d" } } })).format).toEqual({ type: "json", name: "out", schema, description: "d" });
+    expect((await normalizeResponses({ model: "gpt-5.6-sol", input: "x", text: { format: { type: "json_schema", name: "out", schema } } })).format).toEqual({ type: "json", name: "out", schema });
+    expect((await normalizeResponses({ model: "gpt-5.6-sol", input: "x", text: { format: { type: "json_object" } } })).format).toEqual({ type: "json" });
+    await expect(normalizeChat({ ...chatBody, response_format: { type: "xml" } })).rejects.toThrow();
+    await expect(normalizeChat({ ...chatBody, response_format: { type: "json_schema" } })).rejects.toThrow();
+    await expect(normalizeResponses({ model: "gpt-5.6-sol", input: "x", text: { verbosity: "low" } })).rejects.toThrow();
+    await expect(normalizeChat({ ...chatBody, tools: [{ type: "function" }] })).rejects.toThrow(/tools/);
   });
   it("returns 400 with the offending param", async () => {
     const chat = await call("POST", "/v1/chat/completions", { ...chatBody, response_format: { type: "xml" } });
@@ -92,7 +92,7 @@ describe("JSON output", () => {
     expect(formatInstructions({ type: "json" })).toMatch(/single valid JSON value/);
     const instructions = formatInstructions({ type: "json", name: "out", schema, description: "the output" })!;
     expect(instructions).toContain(JSON.stringify(schema)); expect(instructions).toContain("out"); expect(instructions).toContain("the output");
-    const messages = [{ role: "user" as const, content: "hi" }];
+    const messages = [textMessage("user", "hi")];
     expect(serializePrompt(messages)).not.toContain("[output format]");
     expect(serializePrompt(messages, instructions).endsWith(`[output format]\n${instructions}`)).toBe(true);
   });
@@ -111,7 +111,7 @@ describe("JSON output", () => {
       const plain = await call("POST", "/v1/chat/completions", { ...chatBody, response_format: format }, jsonBridge);
       expect(plain.status).toBe(200); expect(JSON.parse(plain.text).choices[0].message.content).toBe('{"a":1}');
       expect(seen[0]!.instructions).toContain(JSON.stringify(schema));
-      expect(seen[0]!.messages).toEqual([{ role: "user", content: "hi" }]);
+      expect(seen[0]!.messages).toEqual([textMessage("user", "hi")]);
       const stream = await call("POST", "/v1/chat/completions", { ...chatBody, stream: true, response_format: { type: "json_object" } }, jsonBridge);
       const contents = stream.text.split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)).choices?.[0]?.delta?.content).filter((content) => content !== undefined);
       expect(contents).toEqual(['{"a":1}']); expect(seen[1]!.hasOnText).toBe(false);
@@ -148,15 +148,15 @@ describe("token limit", () => {
       return { text: "abcdef".repeat(50), stopReason: signal?.aborted ? "cancelled" : "end_turn", usage: { inputTokens: 9, outputTokens: 300, totalTokens: 309 } };
     },
   });
-  it("accepts limits by default and with ignoreSampling", () => {
-    expect(normalizeChat({ ...chatBody, max_tokens: 5 }).maxOutputTokens).toBe(5);
-    expect(normalizeChat({ ...chatBody, max_completion_tokens: 6 }, undefined, { ignoreSampling: true }).maxOutputTokens).toBe(6);
-    expect(normalizeChat({ ...chatBody, max_tokens: 5 }, undefined, { ignoreSampling: true }).maxOutputTokens).toBe(5);
-    expect(normalizeChat(chatBody).maxOutputTokens).toBeUndefined();
-    expect(normalizeResponses({ model: "gpt-5.6-sol", input: "x", max_output_tokens: 7 }).maxOutputTokens).toBe(7);
-    expect(normalizeResponses({ model: "gpt-5.6-sol", input: "x" }).maxOutputTokens).toBeUndefined();
-    expect(() => normalizeChat({ ...chatBody, max_tokens: 5, max_completion_tokens: 5 })).toThrow(/Only one of/);
-    expect(() => normalizeChat({ ...chatBody, max_tokens: 0 })).toThrow();
+  it("accepts limits by default and with ignoreSampling", async () => {
+    expect((await normalizeChat({ ...chatBody, max_tokens: 5 })).maxOutputTokens).toBe(5);
+    expect((await normalizeChat({ ...chatBody, max_completion_tokens: 6 }, undefined, { ignoreSampling: true })).maxOutputTokens).toBe(6);
+    expect((await normalizeChat({ ...chatBody, max_tokens: 5 }, undefined, { ignoreSampling: true })).maxOutputTokens).toBe(5);
+    expect((await normalizeChat(chatBody)).maxOutputTokens).toBeUndefined();
+    expect((await normalizeResponses({ model: "gpt-5.6-sol", input: "x", max_output_tokens: 7 })).maxOutputTokens).toBe(7);
+    expect((await normalizeResponses({ model: "gpt-5.6-sol", input: "x" })).maxOutputTokens).toBeUndefined();
+    await expect(normalizeChat({ ...chatBody, max_tokens: 5, max_completion_tokens: 5 })).rejects.toThrow(/Only one of/);
+    await expect(normalizeChat({ ...chatBody, max_tokens: 0 })).rejects.toThrow();
   });
   it("cuts a chat stream at the limit and cancels the agent", async () => {
     const state = { aborted: false };
@@ -213,11 +213,11 @@ describe("token limit", () => {
 describe("usage", () => {
   const chatBody = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "hi" }] };
   const dataLines = (text: string) => text.split("\n").filter((line) => line.startsWith("data: ")).map((line) => line.slice(6));
-  it("accepts stream_options without ignoreSampling", () => {
-    expect(() => normalizeChat({ ...chatBody, stream: true, stream_options: { include_usage: true } })).not.toThrow();
-    expect(normalizeChat({ ...chatBody, stream_options: null }).textMessages).toHaveLength(1);
-    expect(() => normalizeChat({ ...chatBody, stream_options: { include_usage: "yes" } })).toThrow();
-    expect(() => normalizeResponses({ model: "gpt-5.6-sol", input: "x", stream_options: { include_usage: true } })).toThrow(/stream_options/);
+  it("accepts stream_options without ignoreSampling", async () => {
+    await expect(normalizeChat({ ...chatBody, stream: true, stream_options: { include_usage: true } })).resolves.toBeDefined();
+    expect((await normalizeChat({ ...chatBody, stream_options: null })).conversation).toHaveLength(1);
+    await expect(normalizeChat({ ...chatBody, stream_options: { include_usage: "yes" } })).rejects.toThrow();
+    await expect(normalizeResponses({ model: "gpt-5.6-sol", input: "x", stream_options: { include_usage: true } })).rejects.toThrow(/stream_options/);
   });
   it("ends a chat stream with a usage chunk when include_usage is set", async () => {
     const result = await call("POST", "/v1/chat/completions", { ...chatBody, stream: true, stream_options: { include_usage: true } });

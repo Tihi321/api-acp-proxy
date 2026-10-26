@@ -21,6 +21,7 @@ import { appendFileSync, writeFileSync } from "node:fs";
 //   FAKE_ACP_PROMPT_ERROR=<json>     session/prompt fails with that {code, message[, data]}, e.g. {"code":-32603,"message":"Failed to refresh OAuth token: ..."}
 //   FAKE_ACP_AUTH_STATUS=<kind>      push an _auth/status_update notification {authStatus:{kind,label}} right after initialize (label "Fake account" unless kind is none)
 //   FAKE_ACP_CUMULATIVE=1            report usage cumulatively per session (inputTokens 2 * turns so far, outputTokens turns), like claude-agent-acp
+//   FAKE_ACP_IMAGE=1                 advertise promptCapabilities.image; answer "<text> images:<n>" with n = the image blocks of the prompt; an image block without data fails with -32602
 //   FAKE_ACP_LOG=<file>              append every request as a JSON line {method, params}
 const env = process.env;
 const pending = new Map();
@@ -36,8 +37,9 @@ const finish = (id, reason = "end_turn", sessionId) => {
   const n = env.FAKE_ACP_CUMULATIVE === "1" ? turns.get(sessionId) ?? 1 : 1;
   send({ jsonrpc: "2.0", id, result: { stopReason: reason, usage: { inputTokens: 2 * n, outputTokens: n, totalTokens: 3 * n } } });
 };
+const imageCounts = new Map();
 const promptDone = (sessionId, id) => {
-  const text = env.FAKE_ACP_ECHO === "1" ? `echo:${models.get(sessionId) ?? ""}:${sessionId}:${authedWith ?? "-"}` : "fake response";
+  const text = (env.FAKE_ACP_ECHO === "1" ? `echo:${models.get(sessionId) ?? ""}:${sessionId}:${authedWith ?? "-"}` : "fake response") + (env.FAKE_ACP_IMAGE === "1" ? ` images:${imageCounts.get(sessionId) ?? 0}` : "");
   send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
   finish(id, "end_turn", sessionId);
 };
@@ -59,7 +61,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (!method) return;
   if (env.FAKE_ACP_LOG) appendFileSync(env.FAKE_ACP_LOG, JSON.stringify({ method, params }) + "\n");
   if (method === "initialize") {
-    send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { sessionCapabilities: agy ? { list: {}, resume: {} } : { delete: true } }, agentInfo: agy ? { name: "antigravity-acp", title: "Google Antigravity", version: "1.3.0" } : { name: "fake", version: "1" }, ...(env.FAKE_ACP_AUTH_METHODS ? { authMethods: JSON.parse(env.FAKE_ACP_AUTH_METHODS) } : {}) } });
+    send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { ...(env.FAKE_ACP_IMAGE === "1" ? { promptCapabilities: { image: true } } : {}), sessionCapabilities: agy ? { list: {}, resume: {} } : { delete: true } }, agentInfo: agy ? { name: "antigravity-acp", title: "Google Antigravity", version: "1.3.0" } : { name: "fake", version: "1" }, ...(env.FAKE_ACP_AUTH_METHODS ? { authMethods: JSON.parse(env.FAKE_ACP_AUTH_METHODS) } : {}) } });
     const kind = env.FAKE_ACP_AUTH_STATUS;
     if (kind) send({ jsonrpc: "2.0", method: "_auth/status_update", params: { authStatus: { kind, label: kind === "none" ? "Not logged in" : "Fake account" } } });
   }
@@ -76,6 +78,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   else if (method === "session/cancel") { const p = pending.get(params.sessionId); if (p !== undefined) { pending.delete(params.sessionId); finish(p, "cancelled"); } }
   else if (method === "session/prompt") {
     const sessionId = params.sessionId;
+    const images = (params.prompt ?? []).filter((block) => block.type === "image");
+    if (env.FAKE_ACP_IMAGE === "1" && images.some((block) => typeof block.data !== "string" || !block.data)) { fail(id, -32602, "Invalid params: image data: expected string, received undefined"); return; }
+    imageCounts.set(sessionId, images.length);
     pending.set(sessionId, id);
     turns.set(sessionId, (turns.get(sessionId) ?? 0) + 1);
     const run = () => {

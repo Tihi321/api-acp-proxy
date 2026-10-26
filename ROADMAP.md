@@ -15,4 +15,5 @@ What is open for the proxy as the creative hub (`C:\projects\Personal\creative-h
 - [x] No token limit: `max_tokens` / `max_completion_tokens` / `max_output_tokens` are honoured with an estimate; the turn is cancelled and the stop is `length` / `incomplete`. (AAP-09)
 - [x] No usage numbers in the stream: `stream_options.include_usage` adds the final usage chunk; usage comes from the agent, or an estimate when it reports none. (AAP-08)
 - [x] Each request is a fresh agent session: opt-in `PROXY_REUSE_SESSIONS` / `server.reuseSessions` continues the session of the same conversation and sends only the new messages. (AAP-10)
-- [ ] Text only: images, audio, files and tools are still rejected. Not needed by the hub's apps.
+- [x] Images are accepted (chat `image_url`, Responses `input_image`; PNG, JPEG, GIF, WebP; base64 or an http(s) URL the proxy downloads). (AAP-13)
+- [ ] Audio, files and tools are still rejected. Not needed by the hub's apps.

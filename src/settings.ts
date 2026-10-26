@@ -13,7 +13,7 @@ export const settingsSchema = z.object({
     host: z.string().min(1).default("127.0.0.1"),
     port: z.number().int().min(0).max(65535).default(8787),
     apiKey: z.string().optional(),
-    maxBodyBytes: positive(1024 * 1024),
+    maxBodyBytes: positive(20 * 1024 * 1024),
     timeoutMs: positive(5 * 60 * 1000),
     modelsWaitMs: positive(3000),
     workRoot: z.string().optional(),

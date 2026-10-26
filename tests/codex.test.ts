@@ -3,14 +3,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpProvider } from "../src/acp-provider.js";
-import { serializePrompt } from "../src/api.js";
+import { serializePrompt, textMessage } from "../src/api.js";
 import { codexDescriptor, hardenedCodexConfig } from "../src/providers/codex.js";
 import { ProviderAuthRequiredError, defaultRuntimeContext } from "../src/provider.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const root = path.resolve(".claude/temp/codex-tests", String(process.pid));
 const base = { acpCommand: undefined, acpArgs: [] as string[] };
-const user = [{ role: "user" as const, content: "hello" }];
+const user = [textMessage("user", "hello")];
 const providers: AcpProvider[] = [];
 let counter = 0;
 let saved: Record<string, string | undefined> = {};

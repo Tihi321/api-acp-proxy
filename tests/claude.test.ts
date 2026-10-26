@@ -5,13 +5,13 @@ import { fileURLToPath } from "node:url";
 import { AcpProvider } from "../src/acp-provider.js";
 import { claudeDescriptor, claudeRegistration, resolveClaudeBinary, type ClaudeSettings } from "../src/providers/claude.js";
 import { AcpUnavailableError, ProviderAuthRequiredError, ProviderTermsRequiredError, defaultRuntimeContext, type ProviderDescriptor, type ProviderStatus } from "../src/provider.js";
-import { serializePrompt } from "../src/api.js";
+import { serializePrompt, textMessage } from "../src/api.js";
 import { createProxyServer } from "../src/server.js";
 import type { AddressInfo } from "node:net";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const root = path.resolve(".claude/temp/claude-tests", String(process.pid));
-const user = [{ role: "user" as const, content: "hello" }];
+const user = [textMessage("user", "hello")];
 const providers: AcpProvider[] = [];
 let counter = 0;
 

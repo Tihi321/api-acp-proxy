@@ -168,7 +168,7 @@ export class ProxyController extends EventEmitter {
       catch (error) { this.logger.error(`Could not create provider '${entry.id}': ${error instanceof Error ? error.message : String(error)}`); }
     }
     const router = new ProviderRouter({ providers, logger: this.logger, cachePath: path.join(this.dataDir, "models-cache.json"), modelsWaitMs: config.modelsWaitMs });
-    const server = createProxyServer(config, router);
+    const server = createProxyServer(config, router, { fetch: ctx.fetch });
     try {
       await new Promise<void>((resolve, reject) => {
         server.once("error", reject);

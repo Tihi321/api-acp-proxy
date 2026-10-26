@@ -4,7 +4,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { AcpLike, GenerateOptions, GenerationResult } from "./acp.js";
 import { AcpUnavailableError } from "./acp.js";
 import { MODEL_IDS, type ProxyConfig } from "./config.js";
-import { ApiError, errorEnvelope, extractJson, formatInstructions, normalizeChat, normalizeResponses, serializePrompt, type ModelCheck, type OutputFormat, type TextMessage } from "./api.js";
+import { ApiError, errorEnvelope, extractJson, formatInstructions, normalizeChat, normalizeResponses, serializePrompt, type ModelCheck, type Message, type OutputFormat } from "./api.js";
 import { beginSse, endSse, writeSse } from "./sse.js";
 import { CHARS_PER_TOKEN, chatUsage, responsesUsage } from "./usage.js";
 
@@ -52,7 +52,7 @@ export function mapStopReason(stopReason: GenerationResult["stopReason"]): { cha
 }
 
 /** Runs one generation and enforces the client's output limit on the raw text: the part that fits is emitted, the agent turn is cancelled and the result is a "max_tokens" stop with usage left to the estimate. */
-async function runGeneration(bridge: AcpLike, model: string, messages: TextMessage[], options: GenerateOptions, limit: number | undefined, emit: ((text: string) => void) | undefined, signal: AbortSignal): Promise<GenerationResult> {
+async function runGeneration(bridge: AcpLike, model: string, messages: Message[], options: GenerateOptions, limit: number | undefined, emit: ((text: string) => void) | undefined, signal: AbortSignal): Promise<GenerationResult> {
   if (limit === undefined && !emit) return await bridge.generate(model, messages, {}, signal, options);
   const controller = new AbortController();
   const link = () => controller.abort();
@@ -77,8 +77,8 @@ async function runGeneration(bridge: AcpLike, model: string, messages: TextMessa
 
 function finalText(format: OutputFormat, result: GenerationResult): string { return format.type === "json" ? extractJson(result.text) : result.text; }
 
-async function handleChat(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike): Promise<void> {
-  const parsed = normalizeChat(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling });
+async function handleChat(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, fetchImpl?: typeof fetch): Promise<void> {
+  const parsed = await normalizeChat(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling, fetch: fetchImpl });
   const chatId = id("chatcmpl");
   const created = Math.floor(Date.now() / 1000);
   const abortController = new AbortController();
@@ -89,7 +89,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
   const options = { instructions: formatInstructions(parsed.format) };
   const asJson = parsed.format.type === "json";
-  const promptText = serializePrompt(parsed.textMessages, options.instructions);
+  const promptText = serializePrompt(parsed.conversation, options.instructions);
   const usageFor = (result: GenerationResult) => chatUsage({ ...result, text: finalText(parsed.format, result) }, promptText);
   if (parsed.stream) {
     const includeUsage = (parsed.stream_options as { include_usage?: boolean } | null | undefined)?.include_usage === true;
@@ -98,7 +98,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
     chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }]);
     try {
       const delta = (text: string) => chunk([{ index: 0, delta: { content: text }, finish_reason: null }]);
-      const result = await runGeneration(bridge, parsed.model, parsed.textMessages, options, parsed.maxOutputTokens, asJson ? undefined : delta, abortController.signal);
+      const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, asJson ? undefined : delta, abortController.signal);
       if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
       if (asJson) delta(finalText(parsed.format, result));
       const reason = mapStopReason(result.stopReason).chat;
@@ -112,15 +112,18 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
     return;
   }
   try {
-    const result = await runGeneration(bridge, parsed.model, parsed.textMessages, options, parsed.maxOutputTokens, undefined, abortController.signal);
+    const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, undefined, abortController.signal);
     if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
     const reason = mapStopReason(result.stopReason).chat;
     json(response, 200, { id: chatId, object: "chat.completion", created, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: finalText(parsed.format, result) }, finish_reason: reason }], usage: usageFor(result) });
   } finally { clearTimeout(timer); }
 }
 
-async function handleResponses(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike): Promise<void> {
-  const parsed = normalizeResponses(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling });
+/** The provider names the `messages` parameter; a Responses request calls it `input`. */
+function forResponses(error: unknown): unknown { return error instanceof ApiError && error.param === "messages" ? new ApiError(error.status, error.code, error.message, "input") : error; }
+
+async function handleResponses(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, fetchImpl?: typeof fetch): Promise<void> {
+  const parsed = await normalizeResponses(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling, fetch: fetchImpl });
   const responseId = id("resp");
   const messageId = id("msg");
   const created = Math.floor(Date.now() / 1000);
@@ -132,7 +135,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
   const options = { instructions: formatInstructions(parsed.format) };
   const asJson = parsed.format.type === "json";
-  const promptText = serializePrompt(parsed.textMessages, options.instructions);
+  const promptText = serializePrompt(parsed.conversation, options.instructions);
   const base = (result: GenerationResult, status: string) => ({ id: responseId, object: "response", created_at: created, status, model: parsed.model, output: [{ id: messageId, type: "message", status, role: "assistant", content: [{ type: "output_text", text: finalText(parsed.format, result), annotations: [] }] }], incomplete_details: result.stopReason === "max_tokens" ? { reason: "max_output_tokens" } : null, usage: responsesUsage({ ...result, text: finalText(parsed.format, result) }, promptText), store: false });
   if (parsed.stream) {
     let sequenceNumber = 0;
@@ -143,7 +146,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
     event("response.content_part.added", { item_id: messageId, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
     try {
       const delta = (text: string) => event("response.output_text.delta", { item_id: messageId, output_index: 0, content_index: 0, delta: text });
-      const result = await runGeneration(bridge, parsed.model, parsed.textMessages, options, parsed.maxOutputTokens, asJson ? undefined : delta, abortController.signal);
+      const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, asJson ? undefined : delta, abortController.signal);
       if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
       const status = mapStopReason(result.stopReason).responseStatus;
       const text = finalText(parsed.format, result);
@@ -154,18 +157,20 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
       const terminalEvent = status === "completed" ? "response.completed" : "response.incomplete";
       event(terminalEvent, { response: base(result, status) });
       endSse(response);
-    } catch (error) { writeSse(response, errorEnvelope(error instanceof Error ? error : new Error(String(error)))); endSse(response); }
+    } catch (error) { const mapped = forResponses(error); writeSse(response, errorEnvelope(mapped instanceof Error ? mapped : new Error(String(mapped)))); endSse(response); }
     finally { clearTimeout(timer); }
     return;
   }
   try {
-    const result = await runGeneration(bridge, parsed.model, parsed.textMessages, options, parsed.maxOutputTokens, undefined, abortController.signal);
+    const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, undefined, abortController.signal);
     if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
     json(response, 200, base(result, mapStopReason(result.stopReason).responseStatus));
-  } finally { clearTimeout(timer); }
+  } catch (error) { throw forResponses(error); }
+  finally { clearTimeout(timer); }
 }
 
-export function createProxyServer(config: ProxyConfig, bridge: AcpLike): Server {
+/** `options.fetch` downloads http(s) image URLs (default: the global fetch). */
+export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options: { fetch?: typeof fetch } = {}): Server {
   return createServer(async (request, response) => {
     try {
       const method = request.method || "GET";
@@ -173,8 +178,8 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike): Server 
       if (method === "GET" && url.pathname === "/healthz") { json(response, 200, { status: "ok", uptime_seconds: Math.floor((Date.now() - startedAt) / 1000) }); return; }
       if (!authenticated(request, config)) { json(response, 401, { error: { message: "Invalid or missing bearer token.", type: "invalid_request_error", code: "invalid_api_key", param: null } }); return; }
       if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : MODEL_IDS.map((model) => ({ id: model, ownedBy: "openai" })); json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai" })) }); return; }
-      if (method === "POST" && url.pathname === "/v1/chat/completions") { await handleChat(request, response, config, bridge); return; }
-      if (method === "POST" && url.pathname === "/v1/responses") { await handleResponses(request, response, config, bridge); return; }
+      if (method === "POST" && url.pathname === "/v1/chat/completions") { await handleChat(request, response, config, bridge, options.fetch); return; }
+      if (method === "POST" && url.pathname === "/v1/responses") { await handleResponses(request, response, config, bridge, options.fetch); return; }
       json(response, 404, { error: { message: "Not found.", type: "invalid_request_error", code: "not_found", param: null } });
     } catch (error) {
       if (response.headersSent) { response.end(); return; }

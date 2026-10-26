@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AcpLike, ModelEntry } from "./acp.js";
-import { ApiError, type TextMessage } from "./api.js";
+import { ApiError, type Message } from "./api.js";
 import { silentLogger, type Logger } from "./logger.js";
 import type { GenerateOptions, GenerationCallbacks, GenerationResult, ModelInfo, Provider } from "./provider.js";
 
@@ -143,7 +143,7 @@ export class ProviderRouter implements AcpLike {
     await Promise.all(this.providers.filter((p) => !providerId || p.id === providerId).map((provider) => this.refreshOne(provider, 0, true)));
   }
 
-  async generate(model: string, messages: TextMessage[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
+  async generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
     const target = this.resolve(model);
     if (!target) throw new ApiError(404, "model_not_found", `The model '${model}' does not exist.`, "model");
     return target.provider.generate(target.model, messages, callbacks, signal, options);

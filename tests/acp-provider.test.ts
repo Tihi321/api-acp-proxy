@@ -3,11 +3,12 @@ import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpProvider, type AcpProviderOptions } from "../src/acp-provider.js";
+import { textMessage } from "../src/api.js";
 import { AcpUnavailableError, ProviderAuthRequiredError, defaultRuntimeContext, type ProviderDescriptor } from "../src/provider.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const workRoot = path.resolve(".claude/temp/acp-provider-tests");
-const user = [{ role: "user" as const, content: "hello" }];
+const user = [textMessage("user", "hello")];
 const providers: AcpProvider[] = [];
 
 function descriptor(overrides: Partial<ProviderDescriptor> = {}): ProviderDescriptor {
@@ -100,7 +101,7 @@ describe("AcpProvider session reuse", () => {
   const promptTexts = (file: string) => readLog(file).filter((entry) => entry.method === "session/prompt").map((entry) => entry.params.prompt[0].text as string);
   const keptCount = (provider: AcpProvider) => (provider as unknown as { kept: unknown[] }).kept.length;
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  const turn = (answer: string, next: string) => [...user, { role: "assistant" as const, content: answer }, { role: "user" as const, content: next }];
+  const turn = (answer: string, next: string) => [...user, textMessage("assistant", answer), textMessage("user", next)];
 
   it("creates a session per request when reuse is off", async () => {
     process.env.FAKE_ACP_ECHO = "1";
@@ -137,11 +138,11 @@ describe("AcpProvider session reuse", () => {
     const log = logFile();
     const provider = make({}, { reuseSessions: true });
     const first = await provider.generate(model, user);
-    const edited = await provider.generate(model, [{ role: "user", content: "edited" }, { role: "assistant", content: first.text }, { role: "user", content: "next" }]);
+    const edited = await provider.generate(model, [textMessage("user", "edited"), textMessage("assistant", first.text), textMessage("user", "next")]);
     expect(edited.text).not.toBe(first.text);
     const other = await provider.generate("gpt-5.6-luna", turn(first.text, "next"));
     expect(other.text).not.toBe(first.text);
-    const unchanged = await provider.generate(model, [...user, { role: "assistant", content: first.text }]);
+    const unchanged = await provider.generate(model, [...user, textMessage("assistant", first.text)]);
     expect(unchanged.text).not.toBe(first.text);
     expect(methodCount(log, "session/new")).toBe(4);
   });
@@ -197,7 +198,7 @@ describe("AcpProvider session reuse", () => {
     const log = logFile();
     const provider = make({}, { reuseSessions: true, retainedSessions: 1 });
     const first = await provider.generate(model, user);
-    await provider.generate(model, [{ role: "user", content: "other" }]);
+    await provider.generate(model, [textMessage("user", "other")]);
     expect(keptCount(provider)).toBe(1);
     await sleep(100);
     expect(methodCount(log, "session/delete")).toBe(1);
@@ -209,7 +210,7 @@ describe("AcpProvider session reuse", () => {
     const log = logFile();
     const provider = make({}, { reuseSessions: true });
     await provider.generate(model, user);
-    await provider.generate(model, [{ role: "user", content: "other" }]);
+    await provider.generate(model, [textMessage("user", "other")]);
     expect(keptCount(provider)).toBe(2);
     await provider.close();
     expect(keptCount(provider)).toBe(0);
@@ -222,7 +223,7 @@ describe("AcpProvider session reuse", () => {
     const provider = make({ usageScope: "session" }, { reuseSessions: true });
     const first = await provider.generate(model, user);
     const second = await provider.generate(model, turn(first.text, "next"));
-    const third = await provider.generate(model, [...turn(first.text, "next"), { role: "assistant", content: second.text }, { role: "user", content: "again" }]);
+    const third = await provider.generate(model, [...turn(first.text, "next"), textMessage("assistant", second.text), textMessage("user", "again")]);
     for (const result of [first, second, third]) expect(result.usage).toMatchObject({ inputTokens: 2, outputTokens: 1, totalTokens: 3 });
     const plain = make({}, { reuseSessions: true });
     const one = await plain.generate(model, user);

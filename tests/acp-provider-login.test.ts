@@ -4,10 +4,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpProvider } from "../src/acp-provider.js";
 import { defaultRuntimeContext, type ProviderDescriptor } from "../src/provider.js";
+import { textMessage } from "../src/api.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const workRoot = path.resolve(".claude/temp/acp-provider-login-tests");
-const user = [{ role: "user" as const, content: "hello" }];
+const user = [textMessage("user", "hello")];
 const providers: AcpProvider[] = [];
 
 function make(overrides: Partial<ProviderDescriptor> = {}): AcpProvider {

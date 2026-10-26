@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import type { Usage, StopReason } from "@agentclientprotocol/sdk";
-import type { TextMessage } from "./api.js";
+import type { Message } from "./api.js";
 import { silentLogger, type Logger } from "./logger.js";
 
 export interface GenerationResult { text: string; stopReason: StopReason; usage: Usage | null; }
@@ -27,7 +27,7 @@ export interface ModelInfo { id: string; name?: string; }
 /** "terminal" methods cannot be passed to authenticate. */
 export interface AuthMethodInfo { id: string; name: string; description?: string; type?: string; }
 export type ProviderState = "disabled" | "stopped" | "starting" | "ready" | "needs_login" | "not_installed" | "terms_required" | "error";
-export interface ProviderStatus { id: string; name: string; state: ProviderState; error?: string; authMethods: AuthMethodInfo[]; models: ModelInfo[]; /** Browser URL printed by the agent for an interactive login (present while a login may be pending). */ loginUrl?: string; /** Version reported by the agent in initialize.agentInfo. */ agentVersion?: string; /** Signed-in account label pushed by the agent (e.g. via _auth/status_update). */ account?: string; }
+export interface ProviderStatus { id: string; name: string; state: ProviderState; error?: string; authMethods: AuthMethodInfo[]; models: ModelInfo[]; /** Browser URL printed by the agent for an interactive login (present while a login may be pending). */ loginUrl?: string; /** Version reported by the agent in initialize.agentInfo. */ agentVersion?: string; /** Signed-in account label pushed by the agent (e.g. via _auth/status_update). */ account?: string; /** What the agent said it accepts in `initialize` (present once it has started). */ capabilities?: { image: boolean }; }
 
 /** How to run an agent process. Under Electron this is process.execPath + ELECTRON_RUN_AS_NODE=1. */
 export interface NodeRuntime { command: string; argsPrefix: string[]; env: Record<string, string>; }
@@ -114,7 +114,7 @@ export interface Provider {
   readonly ownedBy: string;
   readonly exposeUnprefixed: boolean;
   readonly staticModels?: ModelInfo[];
-  generate(model: string, messages: TextMessage[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
+  generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   listModels(options?: { force?: boolean }): Promise<ModelInfo[]>;
   status(): ProviderStatus;
   login(methodId?: string): Promise<void>;

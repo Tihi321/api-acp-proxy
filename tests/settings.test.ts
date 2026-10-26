@@ -115,7 +115,7 @@ describe("resolveConfig", () => {
   });
 
   it("keeps loadConfig backward compatible", () => {
-    expect(loadConfig({})).toMatchObject({ host: "127.0.0.1", port: 8787, maxBodyBytes: 1024 * 1024, timeoutMs: 300000, acpArgs: [] });
+    expect(loadConfig({})).toMatchObject({ host: "127.0.0.1", port: 8787, maxBodyBytes: 20 * 1024 * 1024, timeoutMs: 300000, acpArgs: [] });
     expect(loadConfig({ PROXY_PORT: "1", PROXY_API_KEY: "" }).apiKey).toBeUndefined();
   });
 });

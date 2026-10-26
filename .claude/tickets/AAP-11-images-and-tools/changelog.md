@@ -1,5 +1,66 @@
 # Changelog
 
+## 2026-10-26: AAP-13 Phase 2 (image input)
+
+Chat Completions and Responses now accept images. They reach Codex, Claude and Antigravity as base64 image blocks; each agent described a test image in the live check.
+
+**Repository** `api-acp-proxy`, branch `AAP-13_image-input` (from `origin/master` at `fa8d586`):
+- `src/images.ts` (new):
+  - `data:` URLs are decoded (base64 only).
+  - `http(s)` URLs are downloaded with at most 3 manual redirects, http(s) only, a 15 s overall timeout, an `image/*` content type and a 10 MB cap (also enforced while streaming). Only an `Accept` header is sent.
+  - PNG, JPEG, GIF and WebP are checked by their magic bytes; a declared type must match the bytes.
+  - Errors are `unsupported_content` (type) or `invalid_image_url` (URL, body or size).
+- `src/api.ts`:
+  - The internal `Message` is `{ role, parts: (text | image)[] }`.
+  - Chat accepts `image_url` parts; Responses accepts `input_text`, `output_text` and `input_image` (plus `text`). `file_id` and other part types get 400 `unsupported_content`, and images are allowed only in user messages.
+  - `normalizeChat` / `normalizeResponses` are async (they load images).
+  - `buildPrompt` produces the ACP content blocks. A text-only request is still exactly one text block, byte-identical to before. With images, each image follows its message's text, and the preamble says "an API request with text and images".
+- `src/acp-provider.ts`:
+  - Reads `promptCapabilities.image` at initialize and exposes it in the status as `capabilities.image`.
+  - Images sent to an agent without the capability get 400 `unsupported_content`.
+  - Session reuse compares images by SHA-256 and never keeps the base64.
+- `src/server.ts` and `src/controller.ts`: the image loader uses the runtime's `fetch`, and Responses errors name the `input` param.
+- `src/provider.ts`, `src/acp.ts`, `src/router.ts`: type changes (`Message`, `capabilities`).
+- `src/settings.ts`: the default `maxBodyBytes` is 20 MiB (was 1 MiB).
+- `README.md`: the top sentence, the env table default, "Supported API" with a new "Images" block, and session reuse with images. The README also says image downloads are not filtered by private address.
+- `ROADMAP.md`: images are accepted; audio, files and tools still are not.
+- Tests:
+  - `tests/images.test.ts` (new, 18 tests).
+  - `tests/fixtures/fake-acp.mjs`: `FAKE_ACP_IMAGE=1` advertises the capability, echoes `images:<n>`, and fails `-32602` on a uri-only block.
+  - `tests/proxy.test.ts`, `tests/acp-provider.test.ts`, `tests/settings.test.ts` and the other suites were moved to `Message` and the async normalizers.
+- `.claude/tickets/AAP-11-images-and-tools/plan.md`: Phase 2 status.
+
+**Live check** (headless CLI, temporary settings file, `PROXY_CODEX_ISOLATED_HOME=0`, `.claude/temp/aap11/red-circle.png` as a data URL):
+
+| Endpoint | Model | Time | Answer |
+|---|---|---|---|
+| chat | `codex/gpt-5.6-luna` | 8.7 s | "A red circle is centered on a white background." |
+| chat | `claude/haiku` | 1.8 s | "A solid red circle on a white background..." |
+| chat | `antigravity/gemini-3.8-flash-low` | 6.9 s | "The image shows a solid red circle centered on a white background." |
+| Responses (`input_text` + `input_image`) | `claude/haiku` | 3.2 s | same as the Claude chat answer |
+
+**Deviations**
+- The preamble's first sentence changes only when a request has images, so the model isn't told it can't see them.
+- A streamed request to an agent without image support gets the 400 as an SSE error event, because the capability is known only after the agent starts. All three current agents have the capability.
+- Images are accepted only in user messages.
+- `image/jpg` is accepted as an alias of `image/jpeg`.
+- Not implemented: a cap on images per request, private-address filtering of downloads (documented), and image tokens in the fallback usage estimate.
+
+**Verification**
+- `npm run typecheck`: clean.
+- `npx vitest run`: 186 passed, 1 skipped (16 files).
+- `npm run build`: succeeded.
+- I ran all three on the final tree.
+- Not tested: the 15 s download timeout itself (the other limits are).
+- The live check stopped the proxy with a hard kill, which orphaned its Antigravity child. The implementer killed it by hand, and the proxy's own orphan sweep also covers this case.
+
+**Follow-ups**
+- Optional: private-address filtering for image downloads, if the proxy is ever bound beyond localhost.
+- Optional: a cap on images per request.
+- The Codex isolated-home live check still waits for the user's first Codex login (AAP-12).
+
+**Status:** uncommitted.
+
 ## 2026-10-26: AAP-12 Phase 1 (agent hardening)
 
 Codex now runs without shell tools, skills or plugins, in its own home by default. Claude's login-refresh clash becomes a retryable 503, and Antigravity gets a no-tools prompt line. A live check in the new Codex home is waiting for the user's first login.
@@ -61,7 +122,7 @@ Codex now runs without shell tools, skills or plugins, in its own home by defaul
 - After merging, the user logs in to Codex once for the proxy (Log in button on the Codex card), and then the isolated-home live check runs.
 - Probe leftovers: a Codex image in `~/.codex/generated_images/01a179d6-...` and the AAP-11 Antigravity sessions. Nothing was deleted.
 
-**Status:** uncommitted.
+**Status:** committed as `6e81ff3` on `AAP-12_agent-hardening`, merged to `master` in PR #6.
 
 ## 2026-10-26: plan revised after the spike
 
@@ -82,7 +143,7 @@ The user confirmed they still use Codex. `plan.md` phases 1 to 5 were rewritten 
 - **Remote MCP (AAP-16) and web search (AAP-17):** adjusted to the agents' limits. Search stays optional.
 - `spike.md`: the "user has no Codex" notes are corrected.
 
-**Status:** uncommitted, on `AAP-11_tool-spike`.
+**Status:** committed as `75bea33` on `AAP-11_tool-spike`, merged to `master` in PR #7.
 
 ## 2026-10-26: AAP-11 Phase 0 (spike)
 
@@ -130,4 +191,4 @@ Codex, Claude and Antigravity were probed live for image input, image generation
 - Map Claude's transient "another process is refreshing the OAuth token" error to a retryable 503.
 - Codex hardening ticket (skills, user MCP servers, read-only shell reads), if Codex stays in use.
 
-**Status:** uncommitted.
+**Status:** committed as `75bea33` on `AAP-11_tool-spike`, merged to `master` in PR #7.
