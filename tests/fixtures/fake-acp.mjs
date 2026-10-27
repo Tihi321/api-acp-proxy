@@ -321,13 +321,14 @@ if (env.FAKE_ACP_GRANDCHILD) {
   const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   writeFileSync(env.FAKE_ACP_GRANDCHILD, String(grandchild.pid));
 }
-const defaultModels = [{ value: "gpt-5.6-sol" }, { value: "gpt-5.6-terra" }, { value: "gpt-5.6-luna" }];
+// Test data only (not the real Codex list): the models the fake agent offers unless FAKE_ACP_MODELS says otherwise.
+const defaultModels = [{ value: "gpt-6-luna" }, { value: "gpt-5.6-terra" }, { value: "gpt-5.6-luna" }];
 const newSession = (id, params = {}) => {
   const sessionId = sessionCount++ === 0 ? "fake-session" : `fake-session-${sessionCount}`;
   mcpSessions.set(sessionId, { url: (params.mcpServers ?? []).find((server) => server.name === "client")?.url, servers: params.mcpServers ?? [], meta: params._meta, prompts: 0 });
   const modes = claude ? { currentModeId: "default", availableModes: ["default", "acceptEdits", "plan", "auto", "bypassPermissions"].map((id) => ({ id, name: id })) } : agy ? { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "auto_edit", name: "Auto edit" }, { id: "yolo", name: "Yolo" }] } : env.FAKE_ACP_NO_READONLY === "1" ? { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }] } : { currentModeId: "read-only", availableModes: [{ id: "read-only", name: "Read only" }] };
   const options = env.FAKE_ACP_MODELS ? JSON.parse(env.FAKE_ACP_MODELS) : defaultModels;
-  const respond = () => send({ jsonrpc: "2.0", id, result: { sessionId, modes, configOptions: [{ id: "model", name: "Model", category: "model", type: "select", currentValue: "gpt-5.6-sol", options }] } });
+  const respond = () => send({ jsonrpc: "2.0", id, result: { sessionId, modes, configOptions: [{ id: "model", name: "Model", category: "model", type: "select", currentValue: "gpt-6-luna", options }] } });
   const delay = Number(env.FAKE_ACP_SESSION_DELAY_MS || 0);
   if (delay > 0) setTimeout(respond, delay); else respond();
 };

@@ -22,9 +22,11 @@ afterEach(async () => {
 });
 afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 
-function make(patch: SettingsPatch = {}, extra: { registry?: ProviderRegistration[]; drainMs?: number } = {}): ProxyController {
+/** `signedIn`: Codex's own home gets an `auth.json`, as after a login (the fake agent does not read it). */
+function make(patch: SettingsPatch = {}, extra: { registry?: ProviderRegistration[]; drainMs?: number; signedIn?: boolean } = {}): ProxyController {
   const dir = path.join(root, `case-${counter++}`);
   mkdirSync(dir, { recursive: true });
+  if (extra.signedIn) { mkdirSync(path.join(dir, "codex-home"), { recursive: true }); writeFileSync(path.join(dir, "codex-home", "auth.json"), "{}"); }
   const file = path.join(dir, "settings.json");
   const base = mergeSettings(defaultSettings(), { server: { port: 0, workRoot: path.join(dir, "work") }, providers: { codex: { acpCommand: process.execPath, acpArgs: [fixture] } } });
   writeFileSync(file, JSON.stringify(mergeSettings(base, patch)));
@@ -47,17 +49,17 @@ async function block(port: number): Promise<void> {
 const get = async (url: string) => (await fetch(url)).json() as Promise<{ data?: Array<{ id: string }>; status?: string }>;
 
 describe("ProxyController", () => {
-  // Codex runs in its own home, which has no login in these tests: it is needs_login before any request (nothing was started).
+  // Codex runs in its own home: with a login it starts with the proxy to list its models; without one it is needs_login and nothing is started.
   it("starts, serves requests and stops", async () => {
-    const controller = make();
+    const controller = make({}, { signedIn: true });
     const events: string[] = [];
     controller.on("status", (status) => events.push(status.server.state));
     const status = await controller.start();
     expect(status.server.state).toBe("running");
     expect(status.server.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
-    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", "needs_login"], ["antigravity", "disabled"], ["claude", "disabled"]]);
-    expect(((await get(`${status.server.baseUrl}/models`)).data ?? []).map((model) => model.id)).toContain("gpt-5.6-sol");
-    const chat = await fetch(`${status.server.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-5.6-sol", messages: [{ role: "user", content: "hi" }] }) });
+    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", expect.stringMatching(/^(starting|ready)$/)], ["antigravity", "disabled"], ["claude", "disabled"]]); // Codex lists its models through the agent, which starts with the proxy.
+    expect(((await get(`${status.server.baseUrl}/models`)).data ?? []).map((model) => model.id)).toContain("gpt-6-luna");
+    const chat = await fetch(`${status.server.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-6-luna", messages: [{ role: "user", content: "hi" }] }) });
     expect(((await chat.json()) as { choices: Array<{ message: { content: string } }> }).choices[0]?.message.content).toBe("fake response");
     expect((await controller.stop()).server.state).toBe("stopped");
     expect(events).toContain("starting");
@@ -163,7 +165,7 @@ describe("ProxyController", () => {
 });
 
 describe("ProxyController status, log out and activity", () => {
-  const chatBody = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "SECRET-PROMPT" }] };
+  const chatBody = { model: "gpt-6-luna", messages: [{ role: "user", content: "SECRET-PROMPT" }] };
   const post = (baseUrl: string, body: unknown = chatBody) => fetch(`${baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const logged = (file: string): string[] => { try { return readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { method: string }).method); } catch { return []; } };
 
@@ -224,7 +226,7 @@ describe("ProxyController status, log out and activity", () => {
     expect((await post(started.server.baseUrl!)).status).toBe(200);
     for (let n = 0; n < 100 && controller.activity.list().length < 2; n++) await new Promise((resolve) => setTimeout(resolve, 10));
     expect(controller.activity.list().map((entry) => [entry.endpoint, entry.status])).toEqual([["POST /v1/chat/completions", 200], ["GET /v1/models", 200]]);
-    expect(controller.activity.list()[0]).toMatchObject({ model: "gpt-5.6-sol", provider: "codex", stream: false, outputTokens: expect.any(Number) });
+    expect(controller.activity.list()[0]).toMatchObject({ model: "gpt-6-luna", provider: "codex", stream: false, outputTokens: expect.any(Number) });
     expect(JSON.stringify(controller.activity.list())).not.toContain("SECRET-PROMPT");
     expect(events.length).toBeGreaterThanOrEqual(2);
     await controller.applySettings({ server: { timeoutMs: 4321 } });

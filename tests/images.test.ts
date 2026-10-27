@@ -58,8 +58,8 @@ async function post(base: string, route: string, body: unknown): Promise<{ statu
   const response = await fetch(`${base}${route}`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer secret", "x-client-header": "secret-client" }, body: JSON.stringify(body) });
   return { status: response.status, body: await response.json() };
 }
-const chat = (content: unknown, extra: Record<string, unknown> = {}) => ({ model: "gpt-5.6-sol", messages: [{ role: "user", content }], ...extra });
-const responses = (content: unknown, extra: Record<string, unknown> = {}) => ({ model: "gpt-5.6-sol", input: [{ role: "user", content }], ...extra });
+const chat = (content: unknown, extra: Record<string, unknown> = {}) => ({ model: "gpt-6-luna", messages: [{ role: "user", content }], ...extra });
+const responses = (content: unknown, extra: Record<string, unknown> = {}) => ({ model: "gpt-6-luna", input: [{ role: "user", content }], ...extra });
 const text = (value: string) => ({ type: "text", text: value });
 const imageUrl = (url: string) => ({ type: "image_url", image_url: { url, detail: "low" } });
 
@@ -225,8 +225,8 @@ describe("image input through the proxy", () => {
       ["chat input_audio", "/v1/chat/completions", chat([{ type: "input_audio", input_audio: { data: "AAAA", format: "wav" } }]), "messages"],
       ["chat image with file_id", "/v1/chat/completions", chat([{ type: "image_url", file_id: "file-abc", image_url: { url: dataUrl("image/png", png) } }]), "messages"],
       ["chat responses-type part", "/v1/chat/completions", chat([{ type: "input_image", image_url: dataUrl("image/png", png) }]), "messages"],
-      ["image in assistant", "/v1/chat/completions", { model: "gpt-5.6-sol", messages: [{ role: "assistant", content: [imageUrl(dataUrl("image/png", png))] }, { role: "user", content: "hi" }] }, "messages"],
-      ["image in system", "/v1/chat/completions", { model: "gpt-5.6-sol", messages: [{ role: "system", content: [imageUrl(dataUrl("image/png", png))] }, { role: "user", content: "hi" }] }, "messages"],
+      ["image in assistant", "/v1/chat/completions", { model: "gpt-6-luna", messages: [{ role: "assistant", content: [imageUrl(dataUrl("image/png", png))] }, { role: "user", content: "hi" }] }, "messages"],
+      ["image in system", "/v1/chat/completions", { model: "gpt-6-luna", messages: [{ role: "system", content: [imageUrl(dataUrl("image/png", png))] }, { role: "user", content: "hi" }] }, "messages"],
     ];
     for (const [name, route, body, param] of bad) {
       const result = await post(base, route, body);
@@ -256,7 +256,7 @@ describe("image input through the proxy", () => {
     process.env.FAKE_ACP_IMAGE = "1";
     const provider = makeProvider();
     expect(provider.status().capabilities).toBeUndefined();
-    await provider.generate("gpt-5.6-sol", [textMessage("user", "hi")]);
+    await provider.generate("gpt-6-luna", [textMessage("user", "hi")]);
     expect(provider.status().capabilities).toEqual({ image: true });
   });
 
@@ -265,7 +265,7 @@ describe("image input through the proxy", () => {
     const log = logFile();
     const base = await startProxy(makeProvider());
     const result = await post(base, "/v1/responses", {
-      model: "gpt-5.6-sol",
+      model: "gpt-6-luna",
       instructions: "be terse",
       input: [
         { role: "user", content: [{ type: "input_text", text: "first" }] },
@@ -279,7 +279,7 @@ describe("image input through the proxy", () => {
     expect(blocks!.map((block) => block.type)).toEqual(["text", "image"]);
     expect(blocks![0]!.text).toContain("[system]\nbe terse\n\n[user]\nfirst\n\n[assistant]\nearlier answer\n\n[user]\nwhat is this?(plain text part)");
     expect(blocks![1]).toEqual({ type: "image", mimeType: "image/png", data: PNG_B64 });
-    const stream = await fetch(`${base}/v1/responses`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer secret" }, body: JSON.stringify({ model: "gpt-5.6-sol", stream: true, input: [{ role: "user", content: [{ type: "input_image", image_url: dataUrl("image/png", png) }] }] }) });
+    const stream = await fetch(`${base}/v1/responses`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer secret" }, body: JSON.stringify({ model: "gpt-6-luna", stream: true, input: [{ role: "user", content: [{ type: "input_image", image_url: dataUrl("image/png", png) }] }] }) });
     expect(await stream.text()).toContain("fake response images:1");
   });
 
@@ -287,10 +287,10 @@ describe("image input through the proxy", () => {
     process.env.FAKE_ACP_IMAGE = "1";
     const log = logFile();
     const base = await startProxy(makeProvider());
-    const result = await post(base, "/v1/chat/completions", { model: "gpt-5.6-sol", messages: [{ role: "system", content: "be concise" }, { role: "user", content: [{ type: "text", text: "hel" }, { type: "text", text: "lo" }] }] });
+    const result = await post(base, "/v1/chat/completions", { model: "gpt-6-luna", messages: [{ role: "system", content: "be concise" }, { role: "user", content: [{ type: "text", text: "hel" }, { type: "text", text: "lo" }] }] });
     expect(result.status).toBe(200);
     expect(prompts(log)).toEqual([[{ type: "text", text: `${PREAMBLE}\n\n[system]\nbe concise\n\n[user]\nhello` }]]);
-    const json = await post(base, "/v1/responses", { model: "gpt-5.6-sol", input: "hi", text: { format: { type: "json_object" } } });
+    const json = await post(base, "/v1/responses", { model: "gpt-6-luna", input: "hi", text: { format: { type: "json_object" } } });
     expect(json.status).toBe(200);
     expect(prompts(log)[1]).toEqual([{ type: "text", text: `${PREAMBLE}\n\n[user]\nhi\n\n[output format]\nRespond with a single valid JSON value only: no prose, no explanations, no Markdown code fences.` }]);
   });
@@ -312,7 +312,7 @@ describe("image input through the proxy", () => {
 });
 
 describe("image input with session reuse", () => {
-  const model = "gpt-5.6-sol";
+  const model = "gpt-6-luna";
   const methodCount = (file: string, method: string) => readLog(file).filter((entry) => entry.method === method).length;
   const turn = (picture: Buffer, answer: string, next: Buffer | undefined): Message[] => [
     user({ type: "text", text: "describe" }, image(picture)),

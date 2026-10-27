@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { MODEL_IDS } from "./config.js";
 import { ImageError, loadImage } from "./images.js";
 import { HEADER_NAME, MCP_LABEL, plainValue, TOOL_FILTER_NAME } from "./mcp-config.js";
 import { BRIDGE_SERVER_NAME } from "./tool-bridge.js";
@@ -127,10 +126,10 @@ export function asText(content: string | Array<{ type: string; text?: string }>)
 }
 
 export type ModelCheck = (model: string) => boolean;
-const defaultIsKnownModel: ModelCheck = (model) => (MODEL_IDS as readonly string[]).includes(model);
 
-export function validateModel(model: string, isKnownModel: ModelCheck = defaultIsKnownModel): void {
-  if (!isKnownModel(model)) throw new ApiError(404, "model_not_found", `The model '${model}' does not exist.`, "model");
+/** Without a check (a bridge that does not know its models) every id is accepted and the agent decides. */
+export function validateModel(model: string, isKnownModel?: ModelCheck): void {
+  if (isKnownModel && !isKnownModel(model)) throw new ApiError(404, "model_not_found", `The model '${model}' does not exist.`, "model");
 }
 
 function issueParam(issue: z.ZodIssue | undefined): string | undefined {

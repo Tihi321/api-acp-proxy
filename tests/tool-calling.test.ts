@@ -87,7 +87,7 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check: () => boolean, ms = 5000): Promise<void> { const end = Date.now() + ms; while (!check()) { if (Date.now() > end) throw new Error("timed out waiting"); await wait(20); } }
 
 const AGY_MODEL = "antigravity/gemini-3.8-flash-low";
-const CODEX_MODEL = "codex/gpt-5.6-sol";
+const CODEX_MODEL = "codex/gpt-6-luna";
 const CLAUDE_MODEL = "claude/haiku";
 const weatherParameters = { type: "object", properties: { city: { type: "string" } }, required: ["city"] };
 const addParameters = { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] };
@@ -634,16 +634,17 @@ describe("the tool bridge endpoint", () => {
     controllers.push(controller);
     const status = await controller.start();
     expect(status.server.state).toBe("running");
-    const body = { model: "gpt-5.6-sol", messages: [question], tools: chatTools };
+    const body = { model: "gpt-6-luna", messages: [question], tools: chatTools };
     const result = await send(status.server.baseUrl!, "/chat/completions", body, {});
     expect(result.body.choices[0].finish_reason).toBe("tool_calls");
     const created = readFileSync(process.env.FAKE_ACP_LOG, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((entry) => entry.method === "session/new");
-    expect(created[0].params.mcpServers[0].url).toMatch(new RegExp(`^http://127\\.0\\.0\\.1:${status.server.port}/mcp/`));
+    const withTools = created.find((entry) => entry.params.mcpServers.length > 0); // the first session may be the one that discovers the models
+    expect(withTools.params.mcpServers[0].url).toMatch(new RegExp(`^http://127\\.0\\.0\\.1:${status.server.port}/mcp/`));
   });
 });
 
 describe("request parsing", () => {
-  const base = { model: "gpt-5.6-sol" };
+  const base = { model: "gpt-6-luna" };
   const user = { role: "user", content: "hi" };
 
   it("accepts chat tools, tool_choice, parallel_tool_calls, assistant tool calls with null content and tool messages", async () => {

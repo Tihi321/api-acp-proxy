@@ -20,16 +20,16 @@ describe("ACP bridge", () => {
   it("cancels an abandoned request", async () => {
     const bridge = new AcpBridge({ ...base, acpArgs: [fixture], timeoutMs: 5000 }); bridges.push(bridge); const abort = new AbortController();
     process.env.FAKE_ACP_DELAY = "1";
-    const promise = bridge.generate("gpt-5.6-sol", [textMessage("user", "hello")], {}, abort.signal); setTimeout(() => abort.abort(), 150);
+    const promise = bridge.generate("gpt-6-luna", [textMessage("user", "hello")], {}, abort.signal); setTimeout(() => abort.abort(), 150);
     const result = await promise; expect(result.stopReason).toBe("cancelled"); delete process.env.FAKE_ACP_DELAY;
   });
   it("rejects ACP permission requests", async () => {
     const bridge = new AcpBridge(base); bridges.push(bridge); process.env.FAKE_ACP_REQUIRE_PERMISSION = "1";
-    const result = await bridge.generate("gpt-5.6-sol", [textMessage("user", "hello")]);
+    const result = await bridge.generate("gpt-6-luna", [textMessage("user", "hello")]);
     expect(result.text).toBe("fake response"); delete process.env.FAKE_ACP_REQUIRE_PERMISSION;
   });
   it("recovers child spawn failures as availability errors", async () => {
     const bridge = new AcpBridge({ ...base, acpCommand: path.join(path.dirname(node), "does-not-exist"), acpArgs: [] }); bridges.push(bridge);
-    await expect(bridge.generate("gpt-5.6-sol", [textMessage("user", "hello")])).rejects.toBeInstanceOf(AcpUnavailableError);
+    await expect(bridge.generate("gpt-6-luna", [textMessage("user", "hello")])).rejects.toBeInstanceOf(AcpUnavailableError);
   });
 });

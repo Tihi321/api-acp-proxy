@@ -109,7 +109,7 @@ async function remoteMcp(): Promise<RemoteMcp> {
 }
 
 const AGY_MODEL = "antigravity/gemini-3.8-flash-low";
-const CODEX_MODEL = "codex/gpt-5.6-sol";
+const CODEX_MODEL = "codex/gpt-6-luna";
 const CLAUDE_MODEL = "claude/haiku";
 const never = "never";
 const mcpTool = (extra: Record<string, unknown> = {}) => ({ type: "mcp", server_label: "docs", require_approval: never, ...extra });

@@ -74,7 +74,7 @@ const promptText = (d: Dirs): string => readLog(d).find((entry) => entry.method 
 const permissionAnswers = (d: Dirs) => readLog(d).filter((entry) => entry.method === "permission_response").map((entry) => entry.params.outcome);
 const filesUnder = (dir: string): string[] => existsSync(dir) ? readdirSync(dir, { withFileTypes: true }).flatMap((entry) => entry.isDirectory() ? filesUnder(path.join(dir, entry.name)) : [path.join(dir, entry.name)]) : [];
 const AGY_MODEL = "antigravity/gemini-3.8-flash-low";
-const CODEX_MODEL = "codex/gpt-5.6-sol";
+const CODEX_MODEL = "codex/gpt-6-luna";
 const imageRequest = (model: string, extra: Record<string, unknown> = {}) => ({ model, prompt: "a cartoon dolphin jumping out of the sea", ...extra });
 const chat = (model: string, extra: Record<string, unknown> = {}) => ({ model, messages: [{ role: "user", content: "draw a dolphin" }], ...extra });
 const resp = (model: string, extra: Record<string, unknown> = {}) => ({ model, input: "draw a dolphin", ...extra });
@@ -198,6 +198,7 @@ describe("POST /v1/images/generations", () => {
     const notCapable = await send(base, "/v1/images/generations", imageRequest("claude/haiku"));
     expect(notCapable.status).toBe(400);
     expect(notCapable.body.error).toMatchObject({ code: "model_not_capable", param: "model" });
+    await fetch(`${base}/v1/models`, { headers: { authorization: "Bearer secret" } }); // Codex models come from the agent: a model is only unknown once they are discovered.
     expect((await send(base, "/v1/images/generations", imageRequest("codex/nope"))).status).toBe(404);
   });
 
@@ -442,10 +443,10 @@ describe("Chat modalities", () => {
 describe("request parsing", () => {
   it("normalizes the three request kinds", async () => {
     expect(normalizeImageGeneration({ model: "m", prompt: "p", size: "1792x1024" }, () => true).conversation[0]!.parts[0]).toEqual({ type: "text", text: "Generate an image: p\nAspect ratio: 7:4 (requested size 1792x1024)." });
-    expect((await normalizeChat({ model: "gpt-5.6-sol", messages: [{ role: "user", content: "x" }], modalities: ["image"] })).generateImages).toBe(true);
-    expect((await normalizeChat({ model: "gpt-5.6-sol", messages: [{ role: "user", content: "x" }] })).generateImages).toBe(false);
-    expect((await normalizeResponses({ model: "gpt-5.6-sol", input: "x", tools: [{ type: "image_generation", partial_images: 0 }] })).generateImages).toBe(true);
-    await expect(normalizeResponses({ model: "gpt-5.6-sol", input: "x", tools: [{ type: "image_generation" }], parallel_tool_calls: true })).rejects.toMatchObject({ param: "parallel_tool_calls" });
+    expect((await normalizeChat({ model: "gpt-6-luna", messages: [{ role: "user", content: "x" }], modalities: ["image"] })).generateImages).toBe(true);
+    expect((await normalizeChat({ model: "gpt-6-luna", messages: [{ role: "user", content: "x" }] })).generateImages).toBe(false);
+    expect((await normalizeResponses({ model: "gpt-6-luna", input: "x", tools: [{ type: "image_generation", partial_images: 0 }] })).generateImages).toBe(true);
+    await expect(normalizeResponses({ model: "gpt-6-luna", input: "x", tools: [{ type: "image_generation" }], parallel_tool_calls: true })).rejects.toMatchObject({ param: "parallel_tool_calls" });
   });
 
   it("keeps the plain prompt byte for byte and swaps only the preamble for an image request", () => {
