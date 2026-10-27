@@ -15,5 +15,5 @@
     "noImplicitOverride": true
   },
   "include": ["src"],
-  "exclude": ["src/renderer"]
+  "exclude": ["src/renderer", "src/playground"]
 }

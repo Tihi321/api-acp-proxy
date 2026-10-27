@@ -114,6 +114,8 @@ export interface ProxyApi {
   onInstallProgress(callback: (progress: InstallProgressView) => void): () => void;
   acknowledgeTerms(providerId: "antigravity" | "claude"): Promise<ActionResult>;
   openLogs(): Promise<void>;
+  /** Opens the playground page (`<server>/playground`) in the default browser. */
+  openPlayground(): Promise<ActionResult>;
   copyText(text: string): Promise<void>;
   openExternal(url: string): Promise<ActionResult>;
   onState(callback: (state: StateView) => void): () => void;

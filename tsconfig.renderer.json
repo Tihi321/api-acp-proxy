@@ -14,5 +14,5 @@
     "noImplicitOverride": true,
     "sourceMap": false
   },
-  "include": ["src/renderer", "src/shared"]
+  "include": ["src/renderer", "src/shared", "src/playground"]
 }

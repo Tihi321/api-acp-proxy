@@ -202,6 +202,7 @@ function renderOverview(current: StateView): void {
   const server = current.status.server;
   el("ov-url").textContent = server.baseUrl ?? (server.state === "error" ? "Not listening" : "Not running");
   el("ov-copy").hidden = !server.baseUrl;
+  el("ov-playground").hidden = !server.baseUrl;
   const rows = providerOrder.map((id) => {
     const status = current.status.providers.find((entry) => entry.id === id);
     const usable = providerUsable(status, current);
@@ -487,6 +488,7 @@ function wire(): void {
     el("claude-token-show").textContent = input.type === "password" ? "Show" : "Hide";
   };
   el("open-logs").onclick = () => void api.openLogs();
+  el("ov-playground").onclick = () => void api.openPlayground().then((result) => { if (result.ok) return; const button = el("ov-playground"); button.textContent = "Could not open"; button.title = result.message; setTimeout(() => { button.textContent = "Open playground"; }, 2000); });
   el("ov-copy").onclick = () => { const url = state?.status.server.baseUrl; if (url) void api.copyText(url).then(() => { el("ov-copy").textContent = "Copied"; setTimeout(() => { el("ov-copy").textContent = "Copy"; }, 1200); }); };
   el("open-settings-file").onclick = async () => { const result = await api.openPath("settingsFile"); if (!result.ok) flash(el("ov-msg"), result.message, true); };
   el("open-codex-home").onclick = async () => { const result = await api.openPath("codexHome"); if (!result.ok) flash(role(card("codex"), "msg"), result.message, true); };

@@ -146,11 +146,19 @@ async function main(): Promise<void> {
     activityTimer = setTimeout(() => { activityTimer = undefined; if (win.webContents) win.send("proxy:activity", activityViews()); tray?.setActivity(proxy.activity.summary()); }, 150);
   };
 
+  /** `<server>/playground` in the default browser. The address comes from the server status, never from the window. */
+  const openPlayground = async (): Promise<void> => {
+    const baseUrl = proxy.status().server.baseUrl;
+    if (!baseUrl) throw new Error("The server is not running.");
+    await shell.openExternal(baseUrl.replace(/\/v1$/, "/playground"));
+  };
+
   tray = new TrayController({
     assetsDir: path.join(appRoot, "assets"),
     login: (providerId) => void proxy.login(providerId).catch((error) => logger.warn(`Login from the tray failed: ${error instanceof Error ? error.message : String(error)}`)),
     openSettings: () => win.show(),
     openLogs: () => void shell.openPath(logsDir),
+    openPlayground: () => void openPlayground().catch((error) => logger.warn(`Could not open the playground: ${error instanceof Error ? error.message : String(error)}`)),
     quit: () => app.quit(),
     start: () => void proxy.start(),
     stop: () => void proxy.stop(),
@@ -229,6 +237,7 @@ async function main(): Promise<void> {
     return action(() => proxy.applySettings({ providers: { [providerId]: { termsAcknowledgedAt: new Date().toISOString() } } }));
   });
   handle("proxy:openLogs", async () => { await shell.openPath(logsDir); });
+  handle("proxy:openPlayground", (): Promise<ActionResult> => action(() => openPlayground()));
   handle("proxy:copyText", (text: unknown) => { if (typeof text === "string" && text.length <= 10_000) clipboard.writeText(text); });
   handle("proxy:openExternal", async (url: unknown): Promise<ActionResult> => {
     if (typeof url !== "string") return { ok: false, message: "Invalid URL" };

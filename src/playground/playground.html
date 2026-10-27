@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ACP Proxy Playground</title>
+  <link rel="stylesheet" href="/playground/playground.css">
+  <script type="module" src="/playground/playground.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><strong>ACP Proxy</strong> <span class="muted">playground</span></div>
+    <label class="model"><span>Model</span>
+      <select id="model"><option value="">Loading models…</option></select>
+    </label>
+    <button id="refresh" type="button" title="Reload the model list">Refresh</button>
+    <label class="key"><span>API key</span>
+      <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Only if the proxy has one" title="Kept in this tab only (sessionStorage)">
+    </label>
+  </header>
+  <div class="layout">
+    <aside class="side">
+      <button id="new-chat" class="primary" type="button">New chat</button>
+      <h2>History</h2>
+      <ul id="history" class="history"></ul>
+      <p class="muted small">Chats are kept in this browser only.</p>
+    </aside>
+    <main class="chat">
+      <details id="system-box" class="system">
+        <summary>System prompt</summary>
+        <textarea id="system" rows="3" placeholder="Optional instructions for this chat"></textarea>
+      </details>
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <p id="notice" class="notice" hidden></p>
+      <form id="composer" class="composer">
+        <textarea id="input" rows="3" placeholder="Message (Ctrl+Enter to send)"></textarea>
+        <div class="composer-bar">
+          <label class="check"><input id="stream" type="checkbox" checked> Stream</label>
+          <label class="check" title="Lets the agent search the web (web_search_options)"><input id="search" type="checkbox"> Web search</label>
+          <label class="check" title="Asks the agent to generate images (modalities: text, image)"><input id="images" type="checkbox"> Generate images</label>
+          <span class="spacer"></span>
+          <button id="stop" type="button" hidden>Stop</button>
+          <button id="send" class="primary" type="submit">Send</button>
+        </div>
+      </form>
+    </main>
+  </div>
+</body>
+</html>

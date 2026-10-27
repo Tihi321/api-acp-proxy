@@ -10,6 +10,7 @@ import { beginSse, endSse, writeSse } from "./sse.js";
 import { extractCitations } from "./citations.js";
 import { resolveMcpServers } from "./mcp-servers.js";
 import { ToolBridgeHub } from "./tool-bridge.js";
+import { servePlayground } from "./playground-files.js";
 import { CHARS_PER_TOKEN, chatUsage, openAiUsage, responsesUsage } from "./usage.js";
 import type { ActivityEntry, ActivityFeature, ActivityLog } from "./activity.js";
 
@@ -365,6 +366,8 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
       if (method === "GET" && url.pathname === "/healthz") { json(response, 200, { status: "ok", uptime_seconds: Math.floor((Date.now() - startedAt) / 1000) }); return; }
       // The agents reach the tool bridge here; its token is the credential, so it is routed before the API key check.
       if (await toolBridge.handle(request, response, url.pathname)) return;
+      // The playground page holds no data (its API calls carry the key), so it is served before the key check and is not logged as activity.
+      if (await servePlayground(method, url.pathname, response)) return;
       const route = `${method} ${url.pathname}`;
       if (options.activity) track(options.activity, bridge, response, ENDPOINTS.has(route) ? route : "other", trace);
       if (!authenticated(request, config)) { trace.error = "invalid_api_key"; json(response, 401, { error: { message: "Invalid or missing bearer token.", type: "invalid_request_error", code: "invalid_api_key", param: null } }); return; }

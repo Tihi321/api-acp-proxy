@@ -26,6 +26,7 @@ const api: ProxyApi = {
   onInstallProgress: (callback) => subscribe<InstallProgressView>("proxy:installProgress", callback),
   acknowledgeTerms: (providerId) => invoke("proxy:acknowledgeTerms", providerId),
   openLogs: () => invoke("proxy:openLogs"),
+  openPlayground: () => invoke("proxy:openPlayground"),
   copyText: (text) => invoke("proxy:copyText", text),
   openExternal: (url) => invoke("proxy:openExternal", url),
   onState: (callback) => subscribe<StateView>("proxy:state", callback),
