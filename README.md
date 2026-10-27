@@ -215,6 +215,22 @@ Both endpoints always report usage (`prompt_tokens` / `completion_tokens` / `tot
 
 Files, audio, persistent conversations and other behavior-changing options are intentionally rejected. Each request gets a fresh ACP session in an isolated temporary directory (Codex: read-only mode), unless session reuse is on or it resumes a suspended tool turn. Permission requests are denied (except the image permission of an image request, the `client` tools of a request with tools, the MCP servers a request names and the search tool of a search request, above) and no client filesystem or terminal capabilities are advertised.
 
+## Playground
+
+Open `http://127.0.0.1:8787/playground` in a browser, or use **Open playground** in the desktop app's Overview or the tray menu. On the page you can:
+
+- **Pick a model:** every model the proxy lists, grouped by provider.
+- **Chat:** multi-turn chats with an optional system prompt, and toggles for streaming, web search and image generation.
+- **See how each answer was made:**
+  - time to first token and total time;
+  - input and output tokens;
+  - finish reason;
+  - citations and any generated images;
+  - the exact JSON request, with a **Copy as curl** button.
+- **Keep a history:** chats are saved in this browser's `localStorage`, never on the proxy. The optional API key field is kept for the tab only.
+
+The page itself needs no API key; its API calls send the key you enter. It talks only to the proxy that served it, under a strict Content-Security-Policy. Answers are shown as plain text, never as HTML.
+
 ## curl
 
 ```sh

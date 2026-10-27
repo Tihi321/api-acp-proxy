@@ -7,6 +7,8 @@ export interface TrayActions {
   assetsDir: string;
   openSettings(): void;
   openLogs(): void;
+  /** Opens the playground page in the browser. */
+  openPlayground(): void;
   quit(): void;
   start(): void;
   stop(): void;
@@ -120,6 +122,7 @@ export class TrayController {
       ...(server.state === "error" ? [{ label: "Retry", click: () => this.actions.start() } satisfies Electron.MenuItemConstructorOptions] : []),
       { label: "Open settings…", click: () => this.actions.openSettings() },
       { type: "separator" },
+      { label: "Open playground", enabled: server.state === "running", click: () => this.actions.openPlayground() },
       { label: "Copy base URL", enabled: server.state === "running", click: () => clipboard.writeText(baseUrl) },
       { label: "Refresh models", enabled: server.state === "running", click: () => this.actions.refreshModels() },
       { label: "Open logs folder", click: () => this.actions.openLogs() },

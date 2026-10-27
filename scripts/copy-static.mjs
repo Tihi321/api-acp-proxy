@@ -1,4 +1,4 @@
-// Copies non-TypeScript runtime files into dist: renderer html/css, the CommonJS hide-windows hook and the icons.
+// Copies non-TypeScript runtime files into dist: renderer and playground html/css, the CommonJS hide-windows hook and the icons.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,8 +6,10 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const copies = [];
 
-for (const file of fs.readdirSync(path.join(root, "src", "renderer"))) {
-  if (/\.(html|css)$/.test(file)) copies.push([path.join("src", "renderer", file), path.join("dist", "renderer", file)]);
+for (const dir of ["renderer", "playground"]) {
+  for (const file of fs.readdirSync(path.join(root, "src", dir))) {
+    if (/\.(html|css)$/.test(file)) copies.push([path.join("src", dir, file), path.join("dist", dir, file)]);
+  }
 }
 copies.push([path.join("src", "electron", "hide-windows.cjs"), path.join("dist", "electron", "hide-windows.cjs")]);
 
