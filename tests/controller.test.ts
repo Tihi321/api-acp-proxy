@@ -47,6 +47,7 @@ async function block(port: number): Promise<void> {
 const get = async (url: string) => (await fetch(url)).json() as Promise<{ data?: Array<{ id: string }>; status?: string }>;
 
 describe("ProxyController", () => {
+  // Codex runs in its own home, which has no login in these tests: it is needs_login before any request (nothing was started).
   it("starts, serves requests and stops", async () => {
     const controller = make();
     const events: string[] = [];
@@ -54,7 +55,7 @@ describe("ProxyController", () => {
     const status = await controller.start();
     expect(status.server.state).toBe("running");
     expect(status.server.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
-    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", "stopped"], ["antigravity", "disabled"], ["claude", "disabled"]]);
+    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", "needs_login"], ["antigravity", "disabled"], ["claude", "disabled"]]);
     expect(((await get(`${status.server.baseUrl}/models`)).data ?? []).map((model) => model.id)).toContain("gpt-5.6-sol");
     const chat = await fetch(`${status.server.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-5.6-sol", messages: [{ role: "user", content: "hi" }] }) });
     expect(((await chat.json()) as { choices: Array<{ message: { content: string } }> }).choices[0]?.message.content).toBe("fake response");
@@ -131,7 +132,7 @@ describe("ProxyController", () => {
     const controller = make({}, { registry: [codexRegistration, extra] });
     let status = await controller.start();
     expect(created).toEqual([]);
-    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", "stopped"], ["antigravity", "disabled"]]);
+    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", "needs_login"], ["antigravity", "disabled"]]);
     status = await controller.applySettings({ providers: { antigravity: { enabled: true } } });
     expect(created).toEqual(["true"]);
     status = await controller.refreshModels();
@@ -158,5 +159,89 @@ describe("ProxyController", () => {
     await controller.stop();
     expect(Date.now() - started).toBeLessThan(3000);
     await pending;
+  });
+});
+
+describe("ProxyController status, log out and activity", () => {
+  const chatBody = { model: "gpt-5.6-sol", messages: [{ role: "user", content: "SECRET-PROMPT" }] };
+  const post = (baseUrl: string, body: unknown = chatBody) => fetch(`${baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const logged = (file: string): string[] => { try { return readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { method: string }).method); } catch { return []; } };
+
+  it("shows needs_login for the own Codex home without a request, and stopped once auth.json exists", async () => {
+    const logFile = path.join(root, "status-fake.log");
+    rmSync(logFile, { force: true });
+    process.env.FAKE_ACP_LOG = logFile;
+    const controller = make();
+    const status = await controller.start();
+    expect(status.providers[0]).toMatchObject({ id: "codex", state: "needs_login", features: { imageGeneration: true, webSearch: true }, loginHome: { shared: false } });
+    expect(status.providers[0]?.loginHome?.path).toMatch(/codex-home$/);
+    expect(logged(logFile)).toEqual([]); // no agent process was started for this
+    const dir = path.dirname(controller.settingsPath);
+    mkdirSync(path.join(dir, "codex-home"), { recursive: true });
+    writeFileSync(path.join(dir, "codex-home", "auth.json"), "{}");
+    expect(controller.status().providers[0]?.state).toBe("stopped");
+  });
+
+  it("logs out through the provider: ACP logout, state needs_login, the call reaches the agent", async () => {
+    const logFile = path.join(root, "logout-fake.log");
+    rmSync(logFile, { force: true });
+    Object.assign(process.env, { FAKE_ACP_LOG: logFile, FAKE_ACP_LOGOUT: "1", FAKE_ACP_AUTH_METHODS: JSON.stringify([{ id: "chat-gpt", name: "ChatGPT" }]) });
+    const controller = make();
+    const states: string[] = [];
+    controller.on("status", (status) => states.push(status.providers[0]?.state ?? ""));
+    const started = await controller.start();
+    await controller.login("codex");
+    expect(controller.status().providers[0]?.state).toBe("ready");
+    expect((await post(started.server.baseUrl!)).status).toBe(200);
+    const after = await controller.logout("codex");
+    expect(after.providers[0]).toMatchObject({ state: "needs_login" });
+    expect(logged(logFile)).toContain("logout");
+    expect(states.at(-1)).toBe("needs_login");
+    // A request now fails with the login error (and the activity log says so).
+    const refused = await post(started.server.baseUrl!);
+    expect(refused.status).toBe(503);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("provider_auth_required");
+    await expect(controller.logout("nope")).rejects.toThrow(/not running/);
+    await expect(controller.logout("antigravity")).rejects.toThrow(/not running/);
+  });
+
+  it("refuses a log out for a provider that has none", async () => {
+    const bare: ProviderRegistration = { id: "codex", displayName: "Bare", create: () => ({
+      id: "codex", displayName: "Bare", ownedBy: "x", exposeUnprefixed: true, staticModels: [{ id: "m" }], generate: async () => ({ text: "", stopReason: "end_turn", usage: null }),
+      listModels: async () => [{ id: "m" }], status: () => ({ id: "codex", name: "Bare", state: "ready", authMethods: [], models: [] }), login: async () => undefined, onStatus: () => () => undefined, close: async () => undefined,
+    }) };
+    const controller = make({}, { registry: [bare] });
+    await controller.start();
+    await expect(controller.logout("codex")).rejects.toThrow(/cannot be logged out/);
+  });
+
+  it("keeps the activity of the requests, across a restart, with no text, and emits events", async () => {
+    const controller = make();
+    const events: string[] = [];
+    controller.on("activity", () => events.push("activity"));
+    const started = await controller.start();
+    await get(`${started.server.baseUrl}/models`);
+    expect((await post(started.server.baseUrl!)).status).toBe(200);
+    for (let n = 0; n < 100 && controller.activity.list().length < 2; n++) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(controller.activity.list().map((entry) => [entry.endpoint, entry.status])).toEqual([["POST /v1/chat/completions", 200], ["GET /v1/models", 200]]);
+    expect(controller.activity.list()[0]).toMatchObject({ model: "gpt-5.6-sol", provider: "codex", stream: false, outputTokens: expect.any(Number) });
+    expect(JSON.stringify(controller.activity.list())).not.toContain("SECRET-PROMPT");
+    expect(events.length).toBeGreaterThanOrEqual(2);
+    await controller.applySettings({ server: { timeoutMs: 4321 } });
+    expect(controller.activity.list()).toHaveLength(2);
+    controller.activity.clear();
+    expect(controller.activity.list()).toEqual([]);
+  });
+
+  it("announces a provider that needs login when a request hits it", async () => {
+    process.env.FAKE_ACP_AUTH_METHODS = JSON.stringify([{ id: "chat-gpt", name: "ChatGPT" }, { id: "api-key", name: "API key" }]);
+    const controller = make();
+    const needed: Array<[string, string]> = [];
+    controller.on("loginNeeded", (id: string, name: string) => needed.push([id, name]));
+    const started = await controller.start();
+    expect((await post(started.server.baseUrl!)).status).toBe(503);
+    for (let n = 0; n < 100 && !needed.length; n++) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(needed).toEqual([["codex", "Codex"]]);
+    expect(controller.activity.list()[0]).toMatchObject({ status: 503, error: "provider_auth_required", provider: "codex" });
   });
 });

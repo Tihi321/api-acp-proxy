@@ -29,4 +29,6 @@ export interface AcpLike {
   canCallTools?(model: string): boolean;
   /** Whether the model's provider can be given remote MCP servers (a bridge without this method is asked and answers 400 itself). */
   canUseMcp?(model: string): boolean;
+  /** The id of the provider the model routes to (for the activity log). */
+  providerOf?(model: string): string | undefined;
 }

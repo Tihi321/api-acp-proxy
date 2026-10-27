@@ -36,7 +36,11 @@ export interface ModelInfo { id: string; name?: string; }
 /** "terminal" methods cannot be passed to authenticate. */
 export interface AuthMethodInfo { id: string; name: string; description?: string; type?: string; }
 export type ProviderState = "disabled" | "stopped" | "starting" | "ready" | "needs_login" | "not_installed" | "terms_required" | "error";
-export interface ProviderStatus { id: string; name: string; state: ProviderState; error?: string; authMethods: AuthMethodInfo[]; models: ModelInfo[]; /** Browser URL printed by the agent for an interactive login (present while a login may be pending). */ loginUrl?: string; /** Version reported by the agent in initialize.agentInfo. */ agentVersion?: string; /** Signed-in account label pushed by the agent (e.g. via _auth/status_update). */ account?: string; /** What the agent said it accepts in `initialize` (present once it has started). */ capabilities?: { image: boolean }; }
+/** What the proxy can do through the provider (static: the provider's descriptor decides, not the agent's `initialize`). */
+export interface ProviderFeatures { imageGeneration: boolean; tools: boolean; mcp: boolean; webSearch: boolean; }
+/** Where the agent keeps its login. `shared` is true when that is the user's own folder of the tool (~/.codex, ~/.claude, ~/.gemini): logging out there signs the user out of the tool on this machine. */
+export interface LoginHome { path: string; shared: boolean; }
+export interface ProviderStatus { id: string; name: string; state: ProviderState; error?: string; authMethods: AuthMethodInfo[]; models: ModelInfo[]; /** Browser URL printed by the agent for an interactive login (present while a login may be pending). */ loginUrl?: string; /** Version reported by the agent in initialize.agentInfo. */ agentVersion?: string; /** Signed-in account label pushed by the agent (e.g. via _auth/status_update). */ account?: string; /** What the agent said it accepts in `initialize` (present once it has started). */ capabilities?: { image: boolean }; /** What the proxy can do through this provider. */ features?: ProviderFeatures; /** Where the login lives (see `LoginHome`); undefined when the provider does not say. */ loginHome?: LoginHome; }
 
 /** How to run an agent process. Under Electron this is process.execPath + ELECTRON_RUN_AS_NODE=1. */
 export interface NodeRuntime { command: string; argsPrefix: string[]; env: Record<string, string>; }
@@ -85,6 +89,14 @@ export interface ProviderDescriptor {
   loginRequired?(methods: AuthMethodInfo[], env: NodeJS.ProcessEnv): string | undefined;
   /** Method login() uses when none was given and chooseAuth returned nothing (default: the first advertised method). */
   defaultLoginMethod?: string;
+  /** A message when the provider certainly has no login, decided without starting the agent (only file existence checks, nothing is read): status() then reports needs_login instead of stopped. */
+  needsLogin?(ctx: RuntimeContext, env: NodeJS.ProcessEnv): string | undefined;
+  /** Where the agent keeps its login, for the settings window and the log-out confirmation. */
+  loginHome?(ctx: RuntimeContext, env: NodeJS.ProcessEnv): LoginHome | undefined;
+  /** Logs out by hand when the agent does not advertise ACP `logout`; the agent is stopped before and restarted after. Absent: such an agent cannot be logged out from here. */
+  logoutFallback?(ctx: RuntimeContext, env: NodeJS.ProcessEnv): Promise<void>;
+  /** Runs after every logout (ACP or fallback), e.g. to make sure no credential file is left behind. */
+  afterLogout?(ctx: RuntimeContext, env: NodeJS.ProcessEnv): Promise<void> | void;
   /** Mode ids that count as the safe/read-only mode, in order of preference. Default ["read-only", "readonly"]. */
   modeCandidates?: readonly string[];
   /** stderr lines of the agent are logged at this level (default info). */
@@ -172,6 +184,8 @@ export interface Provider {
   listModels(options?: { force?: boolean }): Promise<ModelInfo[]>;
   status(): ProviderStatus;
   login(methodId?: string): Promise<void>;
+  /** Signs the agent out (ACP `logout` when it advertises it, the descriptor's fallback otherwise), drops kept and warm sessions, and leaves the provider in `needs_login`. Absent: the provider cannot log out. */
+  logout?(): Promise<void>;
   onStatus(listener: (status: ProviderStatus) => void): () => void;
   close(): Promise<void>;
 }

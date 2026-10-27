@@ -186,6 +186,10 @@ export class AcpProvider implements Provider {
   /** `agentCapabilities.mcpCapabilities` of the running agent: which remote MCP transports it accepts in `session/new`. */
   private mcpCaps?: { http: boolean; sse: boolean };
   private account?: string;
+  /** `agentCapabilities.auth.logout` of the running agent: it implements ACP `logout`. */
+  private logoutAdvertised = false;
+  /** Counts the agent's `_auth/status_update` pushes (logout() checks whether the agent reported the new state itself). */
+  private authStatusSeq = 0;
   /** The agent reported (via _auth/status_update) that nobody is signed in. */
   private loggedOut = false;
   private loginUrl?: string;
@@ -226,7 +230,12 @@ export class AcpProvider implements Provider {
   }
 
   status(): ProviderStatus {
-    return { id: this.id, name: this.displayName, state: this.state, ...(this.error ? { error: this.error } : {}), authMethods: this.authMethods, models: this.staticModels ?? this.discovered ?? [], ...(this.loginUrl ? { loginUrl: this.loginUrl } : {}), ...(this.agentVersion ? { agentVersion: this.agentVersion } : {}), ...(this.account ? { account: this.account } : {}), ...(this.imageInput !== undefined ? { capabilities: { image: this.imageInput } } : {}) };
+    // Not started yet: a provider that certainly has no login (a fresh isolated Codex home) says so without a request.
+    const unstarted = this.state === "stopped" ? this.descriptor.needsLogin?.(this.ctx, process.env) : undefined;
+    const state = unstarted ? "needs_login" : this.state;
+    const error = unstarted ?? this.error;
+    const loginHome = this.descriptor.loginHome?.(this.ctx, process.env);
+    return { id: this.id, name: this.displayName, state, ...(error ? { error } : {}), features: { imageGeneration: this.imageGeneration, tools: this.toolCalling, mcp: this.mcpSupport, webSearch: this.webSearchSupport }, ...(loginHome ? { loginHome } : {}), authMethods: this.authMethods, models: this.staticModels ?? this.discovered ?? [], ...(this.loginUrl ? { loginUrl: this.loginUrl } : {}), ...(this.agentVersion ? { agentVersion: this.agentVersion } : {}), ...(this.account ? { account: this.account } : {}), ...(this.imageInput !== undefined ? { capabilities: { image: this.imageInput } } : {}) };
   }
 
   onStatus(listener: (status: ProviderStatus) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
@@ -349,7 +358,7 @@ export class AcpProvider implements Provider {
     const spec = await descriptor.launch(this.ctx);
     const child = spawn(spec.command, spec.args, { stdio: ["pipe", "pipe", "pipe"], env: spec.env ?? process.env, cwd: spec.cwd, windowsHide: true, detached: process.platform !== "win32" });
     this.child = child;
-    this.loginUrl = undefined; this.openedUrl = undefined; this.agentVersion = undefined; this.authInflight = undefined; this.authBlock = undefined; this.stderrBuffer = ""; this.account = undefined; this.loggedOut = false; this.imageInput = undefined; this.mcpCaps = undefined;
+    this.loginUrl = undefined; this.openedUrl = undefined; this.agentVersion = undefined; this.authInflight = undefined; this.authBlock = undefined; this.stderrBuffer = ""; this.account = undefined; this.loggedOut = false; this.imageInput = undefined; this.mcpCaps = undefined; this.logoutAdvertised = false;
     const childFailure = new Promise<never>((_, reject) => child.once("error", reject));
     childFailure.catch(() => undefined);
     child.stderr.on("data", (chunk) => this.onStderr(chunk));
@@ -379,6 +388,7 @@ export class AcpProvider implements Provider {
       this.authMethods = (initialized.authMethods ?? []).map((method) => ({ id: method.id, name: method.name, ...(method.description ? { description: method.description } : {}), ...("type" in method && method.type ? { type: String(method.type) } : {}) }));
       if (!this.authMethods.length && descriptor.loginMethods) this.authMethods = descriptor.loginMethods;
       this.imageInput = initialized.agentCapabilities?.promptCapabilities?.image === true;
+      this.logoutAdvertised = initialized.agentCapabilities?.auth?.logout != null;
       const mcpCaps = initialized.agentCapabilities?.mcpCapabilities;
       this.mcpCaps = { http: mcpCaps?.http === true, sse: mcpCaps?.sse === true };
       const version = initialized.agentInfo?.version;
@@ -422,6 +432,7 @@ export class AcpProvider implements Provider {
   /** Handles the agent's _auth/status_update push: kind "none" means logged out, anything else carries the account label. */
   private onAuthStatus(status: { kind?: string; label?: string } | undefined): void {
     if (!status || typeof status.kind !== "string") return;
+    this.authStatusSeq++;
     if (status.kind === "none") { this.account = undefined; this.loggedOut = true; this.setState("needs_login", "Not logged in."); return; }
     this.loggedOut = false;
     this.account = typeof status.label === "string" && status.label ? status.label : undefined;
@@ -609,6 +620,40 @@ export class AcpProvider implements Provider {
     this.clearLoginUrl();
     this.setState("ready");
     try { this.descriptor.onLoginSuccess?.(chosen); } catch (error) { this.log.warn(`Login hook failed: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  /**
+   * Signs the agent out and leaves the provider in `needs_login` with no kept or warm session. The agent's ACP `logout` is used when it advertises it;
+   * otherwise the descriptor's fallback runs between a stop and a restart. `afterLogout` runs either way.
+   */
+  async logout(): Promise<void> {
+    const descriptor = this.descriptor;
+    const agent = await this.connect();
+    const hand = this.logoutAdvertised ? undefined : descriptor.logoutFallback;
+    if (!this.logoutAdvertised && !hand) throw new AcpUnavailableError(`${this.displayName} cannot be logged out from here.`);
+    this.log.info("Logging out.");
+    if (hand) {
+      await this.stop();
+      try { await hand(this.ctx, process.env); } finally { try { await descriptor.afterLogout?.(this.ctx, process.env); } catch (error) { this.log.warn(`Post-logout step failed: ${error instanceof Error ? error.message : String(error)}`); } }
+      this.account = undefined;
+      // A fresh initialize re-probes the login (a Codex home without a login is needs_login without opening a browser).
+      await this.connect();
+      return;
+    }
+    const seen = this.authStatusSeq;
+    this.dropWarm();
+    await this.dropKept();
+    await this.dropSuspended();
+    await agent.request(methods.agent.logout, {});
+    try { await descriptor.afterLogout?.(this.ctx, process.env); } catch (error) { this.log.warn(`Post-logout step failed: ${error instanceof Error ? error.message : String(error)}`); }
+    this.account = undefined;
+    this.generation++;
+    // An agent that pushes its auth status (Claude) says itself whether a login is left (an API key from the environment survives); for the others the logout is final.
+    // An agent that signs in by itself on a request (eager) is blocked until the user logs in, so a request cannot start a browser login behind the user's back; an on-demand one (Claude) is asked again, so a login made elsewhere is picked up.
+    if (this.authStatusSeq === seen) await new Promise((resolve) => setTimeout(resolve, 50));
+    const silent = this.authStatusSeq === seen;
+    if (silent || (this.loggedOut && descriptor.authMode === "eager")) this.authBlock = new ProviderAuthRequiredError(`${this.displayName} was logged out.`);
+    if (silent) this.setState("needs_login", "Logged out."); else this.emitStatus();
   }
 
   /** An auth_required error from the agent means the user must log in: surface it as ProviderAuthRequiredError. */

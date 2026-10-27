@@ -66,7 +66,7 @@ Chat `web_search_options` and the Responses `web_search` tool now turn on the ag
 - Optional: a graceful stop for the headless CLI on Windows, since `kill` skips the shutdown hook and orphans Antigravity's child processes. This came up in every live check.
 - Still pending: the Codex check in its own home, after the user's first Codex login (AAP-12).
 
-**Status:** committed on `AAP-17_web-search`, pushed, with a PR against `master`.
+**Status:** committed as `fcd55de` on `AAP-17_web-search`, merged to `master` in PR #13.
 
 ## 2026-10-26: AAP-16 Phase 5 (remote MCP servers)
 

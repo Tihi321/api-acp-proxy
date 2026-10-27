@@ -6,7 +6,7 @@
 //                    [--open-login-url] [--no-session] [--env KEY=VALUE]... [--unset-env NAME]...
 //                    [--cwd <dir>] [--keep-cwd] [--mode <id>] [--model <value>] [--meta <json>]
 //                    [--mcp-url <url>]... [--image <file>] [--image-uri <url>]
-//                    [--allow <regex>] [--dump <file>]
+//                    [--allow <regex>] [--dump <file>] [--logout] [--do-logout]
 //
 // Flags go before the command, or after it behind `--` ; env fallbacks: PROBE_AUTH, PROBE_PROMPT, PROBE_TIMEOUT_MS, PROBE_AUTH_TIMEOUT_MS.
 //
@@ -23,6 +23,9 @@
 //                       carries only the id and kind). Every permission request is logged either way.
 //   --dump <file>       appends every incoming session/update and session/request_permission (plus the answer) as JSON lines.
 //   --unset-env NAME    deletes NAME from the child environment.
+//   --logout            prints whether the agent advertises ACP `logout` (agentCapabilities.auth.logout); sends nothing.
+//   --do-logout         ALSO sends the ACP `logout` request after initialize. This signs the agent out of whatever login it uses: only run it with an empty
+//                       CODEX_HOME / CLAUDE_CONFIG_DIR / GEMINI_HOME (--env), never against your own login.
 //
 // Example: npm run probe -- .claude/temp/agy-acp/agy_acp_server.exe --auth oauth-personal --prompt "Reply with exactly: pong"
 import { spawn, spawnSync } from "node:child_process";
@@ -58,10 +61,12 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--image-mime") opts.imageMime = argv[++i];
   else if (a === "--allow") opts.allow = new RegExp(argv[++i], "i");
   else if (a === "--dump") opts.dump = argv[++i];
+  else if (a === "--logout") opts.logout = true;
+  else if (a === "--do-logout") { opts.logout = true; opts.doLogout = true; }
   else positional.push(a);
 }
 const [cmd, ...args] = positional;
-if (!cmd) { console.error("Usage: npm run probe -- <command> [args...] [--auth <id>] [--prompt <text>] [--timeout <ms>] [--auth-timeout <ms>] [--open-login-url] [--no-session] [--env K=V] [--unset-env NAME] [--cwd <dir>] [--keep-cwd] [--mode <id>] [--model <value>] [--meta <json>] [--mcp-url <url>] [--image <file>] [--image-uri <url>] [--allow <regex>] [--dump <file>]"); process.exit(2); }
+if (!cmd) { console.error("Usage: npm run probe -- <command> [args...] [--auth <id>] [--prompt <text>] [--timeout <ms>] [--auth-timeout <ms>] [--open-login-url] [--no-session] [--env K=V] [--unset-env NAME] [--cwd <dir>] [--keep-cwd] [--mode <id>] [--model <value>] [--meta <json>] [--mcp-url <url>] [--image <file>] [--image-uri <url>] [--allow <regex>] [--dump <file>] [--logout] [--do-logout]"); process.exit(2); }
 
 const t0 = Date.now();
 const since = () => `[${Date.now() - t0}ms]`;
@@ -158,6 +163,11 @@ try {
   const init = await req("initialize", { protocolVersion: 1, clientInfo: { name: "probe", version: "0" }, clientCapabilities: {} }, 60000);
   console.log(`${since()} initialize ->`, JSON.stringify(init, null, 2));
   console.log(`${since()} agentCapabilities ->`, JSON.stringify(init.result?.agentCapabilities ?? null));
+  if (opts.logout) {
+    const auth = init.result?.agentCapabilities?.auth;
+    console.log(`${since()} ACP logout advertised: ${auth?.logout ? "yes" : "no"} (agentCapabilities.auth = ${JSON.stringify(auth ?? null)})`);
+    if (opts.doLogout) console.log(`${since()} logout ->`, JSON.stringify(await req("logout", {}, 60000)));
+  }
   if (opts.auth) {
     const ta = Date.now();
     const auth = await req("authenticate", { methodId: opts.auth }, opts.authTimeout);

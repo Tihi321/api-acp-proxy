@@ -7,7 +7,7 @@ import type { ProxyConfig } from "../config.js";
 import { MODEL_IDS } from "../config.js";
 import { AcpProvider } from "../acp-provider.js";
 import type { ProviderRegistration } from "../controller.js";
-import type { ProviderDescriptor } from "../provider.js";
+import type { ProviderDescriptor, RuntimeContext } from "../provider.js";
 
 export interface CodexOptions { authMethodId?: string; /** Run Codex with its own `<dataDir>/codex-home` instead of the user's ~/.codex (default true). */ isolatedHome?: boolean; }
 
@@ -29,6 +29,10 @@ export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArg
   const hasKey = (env: NodeJS.ProcessEnv) => Boolean(env.CODEX_API_KEY || env.OPENAI_API_KEY);
   /** A fresh isolated home with no API key: `authenticate chat-gpt` would open the browser on its own at every start, so it only runs from the Log in button. The file is only checked for existence, never read. */
   const firstLogin = (env: NodeJS.ProcessEnv) => isolatedHome !== undefined && !hasKey(env) && !existsSync(path.join(isolatedHome, "auth.json"));
+  /** `<dataDir>/codex-home` when the proxy runs Codex in its own home (the setting), whether or not the agent was launched yet. */
+  const ownHome = (ctx: RuntimeContext): string | undefined => options.isolatedHome !== false ? path.join(ctx.dataDir, "codex-home") : undefined;
+  /** The only file the proxy ever deletes for a log-out, and only in its own home: the login Codex keeps there. */
+  const removeAuthFile = async (ctx: RuntimeContext): Promise<void> => { const home = ownHome(ctx); if (home) await fsp.rm(path.join(home, "auth.json"), { force: true }); };
   return {
     id: "codex",
     displayName: "Codex",
@@ -71,6 +75,15 @@ export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArg
     },
     mcpTarget: codexTarget,
     toolCallLimitMs: 300_000,
+    // Status without a request: an own home with no auth.json and no API key is "needs login" (nothing is started, nothing is opened or read).
+    needsLogin: (ctx, env) => {
+      const home = ownHome(ctx);
+      return home !== undefined && (options.authMethodId || "chat-gpt") === "chat-gpt" && !hasKey(env) && !existsSync(path.join(home, "auth.json")) ? "Log in to Codex for the proxy: its own Codex home has no login yet." : undefined;
+    },
+    loginHome: (ctx, env) => { const home = ownHome(ctx); return home !== undefined ? { path: home, shared: false } : { path: env.CODEX_HOME || path.join(os.homedir(), ".codex"), shared: true }; },
+    // Codex advertises ACP `logout` (account/logout); in the own home the login file is removed afterwards in any case, and by hand when the agent does not advertise it. The user's ~/.codex is only ever logged out through the agent (no fallback there).
+    ...(options.isolatedHome !== false ? { logoutFallback: removeAuthFile } : {}),
+    afterLogout: removeAuthFile,
     loginRequired: (methods, env) => (options.authMethodId || "chat-gpt") === "chat-gpt" && methods.some((method) => method.id === "chat-gpt") && firstLogin(env) ? "Log in to Codex for the proxy: its own Codex home has no login yet." : undefined,
     defaultLoginMethod: options.authMethodId || "chat-gpt",
     chooseAuth(methods, env) {

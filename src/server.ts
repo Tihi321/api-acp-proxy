@@ -5,14 +5,43 @@ import type { AcpLike, GenerateOptions, GenerationResult } from "./acp.js";
 import type { GeneratedImage } from "./provider.js";
 import { AcpUnavailableError } from "./acp.js";
 import { MODEL_IDS, type ProxyConfig } from "./config.js";
-import { ApiError, errorEnvelope, extractJson, formatInstructions, imageFormatName, normalizeChat, normalizeImageGeneration, normalizeResponses, serializePrompt, type ModelCheck, type Message, type OutputFormat, type ToolChoice, type ToolDef } from "./api.js";
+import { ApiError, errorEnvelope, extractJson, formatInstructions, hasImages, imageFormatName, normalizeChat, normalizeImageGeneration, normalizeResponses, serializePrompt, type ModelCheck, type Message, type OutputFormat, type ToolChoice, type ToolDef } from "./api.js";
 import { beginSse, endSse, writeSse } from "./sse.js";
 import { extractCitations } from "./citations.js";
 import { resolveMcpServers } from "./mcp-servers.js";
 import { ToolBridgeHub } from "./tool-bridge.js";
-import { CHARS_PER_TOKEN, chatUsage, responsesUsage } from "./usage.js";
+import { CHARS_PER_TOKEN, chatUsage, openAiUsage, responsesUsage } from "./usage.js";
+import type { ActivityEntry, ActivityFeature, ActivityLog } from "./activity.js";
 
 const startedAt = Date.now();
+
+/** What a request tells the activity log (metadata only: the prompt, the answer and the headers never get here). */
+interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; inputTokens?: number; outputTokens?: number; }
+
+/** The proxy's error code of a failure (what the client sees as `error.code`). */
+function errorCode(error: unknown): string {
+  if (error instanceof ApiError) return error.code;
+  if (error instanceof AcpUnavailableError) return error.code ?? "backend_unavailable";
+  return "internal_error";
+}
+
+/** Notes what a parsed request asks for. */
+function traceRequest(trace: Trace, parsed: { model: string; stream?: unknown; conversation: Message[]; generateImages: boolean; functionTools?: ToolDef[]; webSearch?: unknown }, mcp = false): void {
+  trace.model = parsed.model;
+  trace.stream = parsed.stream === true;
+  if (hasImages(parsed.conversation)) trace.features.add("images");
+  if (parsed.generateImages) trace.features.add("imageGeneration");
+  if (parsed.functionTools) trace.features.add("tools");
+  if (mcp) trace.features.add("mcp");
+  if (parsed.webSearch) trace.features.add("search");
+}
+
+/** Notes the token counts the client is told (the agent's own, or the estimate). */
+function traceUsage(trace: Trace, result: GenerationResult, promptText: string): void {
+  const usage = openAiUsage(result, promptText);
+  trace.inputTokens = usage.prompt;
+  trace.outputTokens = usage.completion;
+}
 
 function json(response: ServerResponse, status: number, payload: unknown): void {
   if (!response.headersSent) response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -110,8 +139,9 @@ async function runGeneration(bridge: AcpLike, model: string, messages: Message[]
 /** The answer text; a result that ends with tool calls is not a JSON answer, so it is left as it is. */
 function finalText(format: OutputFormat, result: GenerationResult): string { return format.type === "json" && !result.toolCalls?.length ? extractJson(result.text) : result.text; }
 
-async function handleChat(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, fetchImpl?: typeof fetch): Promise<void> {
+async function handleChat(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, trace: Trace, fetchImpl?: typeof fetch): Promise<void> {
   const parsed = await normalizeChat(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling, fetch: fetchImpl });
+  traceRequest(trace, parsed);
   if (parsed.generateImages) requireImageGeneration(bridge, parsed.model);
   if (parsed.functionTools) requireToolCalling(bridge, parsed.model);
   if (parsed.webSearch) requireWebSearch(bridge, parsed.model);
@@ -140,6 +170,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
       const delta = (text: string) => chunk([{ index: 0, delta: { content: text }, finish_reason: null }]);
       const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, asJson ? undefined : delta, abortController.signal);
       if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
+      traceUsage(trace, result, promptText);
       if (asJson && (result.text || !result.toolCalls?.length)) delta(finalText(parsed.format, result));
       const images = chatImages(result);
       if (images.length) chunk([{ index: 0, delta: { images }, finish_reason: null }]);
@@ -153,6 +184,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
       if (includeUsage) chunk([], { usage: usageFor(result) });
       endSse(response);
     } catch (error) {
+      trace.error = errorCode(error);
       writeSse(response, errorEnvelope(error instanceof Error ? error : new Error(String(error))));
       endSse(response);
     } finally { clearTimeout(timer); }
@@ -161,6 +193,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   try {
     const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, undefined, abortController.signal);
     if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
+    traceUsage(trace, result, promptText);
     const reason = mapStopReason(result.stopReason).chat;
     const images = chatImages(result);
     const toolCalls = chatToolCalls(result);
@@ -173,8 +206,9 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
 /** The provider names the `messages` parameter; a Responses request calls it `input`. */
 function forResponses(error: unknown): unknown { return error instanceof ApiError && error.param === "messages" ? new ApiError(error.status, error.code, error.message, "input") : error; }
 
-async function handleResponses(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, fetchImpl?: typeof fetch): Promise<void> {
+async function handleResponses(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, trace: Trace, fetchImpl?: typeof fetch): Promise<void> {
   const parsed = await normalizeResponses(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling, fetch: fetchImpl });
+  traceRequest(trace, parsed, parsed.mcpTools !== undefined);
   if (parsed.generateImages) requireImageGeneration(bridge, parsed.model);
   if (parsed.functionTools) requireToolCalling(bridge, parsed.model);
   if (parsed.webSearch) requireWebSearch(bridge, parsed.model);
@@ -229,6 +263,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
       };
       const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, asJson || deferred ? undefined : delta, abortController.signal);
       if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
+      traceUsage(trace, result, promptText);
       const status = mapStopReason(result.stopReason).responseStatus;
       const text = finalText(parsed.format, result);
       const items = [...imageItems(result), ...searchItems(result), ...mcpItems(result)];
@@ -267,20 +302,23 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
       const terminalEvent = status === "completed" ? "response.completed" : "response.incomplete";
       event(terminalEvent, { response: base(result, status, items, calls) });
       endSse(response);
-    } catch (error) { const mapped = forResponses(error); writeSse(response, errorEnvelope(mapped instanceof Error ? mapped : new Error(String(mapped)))); endSse(response); }
+    } catch (error) { trace.error = errorCode(error); const mapped = forResponses(error); writeSse(response, errorEnvelope(mapped instanceof Error ? mapped : new Error(String(mapped)))); endSse(response); }
     finally { clearTimeout(timer); }
     return;
   }
   try {
     const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, undefined, abortController.signal);
     if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
+    traceUsage(trace, result, promptText);
     json(response, 200, base(result, mapStopReason(result.stopReason).responseStatus, [...imageItems(result), ...searchItems(result), ...mcpItems(result)], callItems(result)));
   } catch (error) { throw forResponses(error); }
   finally { clearTimeout(timer); }
 }
 
-async function handleImageGeneration(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike): Promise<void> {
+async function handleImageGeneration(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, trace: Trace): Promise<void> {
   const parsed = normalizeImageGeneration(await readBody(request, config.maxBodyBytes), modelCheck(bridge));
+  trace.model = parsed.model;
+  trace.features.add("imageGeneration");
   requireImageGeneration(bridge, parsed.model);
   const created = Math.floor(Date.now() / 1000);
   const abortController = new AbortController();
@@ -292,29 +330,52 @@ async function handleImageGeneration(request: IncomingMessage, response: ServerR
   try {
     const result = await runGeneration(bridge, parsed.model, parsed.conversation, { images: true }, undefined, undefined, abortController.signal);
     if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
+    traceUsage(trace, result, serializePrompt(parsed.conversation));
     const image = result.images?.[0];
     if (!image) { const said = result.text.trim().slice(0, 500); throw new ApiError(502, "no_image_generated", `The agent did not generate an image.${said ? ` It said: ${said}` : ""}`); }
     json(response, 200, { created, data: [{ b64_json: image.data, ...(image.revisedPrompt ? { revised_prompt: image.revisedPrompt } : {}) }], output_format: imageFormatName(image.mimeType) });
   } finally { clearTimeout(timer); }
 }
 
-/** `options.fetch` downloads http(s) image URLs (default: the global fetch). `options.toolBridge` is the MCP endpoint `/mcp/<token>` for function tools; the server tells it where it listens. */
-export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options: { fetch?: typeof fetch; toolBridge?: ToolBridgeHub } = {}): Server {
+const ENDPOINTS = new Set(["GET /v1/models", "POST /v1/chat/completions", "POST /v1/images/generations", "POST /v1/responses"]);
+
+/** Records the request in the activity log when its response is over (a closed connection counts too). Only the fields of `ActivityEntry`. */
+function track(activity: ActivityLog, bridge: AcpLike, response: ServerResponse, endpoint: string, trace: Trace): void {
+  const time = Date.now();
+  response.once("close", () => {
+    const error = trace.error ?? (response.statusCode >= 400 ? undefined : response.writableFinished ? undefined : "client_closed");
+    const entry: ActivityEntry = {
+      time, endpoint, stream: trace.stream, features: [...trace.features], durationMs: Date.now() - time, status: response.statusCode,
+      ...(trace.model ? { model: trace.model } : {}), ...(error ? { error } : {}),
+      ...(trace.inputTokens !== undefined ? { inputTokens: trace.inputTokens } : {}), ...(trace.outputTokens !== undefined ? { outputTokens: trace.outputTokens } : {}),
+    };
+    const provider = trace.model ? bridge.providerOf?.(trace.model) : undefined;
+    try { activity.record(provider ? { ...entry, provider } : entry); } catch { /* a listener of the log must not break the response */ }
+  });
+}
+
+/** `options.fetch` downloads http(s) image URLs (default: the global fetch). `options.toolBridge` is the MCP endpoint `/mcp/<token>` for function tools; the server tells it where it listens. `options.activity` gets one entry per API request (not for /healthz and not for the tool bridge). */
+export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options: { fetch?: typeof fetch; toolBridge?: ToolBridgeHub; activity?: ActivityLog } = {}): Server {
   const toolBridge = options.toolBridge ?? new ToolBridgeHub();
   const server = createServer(async (request, response) => {
+    const trace: Trace = { stream: false, features: new Set() };
     try {
       const method = request.method || "GET";
       const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
       if (method === "GET" && url.pathname === "/healthz") { json(response, 200, { status: "ok", uptime_seconds: Math.floor((Date.now() - startedAt) / 1000) }); return; }
       // The agents reach the tool bridge here; its token is the credential, so it is routed before the API key check.
       if (await toolBridge.handle(request, response, url.pathname)) return;
-      if (!authenticated(request, config)) { json(response, 401, { error: { message: "Invalid or missing bearer token.", type: "invalid_request_error", code: "invalid_api_key", param: null } }); return; }
+      const route = `${method} ${url.pathname}`;
+      if (options.activity) track(options.activity, bridge, response, ENDPOINTS.has(route) ? route : "other", trace);
+      if (!authenticated(request, config)) { trace.error = "invalid_api_key"; json(response, 401, { error: { message: "Invalid or missing bearer token.", type: "invalid_request_error", code: "invalid_api_key", param: null } }); return; }
       if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : MODEL_IDS.map((model) => ({ id: model, ownedBy: "openai" })); json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai" })) }); return; }
-      if (method === "POST" && url.pathname === "/v1/chat/completions") { await handleChat(request, response, config, bridge, options.fetch); return; }
-      if (method === "POST" && url.pathname === "/v1/images/generations") { await handleImageGeneration(request, response, config, bridge); return; }
-      if (method === "POST" && url.pathname === "/v1/responses") { await handleResponses(request, response, config, bridge, options.fetch); return; }
+      if (method === "POST" && url.pathname === "/v1/chat/completions") { await handleChat(request, response, config, bridge, trace, options.fetch); return; }
+      if (method === "POST" && url.pathname === "/v1/images/generations") { await handleImageGeneration(request, response, config, bridge, trace); return; }
+      if (method === "POST" && url.pathname === "/v1/responses") { await handleResponses(request, response, config, bridge, trace, options.fetch); return; }
+      trace.error = "not_found";
       json(response, 404, { error: { message: "Not found.", type: "invalid_request_error", code: "not_found", param: null } });
     } catch (error) {
+      trace.error = errorCode(error);
       if (response.headersSent) { response.end(); return; }
       if (error instanceof ApiError) { json(response, error.status, errorEnvelope(error)); return; }
       if (error instanceof AcpUnavailableError) { if (error.retryAfterSeconds) response.setHeader("Retry-After", String(error.retryAfterSeconds)); json(response, 503, { error: { message: error.message, type: "server_error", code: error.code ?? "backend_unavailable", param: null } }); return; }

@@ -180,6 +180,8 @@ export function antigravityDescriptor(ctxForHooks: RuntimeContext, options: Anti
       if (settings.apiKey || processEnv.GEMINI_API_KEY) { const key = advertised("gemini-api-key"); if (key) return key; }
       return advertised(lastAuthMethodId) ?? advertised(serverAuthType());
     },
+    // The login lives in GEMINI_HOME (the user's own ~/.gemini unless the setting names another folder); the server advertises ACP `logout`.
+    loginHome: (_ctx, processEnv) => ({ path: resolveGeminiHome(settings, processEnv), shared: !settings.geminiHome }),
     onLoginSuccess(methodId) {
       if (lastAuthMethodId === methodId) return;
       lastAuthMethodId = methodId;

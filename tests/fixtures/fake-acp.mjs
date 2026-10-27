@@ -55,6 +55,8 @@ import path from "node:path";
 //   FAKE_ACP_SEARCH_STRAY=1          before searching, send permission requests that must not be allowed (claude: WebFetch; agy: read_url_content and run_command)
 //   FAKE_ACP_SEARCH_ASK=1            claude asks for permission even though allowedTools has WebSearch
 //                                    With FAKE_ACP_MCP / FAKE_ACP_REMOTE the search runs first and its answer text is the first result of the "got: ..." answer. Logged as {method: "mcp", params: {phase: "search-permission" | "search-stray" | "search-denied", ...}}.
+//   FAKE_ACP_LOGOUT=1                advertise agentCapabilities.auth.logout and handle `logout` (answers {}, forgets the authenticate, and with FAKE_ACP_AUTH_STATUS set pushes an
+//                                    _auth/status_update kind "none" like Claude's adapter does). The request shows up in FAKE_ACP_LOG as {method: "logout"}. Without it the agent advertises nothing.
 //   FAKE_ACP_LOG=<file>              append every request as a JSON line {method, params}; permission answers as {method: "permission_response", params: <the response result>}
 const env = process.env;
 const pending = new Map();
@@ -339,7 +341,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (env.FAKE_ACP_LOG) appendFileSync(env.FAKE_ACP_LOG, JSON.stringify({ method, params }) + "\n");
   if (method === "initialize") {
-    send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { ...(env.FAKE_ACP_IMAGE === "1" ? { promptCapabilities: { image: true } } : {}), mcpCapabilities: env.FAKE_ACP_MCP_CAPS ? JSON.parse(env.FAKE_ACP_MCP_CAPS) : { http: true, sse: true }, sessionCapabilities: agy ? { list: {}, resume: {} } : { delete: true } }, agentInfo: agy ? { name: "antigravity-acp", title: "Google Antigravity", version: "1.3.0" } : { name: "fake", version: "1" }, ...(env.FAKE_ACP_AUTH_METHODS ? { authMethods: JSON.parse(env.FAKE_ACP_AUTH_METHODS) } : {}) } });
+    send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { ...(env.FAKE_ACP_LOGOUT === "1" ? { auth: { logout: {} } } : {}), ...(env.FAKE_ACP_IMAGE === "1" ? { promptCapabilities: { image: true } } : {}), mcpCapabilities: env.FAKE_ACP_MCP_CAPS ? JSON.parse(env.FAKE_ACP_MCP_CAPS) : { http: true, sse: true }, sessionCapabilities: agy ? { list: {}, resume: {} } : { delete: true } }, agentInfo: agy ? { name: "antigravity-acp", title: "Google Antigravity", version: "1.3.0" } : { name: "fake", version: "1" }, ...(env.FAKE_ACP_AUTH_METHODS ? { authMethods: JSON.parse(env.FAKE_ACP_AUTH_METHODS) } : {}) } });
     const kind = env.FAKE_ACP_AUTH_STATUS;
     if (kind) send({ jsonrpc: "2.0", method: "_auth/status_update", params: { authStatus: { kind, label: kind === "none" ? "Not logged in" : "Fake account" } } });
   }
@@ -348,6 +350,11 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const done = () => { authedWith = params.methodId; send({ jsonrpc: "2.0", id, result: {} }); };
     const authDelay = Number(env.FAKE_ACP_AUTH_DELAY_MS || 0);
     if (authDelay > 0) setTimeout(done, authDelay); else done();
+  }
+  else if (method === "logout") {
+    authedWith = undefined;
+    send({ jsonrpc: "2.0", id, result: {} });
+    if (env.FAKE_ACP_AUTH_STATUS) send({ jsonrpc: "2.0", method: "_auth/status_update", params: { authStatus: { kind: "none", label: "Not logged in" } } });
   }
   else if (method === "session/new") { if (env.FAKE_ACP_REQUIRE_AUTH === "1" && !authedWith) fail(id, -32000, "Authentication required", agy ? { message: "No authentication method selected. Either call the `authenticate` method (supports oauth-personal, gemini-api-key, agent-platform)" } : undefined); else newSession(id, params); }
   else if (method === "session/set_config_option") { models.set(params.sessionId, params.value); send({ jsonrpc: "2.0", id, result: { configOptions: [] } }); }
