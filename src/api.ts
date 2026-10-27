@@ -117,7 +117,7 @@ export class ApiError extends Error {
 }
 
 export function errorEnvelope(error: ApiError | Error): { error: Record<string, unknown> } {
-  if (error instanceof ApiError) return { error: { message: error.message, type: "invalid_request_error", param: error.param ?? null, code: error.code } };
+  if (error instanceof ApiError) return { error: { message: error.message, type: error.status === 429 ? "rate_limit_error" : "invalid_request_error", param: error.param ?? null, code: error.code } };
   return { error: { message: error.message || "Internal server error", type: "server_error", param: null, code: "internal_error" } };
 }
 

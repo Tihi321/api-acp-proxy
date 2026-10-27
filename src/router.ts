@@ -4,6 +4,7 @@ import path from "node:path";
 import type { AcpLike, ModelEntry } from "./acp.js";
 import { ApiError, type Message } from "./api.js";
 import { silentLogger, type Logger } from "./logger.js";
+import { ConcurrencyLimiter, QueueAbortedError, type LimiterStats } from "./limiter.js";
 import type { GenerateOptions, GenerationCallbacks, GenerationResult, ModelInfo, Provider } from "./provider.js";
 
 export interface RouterOptions {
@@ -12,6 +13,8 @@ export interface RouterOptions {
   /** Persisted discovered models (models-cache.json). */
   cachePath?: string;
   modelsWaitMs?: number;
+  /** Cap on simultaneous generations per provider; extra requests wait in a FIFO queue. `perProvider` overrides `maxConcurrent` for a provider id. 0 = unlimited. Without this option nothing is limited. */
+  concurrency?: { maxConcurrent: number; maxQueue?: number; perProvider?: Record<string, number | undefined> };
 }
 export interface ListedModel extends ModelEntry { ownedBy: string; provider: string; }
 
@@ -27,6 +30,7 @@ export class ProviderRouter implements AcpLike {
   private readonly log: Logger;
   private readonly modelsWaitMs: number;
   private unprefixed?: Map<string, Provider>;
+  private readonly limiters = new Map<string, ConcurrencyLimiter>();
   private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: RouterOptions) {
@@ -34,8 +38,13 @@ export class ProviderRouter implements AcpLike {
     this.log = (options.logger ?? silentLogger).child("router");
     this.modelsWaitMs = options.modelsWaitMs ?? 3000;
     const cache = this.readCache();
+    const concurrency = options.concurrency;
     for (const provider of this.providers) {
       this.byId.set(provider.id, provider);
+      if (concurrency) {
+        const limit = concurrency.perProvider?.[provider.id] ?? concurrency.maxConcurrent;
+        this.limiters.set(provider.id, new ConcurrencyLimiter({ limit, maxQueue: concurrency.maxQueue ?? 0, onWait: (position, stats) => this.log.info(`A request for '${provider.id}' waits in the queue (position ${position}; ${stats.active} running, limit ${stats.limit}).`) }));
+      }
       this.known.set(provider.id, provider.staticModels ?? cache[provider.id] ?? []);
     }
   }
@@ -158,7 +167,22 @@ export class ProviderRouter implements AcpLike {
   async generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
     const target = this.resolve(model);
     if (!target) throw new ApiError(404, "model_not_found", `The model '${model}' does not exist.`, "model");
-    return target.provider.generate(target.model, messages, callbacks, signal, options);
+    const limiter = this.limiters.get(target.provider.id);
+    if (!limiter) return target.provider.generate(target.model, messages, callbacks, signal, options);
+    let release: () => void;
+    try { release = await limiter.acquire(signal); }
+    catch (error) {
+      // The client left (or the request timed out) while it waited: nothing ran.
+      if (error instanceof QueueAbortedError) return { text: "", stopReason: "cancelled", usage: null };
+      throw error;
+    }
+    try { return await target.provider.generate(target.model, messages, callbacks, signal, options); }
+    finally { release(); }
+  }
+
+  /** Running and waiting requests per provider (only providers with a cap). */
+  queueStats(): Record<string, LimiterStats> {
+    return Object.fromEntries([...this.limiters].map(([id, limiter]) => [id, limiter.stats()]));
   }
 
   async close(): Promise<void> {

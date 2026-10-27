@@ -367,7 +367,7 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
     try {
       const method = request.method || "GET";
       const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
-      if (method === "GET" && url.pathname === "/healthz") { json(response, 200, { status: "ok", uptime_seconds: Math.floor((Date.now() - startedAt) / 1000) }); return; }
+      if (method === "GET" && url.pathname === "/healthz") { const queues = bridge.queueStats?.(); json(response, 200, { status: "ok", uptime_seconds: Math.floor((Date.now() - startedAt) / 1000), ...(queues ? { providers: Object.fromEntries(Object.entries(queues).map(([id, q]) => [id, { active: q.active, queued: q.queued, max_concurrent: q.limit, max_queue: q.maxQueue }])) } : {}) }); return; }
       // The agents reach the tool bridge here; its token is the credential, so it is routed before the API key check.
       if (await toolBridge.handle(request, response, url.pathname)) return;
       // The playground page holds no data (its API calls carry the key), so it is served before the key check and is not logged as activity.

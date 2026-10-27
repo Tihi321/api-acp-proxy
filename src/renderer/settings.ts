@@ -37,19 +37,24 @@ const fields: FieldSpec[] = [
   { path: "server.maxBodyBytes", kind: "number", scope: "server" },
   { path: "server.modelsWaitMs", kind: "number", scope: "server" },
   { path: "server.toolResultTimeoutMs", kind: "number", scope: "server" },
+  { path: "server.maxConcurrent", kind: "number", scope: "server" },
+  { path: "server.maxQueue", kind: "number", scope: "server" },
   { path: "server.launchAtLogin", kind: "bool", scope: "server" },
   { path: "server.ignoreSampling", kind: "bool", scope: "server" },
   { path: "server.reuseSessions", kind: "bool", scope: "server" },
   { path: "providers.codex.enabled", kind: "bool", scope: "codex" },
+  { path: "providers.codex.maxConcurrent", kind: "number", scope: "codex", optional: true },
   { path: "providers.codex.authMethodId", kind: "select", scope: "codex", optional: true },
   { path: "providers.codex.isolatedHome", kind: "bool", scope: "codex" },
   { path: "providers.antigravity.enabled", kind: "bool", scope: "antigravity" },
+  { path: "providers.antigravity.maxConcurrent", kind: "number", scope: "antigravity", optional: true },
   { path: "providers.antigravity.authMethodId", kind: "select", scope: "antigravity", optional: true },
   { path: "providers.antigravity.executablePath", kind: "text", scope: "antigravity", optional: true },
   { path: "providers.antigravity.apiKey", kind: "text", scope: "antigravity", optional: true },
   { path: "providers.antigravity.geminiHome", kind: "text", scope: "antigravity", optional: true },
   { path: "providers.antigravity.purgeSessions", kind: "bool", scope: "antigravity" },
   { path: "providers.claude.enabled", kind: "bool", scope: "claude" },
+  { path: "providers.claude.maxConcurrent", kind: "number", scope: "claude", optional: true },
   { path: "providers.claude.authMethodId", kind: "select", scope: "claude", optional: true },
   { path: "providers.claude.apiKey", kind: "text", scope: "claude", optional: true },
   { path: "providers.claude.oauthToken", kind: "text", scope: "claude", optional: true },
@@ -371,7 +376,7 @@ function collectPatch(scope: Scope): { patch?: SettingsPatchView; errors: Array<
     let value: unknown;
     if (spec.kind === "bool") value = (input as HTMLInputElement).checked;
     else if (spec.kind === "number") {
-      if (input.value.trim() === "") { errors.push({ path: spec.path, message: "Required" }); continue; }
+      if (input.value.trim() === "") { if (!spec.optional) { errors.push({ path: spec.path, message: "Required" }); continue; } setPath(patch, spec.path, null); continue; }
       value = Number(input.value);
       if (!Number.isFinite(value)) { errors.push({ path: spec.path, message: "Must be a number" }); continue; }
     } else {
