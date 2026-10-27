@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fsp from "node:fs/promises";
 import { createServer as createHttpServer, request as httpRequest, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { spawn } from "node:child_process";
@@ -9,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { AcpProvider } from "../src/acp-provider.js";
 import { buildPrompt, serializePrompt, textMessage, type Message } from "../src/api.js";
 import { loadConfig, type ProxyConfig } from "../src/config.js";
-import { MAX_IMAGE_BYTES, sniffImage } from "../src/images.js";
+import { ImageError, loadImageFile, MAX_IMAGE_BYTES, sniffImage } from "../src/images.js";
 import { defaultRuntimeContext, type ProviderDescriptor } from "../src/provider.js";
 import { createProxyServer } from "../src/server.js";
 
@@ -361,5 +362,56 @@ describe("image input with session reuse", () => {
     const first = await provider.generate(model, [textMessage("user", "describe")]);
     await provider.generate(model, turn(png, first.text, undefined));
     expect(methodCount(log, "session/new")).toBe(2);
+  });
+});
+
+describe("loadImageFile", () => {
+  const dir = path.join(workRoot, `files-${process.pid}`);
+  const file = (name: string, bytes: Buffer | string): string => { const target = path.join(dir, name); writeFileSync(target, bytes); return target; };
+  beforeEach(() => { mkdirSync(dir, { recursive: true }); });
+  afterEach(() => { vi.restoreAllMocks(); rmSync(dir, { recursive: true, force: true }); });
+
+  it("reads PNG, JPEG, GIF and WebP files with the type named by their bytes", async () => {
+    for (const [name, bytes, mimeType] of [["a.png", png, "image/png"], ["b.jpg", jpeg, "image/jpeg"], ["c.gif", gif, "image/gif"], ["d.webp", webp, "image/webp"], ["noext", png, "image/png"], ["wrong.jpg", png, "image/png"]] as const) {
+      const loaded = await loadImageFile(file(name, bytes));
+      expect(loaded).toEqual({ mimeType, data: bytes.toString("base64") });
+    }
+    expect((await loadImageFile(file("fwd.png", png).replaceAll("\\", "/"))).mimeType).toBe("image/png");
+  });
+
+  it("rejects a directory, a missing file and a non-image with invalid_image_path and a message that never quotes content or the path", async () => {
+    mkdirSync(path.join(dir, "folder.png"), { recursive: true });
+    const text = file("secret.png", "TOPSECRET=1\n");
+    for (const target of [path.join(dir, "folder.png"), path.join(dir, "missing.png"), text]) {
+      const error = await loadImageFile(target).then(() => undefined, (failure: unknown) => failure);
+      expect(error).toBeInstanceOf(ImageError);
+      expect((error as ImageError).code).toBe("invalid_image_path");
+      expect((error as ImageError).message).not.toContain("TOPSECRET");
+      expect((error as ImageError).message).not.toContain(dir);
+      expect((error as ImageError).message).not.toContain("secret.png");
+    }
+  });
+
+  it("checks the size before reading: a file over 10 MB is rejected without being opened", async () => {
+    const target = file("huge.png", big(MAX_IMAGE_BYTES + 1));
+    const open = vi.spyOn(fsp, "open");
+    const readFile = vi.spyOn(fsp, "readFile");
+    const error = await loadImageFile(target).then(() => undefined, (failure: unknown) => failure) as ImageError;
+    expect(error.code).toBe("invalid_image_path");
+    expect(error.message).toContain("10 MB");
+    expect(open).not.toHaveBeenCalled();
+    expect(readFile).not.toHaveBeenCalled();
+    expect((await loadImageFile(file("max.png", big(MAX_IMAGE_BYTES)))).mimeType).toBe("image/png");
+  });
+
+  it("rejects relative, UNC and device paths as path_not_allowed before touching the file system", async () => {
+    const spies = (["realpath", "stat", "open", "lstat"] as const).map((name) => vi.spyOn(fsp, name));
+    for (const bad of ["a.png", "./a.png", "\\\\server\\share\\a.png", "//server/share/a.png", "\\\\?\\C:\\a.png", "\\\\.\\pipe\\a", "\\a.png", "C:a.png", ""]) {
+      const error = await loadImageFile(bad).then(() => undefined, (failure: unknown) => failure);
+      expect(error, bad).toBeInstanceOf(ImageError);
+      expect((error as ImageError).code, bad).toBe("path_not_allowed");
+      expect((error as ImageError).message).not.toContain("server");
+    }
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
   });
 });

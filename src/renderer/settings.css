@@ -18,7 +18,8 @@ main { max-width: 860px; margin: 0 auto; padding: 16px 20px; display: grid; gap:
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
 .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .card-head .switch { margin-left: auto; }
-.status-line { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.status-line { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+#ov-mcp-url { word-break: break-all; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 14px; margin: 10px 0; }
 .wide { grid-column: 1 / -1; }
 .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }

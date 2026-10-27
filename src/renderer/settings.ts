@@ -1,3 +1,4 @@
+import { mcpAddCommand, mcpEndpointUrl } from "./mcp-command.js";
 import type { ActivityView, InstallProgressView, ProviderStatusView, SaveResult, SettingsPatchView, StateView } from "../shared/ipc.js";
 
 type Scope = "server" | "codex" | "antigravity" | "claude";
@@ -203,6 +204,8 @@ function renderOverview(current: StateView): void {
   el("ov-url").textContent = server.baseUrl ?? (server.state === "error" ? "Not listening" : "Not running");
   el("ov-copy").hidden = !server.baseUrl;
   el("ov-playground").hidden = !server.baseUrl;
+  el("ov-mcp-url").textContent = server.baseUrl ? mcpEndpointUrl(server.baseUrl) : server.state === "error" ? "Not listening" : "Not running";
+  el("ov-mcp-copy").hidden = !server.baseUrl;
   const rows = providerOrder.map((id) => {
     const status = current.status.providers.find((entry) => entry.id === id);
     const usable = providerUsable(status, current);
@@ -490,6 +493,7 @@ function wire(): void {
   el("open-logs").onclick = () => void api.openLogs();
   el("ov-playground").onclick = () => void api.openPlayground().then((result) => { if (result.ok) return; const button = el("ov-playground"); button.textContent = "Could not open"; button.title = result.message; setTimeout(() => { button.textContent = "Open playground"; }, 2000); });
   el("ov-copy").onclick = () => { const url = state?.status.server.baseUrl; if (url) void api.copyText(url).then(() => { el("ov-copy").textContent = "Copied"; setTimeout(() => { el("ov-copy").textContent = "Copy"; }, 1200); }); };
+  el("ov-mcp-copy").onclick = () => { const url = state?.status.server.baseUrl; if (url) void api.copyText(mcpAddCommand(url, Boolean(state?.effective.server.apiKey))).then(() => { el("ov-mcp-copy").textContent = "Copied"; setTimeout(() => { el("ov-mcp-copy").textContent = "Copy command"; }, 1200); }); };
   el("open-settings-file").onclick = async () => { const result = await api.openPath("settingsFile"); if (!result.ok) flash(el("ov-msg"), result.message, true); };
   el("open-codex-home").onclick = async () => { const result = await api.openPath("codexHome"); if (!result.ok) flash(role(card("codex"), "msg"), result.message, true); };
   el("act-clear").onclick = () => void api.clearActivity().then(() => { activity = []; renderActivity(); });

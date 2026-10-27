@@ -109,3 +109,14 @@ describe("ProviderRouter", () => {
     await expect(openai.chat.completions.create({ model: "agy/nope", messages: [{ role: "user", content: "hi" }] })).rejects.toThrow(/does not exist/);
   });
 });
+
+describe("ProviderRouter.acceptsImages", () => {
+  it("answers the provider's own image capability: true, false, or undefined before it has started", async () => {
+    const withImage = (id: string, image: boolean | undefined): Provider => { const base = fake(id, ["m"], { static: true }); return { ...base, status: () => ({ ...base.status(), ...(image === undefined ? {} : { capabilities: { image } }) }) }; };
+    const router = new ProviderRouter({ providers: [withImage("yes", true), withImage("no", false), withImage("cold", undefined)] });
+    expect(router.acceptsImages("yes/m")).toBe(true);
+    expect(router.acceptsImages("no/m")).toBe(false);
+    expect(router.acceptsImages("cold/m")).toBeUndefined();
+    expect(router.acceptsImages("nobody/m")).toBeUndefined();
+  });
+});

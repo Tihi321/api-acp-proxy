@@ -1,13 +1,16 @@
-/** Image inputs: `data:` URL decoding, guarded `http(s)` downloads and magic-byte checks. Agents only ever get base64 data, never a URI. */
+import fsp from "node:fs/promises";
+import path from "node:path";
+
+/** Image inputs: `data:` URL decoding, guarded `http(s)` downloads, local files and magic-byte checks. Agents only ever get base64 data, never a URI. */
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const IMAGE_DOWNLOAD_TIMEOUT_MS = 15_000;
 export const MAX_IMAGE_REDIRECTS = 3;
 export const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
 
 export interface LoadedImage { mimeType: string; data: string; }
-/** `unsupported_content`: a type the proxy does not accept; `invalid_image_url`: a URL or body that cannot be used. */
+/** `unsupported_content`: a type the proxy does not accept; `invalid_image_url`: a URL or body that cannot be used; `path_not_allowed`: a file path the proxy refuses to touch (relative, UNC or device); `invalid_image_path`: a file that is missing, unreadable, too large or not an image. */
 export class ImageError extends Error {
-  constructor(message: string, public readonly code: "unsupported_content" | "invalid_image_url") { super(message); this.name = "ImageError"; }
+  constructor(message: string, public readonly code: "unsupported_content" | "invalid_image_url" | "path_not_allowed" | "invalid_image_path") { super(message); this.name = "ImageError"; }
 }
 
 const unsupported = (message: string) => new ImageError(message, "unsupported_content");
@@ -93,4 +96,51 @@ export async function downloadImage(url: string, fetchImpl: typeof fetch = fetch
 export async function loadImage(url: string, fetchImpl?: typeof fetch): Promise<LoadedImage> {
   if (/^data:/i.test(url)) return decodeDataUrl(url);
   return downloadImage(url, fetchImpl);
+}
+
+const notAllowed = (message: string) => new ImageError(message, "path_not_allowed");
+const badPath = (message: string) => new ImageError(message, "invalid_image_path");
+
+/**
+ * Throws `path_not_allowed` unless `file` is an absolute path on a local drive: relative paths, UNC and device paths (anything that starts with two slashes or two backslashes, such as \\?\C:\x, \\.\pipe\x or \\server\share) and, on Windows, paths without a drive letter or with a stream name are refused.
+ * Nothing touches the file system here, so a crafted path cannot make Windows reach out to a network share. The messages never quote the path.
+ */
+export function checkAbsolutePath(file: unknown): asserts file is string {
+  if (typeof file !== "string" || !file || file.length > 4096 || file.includes("\0")) throw notAllowed("The path must be a non-empty absolute path.");
+  if (/^[\\/]{2}/.test(file)) throw notAllowed("UNC and device paths are not accepted.");
+  if (!path.isAbsolute(file)) throw notAllowed("The path must be absolute.");
+  if (process.platform === "win32" && (!/^[A-Za-z]:[\\/]/.test(file) || file.indexOf(":", 2) >= 0)) throw notAllowed("The path must start with a drive letter (for example C:\\) and hold no stream name.");
+}
+
+/**
+ * Reads an image from a file path the caller named: absolute local paths only (`checkAbsolutePath`), then `realpath`, a regular file of at most 10 MB (checked before anything is read), and the magic-byte check.
+ * Errors: `path_not_allowed` for the path itself, `invalid_image_path` for everything else, with generic messages that never quote the path or the content.
+ */
+export async function loadImageFile(file: string): Promise<LoadedImage> {
+  checkAbsolutePath(file);
+  let real: string;
+  try {
+    real = await fsp.realpath(file);
+    const info = await fsp.stat(real);
+    if (!info.isFile()) throw badPath("The path is not a file.");
+    if (info.size > MAX_IMAGE_BYTES) throw badPath(`The image file is larger than ${MAX_IMAGE_BYTES / (1024 * 1024)} MB.`);
+  } catch (error) { throw error instanceof ImageError ? error : badPath("The image file was not found or cannot be read."); }
+  let bytes: Buffer;
+  try {
+    const handle = await fsp.open(real, "r");
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > MAX_IMAGE_BYTES) throw badPath("The image file was not found or cannot be read.");
+      bytes = Buffer.alloc(info.size);
+      let filled = 0;
+      while (filled < bytes.length) {
+        const { bytesRead } = await handle.read(bytes, filled, bytes.length - filled, filled);
+        if (!bytesRead) break;
+        filled += bytesRead;
+      }
+      bytes = bytes.subarray(0, filled);
+    } finally { await handle.close().catch(() => undefined); }
+  } catch (error) { throw error instanceof ImageError ? error : badPath("The image file was not found or cannot be read."); }
+  try { return checkedImage(bytes); }
+  catch { throw badPath("The file is not a PNG, JPEG, GIF or WebP image."); }
 }

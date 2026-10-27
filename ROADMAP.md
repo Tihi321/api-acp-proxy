@@ -20,4 +20,5 @@ What is open for the proxy as the creative hub (`C:\projects\Personal\creative-h
 - [x] Function calling: chat `tools` and Responses `function_call` items, through an MCP server the proxy hosts for the agents (Codex, Claude, Antigravity). (AAP-15)
 - [x] Remote MCP servers: Responses `type: "mcp"` tools and `mcpServers` in the settings (http, sse, stdio), with `mcp_call` output items. (AAP-16)
 - [x] Web search: chat `web_search_options` and the Responses `web_search` tool, with `web_search_call` items and `url_citation` annotations (Claude, Antigravity; Codex always searches). (AAP-17)
+- [x] A harness (Claude Code, any MCP client) can ask another model: the proxy is an MCP server at `POST /v1/mcp` with `list_models`, `ask_model` (text and images, threads) and `generate_image` (saved to disk for callers on this machine); the Overview shows the address and copies the `claude mcp add` command. (AAP-23)
 - [ ] Audio and files are still rejected. Not needed by the hub's apps.

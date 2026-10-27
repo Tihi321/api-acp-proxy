@@ -5,3 +5,4 @@ coverage/
 .codex/temp/
 release/
 .claude/temp/
+.claude/director/
