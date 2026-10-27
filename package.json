@@ -44,5 +44,6 @@
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
   },
-  "main": "dist/electron/main.js"
+  "main": "dist/electron/main.js",
+  "packageManager": "yarn@4.13.0"
 }
