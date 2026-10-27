@@ -179,7 +179,7 @@ export class ProxyController extends EventEmitter {
       try { providers.push(entry.create({ settings, providerSettings: providerSettings[entry.id]!, config, ctx, env: this.env, saveSettings: (patch) => this.saveSettings(patch) })); }
       catch (error) { this.logger.error(`Could not create provider '${entry.id}': ${error instanceof Error ? error.message : String(error)}`); }
     }
-    const router = new ProviderRouter({ providers, logger: this.logger, cachePath: path.join(this.dataDir, "models-cache.json"), modelsWaitMs: config.modelsWaitMs, concurrency: { maxConcurrent: config.maxConcurrent ?? 0, maxQueue: config.maxQueue ?? 0, perProvider: Object.fromEntries(Object.entries(providerSettings).map(([id, entry]) => [id, entry.maxConcurrent as number | undefined])) } });
+    const router = new ProviderRouter({ providers, logger: this.logger, cachePath: path.join(this.dataDir, "models-cache.json"), modelsWaitMs: config.modelsWaitMs, listBareAliases: config.listBareAliases, concurrency: { maxConcurrent: config.maxConcurrent ?? 0, maxQueue: config.maxQueue ?? 0, perProvider: Object.fromEntries(Object.entries(providerSettings).map(([id, entry]) => [id, entry.maxConcurrent as number | undefined])) } });
     const server = createProxyServer(config, router, { fetch: ctx.fetch, toolBridge, activity: this.activity, mcpImageDir: path.join(this.dataDir, "mcp-images") });
     try {
       await new Promise<void>((resolve, reject) => {

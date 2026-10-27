@@ -17,9 +17,11 @@ export interface ProxyConfig {
   ignoreSampling?: boolean;
   /** Keep an agent session after a completed turn and continue it when the next request extends the same conversation. */
   reuseSessions?: boolean;
+  /** List unprefixed model ids in /v1/models next to the `<provider>/<id>` ones (default true); unprefixed ids are accepted in requests either way. */
+  listBareAliases?: boolean;
   /** How long a turn suspended on a tool call waits for the client's result (shorter for agents that give up sooner). */
   toolResultTimeoutMs?: number;
-  /** Requests that may run at once per provider (0 = unlimited; unset = unlimited). */
+  /** Requests that may run at once per provider (0 = unlimited; the settings default is 4). */
   maxConcurrent?: number;
   /** Requests that may wait per provider before a 429 (0 = unlimited). */
   maxQueue?: number;

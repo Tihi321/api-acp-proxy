@@ -38,6 +38,16 @@ async function serve(router: ProviderRouter): Promise<string> {
 const ids = (models: Array<{ id: string }>) => models.map((model) => model.id);
 
 describe("ProviderRouter", () => {
+  it("listBareAliases false lists only prefixed ids and still routes bare ids", async () => {
+    const router = new ProviderRouter({ providers: [fake("codex", ["gpt-a"], { unprefixed: true, static: true }), fake("agy", ["gem-1"])], listBareAliases: false });
+    expect(ids(await router.listModels())).toEqual(["codex/gpt-a", "agy/gem-1"]);
+    expect((await router.generate("gpt-a", [])).text).toBe("codex:gpt-a");
+    expect(router.hasModel("gpt-a")).toBe(true);
+    const base = await serve(router);
+    const res = await fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-a", messages: [{ role: "user", content: "hi" }] }) });
+    expect(res.status).toBe(200);
+  });
+
   it("routes prefixed and unprefixed ids", async () => {
     const router = new ProviderRouter({ providers: [fake("codex", ["gpt-a"], { unprefixed: true, static: true }), fake("agy", ["gem-1", "gem-2"])] });
     await router.listModels();

@@ -92,6 +92,7 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 | `PROXY_MODELS_WAIT_MS` | `3000` | How long `/v1/models` waits for provider discovery |
 | `PROXY_WORK_ROOT` | OS temp directory | Parent for disposable session working directories |
 | `PROXY_IGNORE_SAMPLING` | `false` | Drop `temperature`, `top_p`, penalties, `seed` and the Responses `stream_options` instead of answering 400, for clients that always send them (settings: `server.ignoreSampling`) |
+| `PROXY_LIST_BARE_ALIASES` | `true` | List unprefixed ids (`gpt-x` next to `codex/gpt-x`) in `/v1/models`. `0` lists only `<provider>/<id>`, which stops discovering clients showing every model twice; requests that send an unprefixed id are routed either way (settings: `server.listBareAliases`) |
 | `PROXY_REUSE_SESSIONS` | `false` | Keep an agent session after a completed turn and continue it when the next request extends the same conversation, sending only the new messages (settings: `server.reuseSessions`) |
 | `PROXY_TOOL_RESULT_TIMEOUT_MS` | `600000` | How long a request that ended with tool calls waits for the next request to bring the results, before the agent turn is cancelled. Cut to the agent's own limit minus 30 s: 150 s for Antigravity, 270 s for Codex; see [Function calling](#function-calling) (settings: `server.toolResultTimeoutMs`) |
 | `PROXY_MAX_CONCURRENT` | `4` | Requests that run at once per provider; more wait in a FIFO queue, `0` = unlimited; see [Concurrency cap](#concurrency-cap) (settings: `server.maxConcurrent`) |

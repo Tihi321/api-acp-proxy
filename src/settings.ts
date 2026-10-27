@@ -51,6 +51,8 @@ export const settingsSchema = z.object({
     ignoreSampling: z.boolean().default(false),
     /** Keep agent sessions across the turns of a conversation. */
     reuseSessions: z.boolean().default(false),
+    /** List the unprefixed ids (`gpt-x` next to `codex/gpt-x`) in /v1/models. Requests with an unprefixed id are routed either way. */
+    listBareAliases: z.boolean().default(true),
     /** How long a turn that called a client tool waits for the tool result before the agent turn is cancelled (the agents' own limits can be shorter). */
     toolResultTimeoutMs: positive(10 * 60 * 1000),
     /** Requests that run at once per provider; more wait in a FIFO queue. 0 = unlimited. */
@@ -241,6 +243,7 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
   apply("server.workRoot", env.PROXY_WORK_ROOT || undefined, (v) => { server.workRoot = v; });
   apply("server.ignoreSampling", parseBool(env.PROXY_IGNORE_SAMPLING), (v) => { server.ignoreSampling = v; });
   apply("server.reuseSessions", parseBool(env.PROXY_REUSE_SESSIONS), (v) => { server.reuseSessions = v; });
+  apply("server.listBareAliases", parseBool(env.PROXY_LIST_BARE_ALIASES), (v) => { server.listBareAliases = v; });
   apply("server.toolResultTimeoutMs", parseInt(env.PROXY_TOOL_RESULT_TIMEOUT_MS), (v) => { server.toolResultTimeoutMs = v; });
   apply("server.maxConcurrent", parseNonNegative(env.PROXY_MAX_CONCURRENT), (v) => { server.maxConcurrent = v; });
   apply("server.maxQueue", parseNonNegative(env.PROXY_MAX_QUEUE), (v) => { server.maxQueue = v; });
@@ -266,6 +269,7 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
     modelsWaitMs: server.modelsWaitMs,
     ignoreSampling: server.ignoreSampling,
     reuseSessions: server.reuseSessions,
+    listBareAliases: server.listBareAliases,
     toolResultTimeoutMs: server.toolResultTimeoutMs,
     maxConcurrent: server.maxConcurrent,
     maxQueue: server.maxQueue,

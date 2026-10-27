@@ -13,6 +13,8 @@ export interface RouterOptions {
   /** Persisted discovered models (models-cache.json). */
   cachePath?: string;
   modelsWaitMs?: number;
+  /** List unprefixed ids in listModels (default true). Unprefixed ids still resolve either way. */
+  listBareAliases?: boolean;
   /** Cap on simultaneous generations per provider; extra requests wait in a FIFO queue. `perProvider` overrides `maxConcurrent` for a provider id. 0 = unlimited. Without this option nothing is limited. */
   concurrency?: { maxConcurrent: number; maxQueue?: number; perProvider?: Record<string, number | undefined> };
 }
@@ -137,7 +139,7 @@ export class ProviderRouter implements AcpLike {
     const out: ListedModel[] = [];
     for (const provider of this.providers) {
       for (const model of this.known.get(provider.id) ?? []) {
-        if (owners.get(model.id) === provider) out.push({ id: model.id, ownedBy: provider.ownedBy, provider: provider.id });
+        if (this.options.listBareAliases !== false && owners.get(model.id) === provider) out.push({ id: model.id, ownedBy: provider.ownedBy, provider: provider.id });
         out.push({ id: `${provider.id}/${model.id}`, ownedBy: provider.ownedBy, provider: provider.id });
       }
     }

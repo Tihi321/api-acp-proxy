@@ -81,6 +81,7 @@
         <label class="field"><span>Max queued per provider</span><input id="server.maxQueue" type="number" min="0"><small>Waiting requests beyond this get a 429. 0 = unlimited.</small><small data-note-for="server.maxQueue"></small><small class="error" data-error-for="server.maxQueue"></small></label>
         <label class="check"><input id="server.launchAtLogin" type="checkbox"><span>Launch at login</span></label>
         <label class="check"><input id="server.ignoreSampling" type="checkbox"><span>Ignore sampling fields (temperature, top_p, penalties, seed) instead of rejecting them</span></label>
+        <label class="check"><input id="server.listBareAliases" type="checkbox"><span>List unprefixed model ids in /v1/models (requests with them work either way)</span></label>
         <label class="check"><input id="server.reuseSessions" type="checkbox"><span>Reuse agent sessions across conversation turns</span></label>
       </div>
       <div class="actions">
