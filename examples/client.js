@@ -2,7 +2,7 @@ import OpenAI from "openai";
 
 export const PROXY_URL = process.env.PROXY_URL || "http://127.0.0.1:8787";
 export const PROXY_API_KEY = process.env.PROXY_API_KEY || "local";
-export const PROXY_MODEL = process.env.PROXY_MODEL || "gpt-5.6-sol";
+export const PROXY_MODEL = process.env.PROXY_MODEL || "gpt-6-luna";
 
 export const openai = new OpenAI({
   apiKey: PROXY_API_KEY,

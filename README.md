@@ -67,9 +67,9 @@ The default address is `http://127.0.0.1:8787`. On first start `settings.json` i
 
 ## Models and providers
 
-Model ids are namespaced as `<provider>/<id>`, for example `codex/gpt-5.6-sol`, `claude/sonnet` or `antigravity/gemini-3.8-flash-low`.
+Model ids are namespaced as `<provider>/<id>`, for example `codex/gpt-6-luna`, `claude/sonnet` or `antigravity/gemini-3.8-flash-low`.
 
-- Codex models are also exposed **unprefixed** (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`), so existing clients keep working.
+- Codex models are discovered at runtime from the agent, like the others, and are also exposed **unprefixed** (`gpt-6-luna` and `codex/gpt-6-luna` both work), so existing clients keep working. The list depends on your ChatGPT plan and on the bundled codex-acp version (with codex-acp 2.3.0 a ChatGPT Go account gets `gpt-6-luna`, `gpt-5.6-terra` and `gpt-5.6-luna`; `gpt-5.6-sol` is gone), so check `GET /v1/models` instead of assuming ids. Until the first discovery has finished (a first start, with no models cache yet) an unprefixed id is passed to Codex as it is.
 - Claude models are only available prefixed (`claude/<id>`), and are discovered at runtime from the agent.
 - Antigravity models are only available prefixed, and are discovered at runtime from the agent (the list depends on your plan and on the server version).
 - **Collision rule:** if an unprefixed id would be claimed by two providers, the first provider keeps it and the later one is listed only with its prefix; a warning is logged.
@@ -221,7 +221,7 @@ Files, audio, persistent conversations and other behavior-changing options are i
 curl http://127.0.0.1:8787/v1/models
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H 'content-type: application/json' \
-  -d '{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"Say hello"}]}'
+  -d '{"model":"gpt-6-luna","messages":[{"role":"user","content":"Say hello"}]}'
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{"model":"antigravity/gemini-3.8-flash-low","messages":[{"role":"user","content":"Say hello"}]}'
@@ -238,7 +238,7 @@ When an API key is configured, add `-H "authorization: Bearer $PROXY_API_KEY"`.
 import OpenAI from "openai";
 const openai = new OpenAI({ apiKey: process.env.PROXY_API_KEY || "local", baseURL: "http://127.0.0.1:8787/v1" });
 console.log(await openai.models.list());
-const answer = await openai.chat.completions.create({ model: "gpt-5.6-sol", messages: [{ role: "user", content: "Hello" }] });
+const answer = await openai.chat.completions.create({ model: "gpt-6-luna", messages: [{ role: "user", content: "Hello" }] });
 console.log(answer.choices[0]?.message.content);
 const stream = await openai.responses.create({ model: "gpt-5.6-terra", input: "Hello", stream: true });
 for await (const event of stream) console.log(event);

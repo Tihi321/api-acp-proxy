@@ -152,7 +152,7 @@ describe("Codex logout", () => {
     writeLogin(ownHome());
     const provider = codexAgent();
     await provider.listModels();
-    await provider.generate("gpt-5.6-sol", user);
+    await provider.generate("gpt-6-luna", user);
     expect(provider.status().state).toBe("ready");
     await provider.logout();
     expect(requests()).toContain("logout");
@@ -164,7 +164,7 @@ describe("Codex logout", () => {
   it("without ACP logout stops the agent, deletes only auth.json and restarts into needs_login with no authenticate", async () => {
     writeLogin(ownHome());
     const provider = codexAgent();
-    await provider.generate("gpt-5.6-sol", user);
+    await provider.generate("gpt-6-luna", user);
     expect(requests()).toContain("authenticate");
     const before = requests().filter((method) => method === "authenticate").length;
     await provider.logout();
@@ -182,7 +182,7 @@ describe("Codex logout", () => {
     writeLogin(shared);
     process.env.CODEX_HOME = shared;
     const provider = codexAgent({ isolatedHome: false });
-    await provider.generate("gpt-5.6-sol", user);
+    await provider.generate("gpt-6-luna", user);
     await expect(provider.logout()).rejects.toThrow(/cannot be logged out/);
     expect(requests()).not.toContain("logout");
     expect(existsSync(path.join(shared, "auth.json"))).toBe(true);
@@ -195,7 +195,7 @@ describe("Codex logout", () => {
     writeLogin(shared);
     process.env.CODEX_HOME = shared;
     const provider = codexAgent({ isolatedHome: false });
-    await provider.generate("gpt-5.6-sol", user);
+    await provider.generate("gpt-6-luna", user);
     await provider.logout();
     expect(requests()).toContain("logout");
     // The fake agent deletes nothing, and the proxy itself never touches a shared home.
@@ -229,7 +229,7 @@ describe("status without a request", () => {
   it("stays needs_login when a request finds no login, and the agent is not asked to authenticate", async () => {
     process.env.FAKE_ACP_AUTH_METHODS = authMethods("chat-gpt", "api-key");
     const provider = codexAgent();
-    await expect(provider.generate("gpt-5.6-sol", user)).rejects.toBeInstanceOf(ProviderAuthRequiredError);
+    await expect(provider.generate("gpt-6-luna", user)).rejects.toBeInstanceOf(ProviderAuthRequiredError);
     expect(provider.status().state).toBe("needs_login");
     expect(requests()).not.toContain("authenticate");
   });

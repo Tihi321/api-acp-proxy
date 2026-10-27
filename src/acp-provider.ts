@@ -572,6 +572,8 @@ export class AcpProvider implements Provider {
   async listModels(options: { force?: boolean } = {}): Promise<ModelInfo[]> {
     if (this.staticModels) return this.staticModels;
     if (this.discovered && !options.force) return this.discovered;
+    // A provider that certainly has no login (a fresh isolated Codex home) is not started just to list models: it could not list any.
+    if (this.state === "stopped" && this.descriptor.needsLogin?.(this.ctx, process.env)) return [];
     if (!this.modelsInflight) {
       this.modelsInflight = (async () => {
         const agent = await this.start();

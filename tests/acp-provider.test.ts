@@ -45,8 +45,8 @@ describe("AcpProvider", () => {
 
   it("tolerates a missing read-only mode only when it is not required", async () => {
     process.env.FAKE_ACP_NO_READONLY = "1";
-    await expect(make({ readOnlyMode: "optional" }).generate("gpt-5.6-sol", user)).resolves.toMatchObject({ text: "fake response" });
-    await expect(make({ readOnlyMode: "required" }).generate("gpt-5.6-sol", user)).rejects.toBeInstanceOf(AcpUnavailableError);
+    await expect(make({ readOnlyMode: "optional" }).generate("gpt-6-luna", user)).resolves.toMatchObject({ text: "fake response" });
+    await expect(make({ readOnlyMode: "required" }).generate("gpt-6-luna", user)).rejects.toBeInstanceOf(AcpUnavailableError);
   });
 
   it("maps auth_required to needs_login and recovers after an explicit login", async () => {
@@ -81,7 +81,7 @@ describe("AcpProvider", () => {
     const pidFile = path.join(workRoot, `grandchild-${process.pid}.pid`);
     process.env.FAKE_ACP_GRANDCHILD = pidFile;
     const provider = make();
-    await provider.generate("gpt-5.6-sol", user);
+    await provider.generate("gpt-6-luna", user);
     let pid = 0;
     for (let i = 0; i < 50 && !pid; i++) { try { pid = Number(readFileSync(pidFile, "utf8")); } catch { await new Promise((resolve) => setTimeout(resolve, 20)); } }
     expect(pid).toBeGreaterThan(0);
@@ -94,7 +94,7 @@ describe("AcpProvider", () => {
 });
 
 describe("AcpProvider session reuse", () => {
-  const model = "gpt-5.6-sol";
+  const model = "gpt-6-luna";
   const logFile = () => { const file = path.join(workRoot, `reuse-${process.pid}-${Math.random().toString(36).slice(2)}.log`); rmSync(file, { force: true }); process.env.FAKE_ACP_LOG = file; return file; };
   const readLog = (file: string) => readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { method: string; params: Record<string, any> });
   const methodCount = (file: string, method: string) => readLog(file).filter((entry) => entry.method === method).length;

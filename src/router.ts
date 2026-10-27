@@ -94,7 +94,7 @@ export class ProviderRouter implements AcpLike {
     return this.unprefixed = owners;
   }
 
-  /** Providers that have not discovered any models yet accept any `<provider>/<id>` and let the agent decide. */
+  /** Providers that have not discovered any models yet accept any `<provider>/<id>` and let the agent decide; an unprefixed id nobody lists goes to the first unprefixed provider in that state (a first start without a models cache). */
   resolve(id: string): { provider: Provider; model: string } | undefined {
     const slash = id.indexOf("/");
     if (slash > 0) {
@@ -105,7 +105,7 @@ export class ProviderRouter implements AcpLike {
         if (model && (!models.length || models.some((m) => m.id === model))) return { provider, model };
       }
     }
-    const owner = this.unprefixedOwners().get(id);
+    const owner = this.unprefixedOwners().get(id) ?? (slash < 0 && id ? this.providers.find((provider) => provider.exposeUnprefixed && !this.known.get(provider.id)?.length) : undefined);
     return owner ? { provider: owner, model: id } : undefined;
   }
 

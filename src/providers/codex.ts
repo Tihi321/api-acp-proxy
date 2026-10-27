@@ -4,7 +4,6 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProxyConfig } from "../config.js";
-import { MODEL_IDS } from "../config.js";
 import { AcpProvider } from "../acp-provider.js";
 import type { ProviderRegistration } from "../controller.js";
 import type { ProviderDescriptor, RuntimeContext } from "../provider.js";
@@ -23,7 +22,7 @@ function codexTarget(call: { rawInput?: unknown }, labels: readonly string[]): {
   return typeof input?.server === "string" && typeof input.tool === "string" && labels.includes(input.server) ? { server: input.server, tool: input.tool, arguments: input.arguments } : undefined;
 }
 
-/** The Codex ACP agent: read-only, never prompts for approval, no shell tool, own CODEX_HOME by default, models are the fixed MODEL_IDS contract. */
+/** The Codex ACP agent: read-only, never prompts for approval, no shell tool, own CODEX_HOME by default. Its models come from the agent (the `model` option of session/new), as for Claude and Antigravity; they are listed unprefixed too. */
 export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArgs">, options: CodexOptions = {}): ProviderDescriptor {
   let isolatedHome: string | undefined;
   const hasKey = (env: NodeJS.ProcessEnv) => Boolean(env.CODEX_API_KEY || env.OPENAI_API_KEY);
@@ -38,7 +37,6 @@ export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArg
     displayName: "Codex",
     ownedBy: "openai",
     exposeUnprefixed: true,
-    staticModels: MODEL_IDS,
     authMode: "eager",
     readOnlyMode: "required",
     async launch(ctx) {

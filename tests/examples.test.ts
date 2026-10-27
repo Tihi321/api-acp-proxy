@@ -23,7 +23,9 @@ type RecordedCall = Array<{ role: string; content: string }>;
 let calls: RecordedCall[] = [];
 let server: ReturnType<typeof createProxyServer> | undefined;
 
+// Model ids are test data: the real list comes from the Codex agent at runtime.
 const fake: AcpLike = {
+  async listModels() { return ["gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-luna"].map((id) => ({ id, ownedBy: "openai" })); },
   async generate(_model, messages, callbacks) {
     calls.push(messages.map((message) => ({ role: message.role, content: messageText(message) })));
     const last = messages.at(-1) ? messageText(messages.at(-1)!) : undefined;
@@ -49,7 +51,7 @@ async function runExample(name: string, input = ""): Promise<{ code: number | nu
   return await new Promise((resolveRun, reject) => {
     const child = spawn(process.execPath, [`examples/${name}.js`], {
       cwd: root,
-      env: { ...process.env, PROXY_URL: proxyUrl, PROXY_API_KEY: "secret", PROXY_MODEL: "gpt-5.6-sol" },
+      env: { ...process.env, PROXY_URL: proxyUrl, PROXY_API_KEY: "secret", PROXY_MODEL: "gpt-6-luna" },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
@@ -75,7 +77,7 @@ describe("JavaScript examples", () => {
     expect(result.code).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Health: ok");
-    expect(result.stdout).toContain("Models: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna");
+    expect(result.stdout).toContain("Models: gpt-6-luna, gpt-5.6-terra, gpt-5.6-luna");
     expect(result.stdout).toContain("Chat: reply-1");
     expect(result.stdout).toContain("Response: reply-2");
   });

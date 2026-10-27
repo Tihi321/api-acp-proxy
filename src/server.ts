@@ -4,7 +4,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { AcpLike, GenerateOptions, GenerationResult } from "./acp.js";
 import type { GeneratedImage } from "./provider.js";
 import { AcpUnavailableError } from "./acp.js";
-import { MODEL_IDS, type ProxyConfig } from "./config.js";
+import type { ProxyConfig } from "./config.js";
 import { ApiError, errorEnvelope, extractJson, formatInstructions, hasImages, imageFormatName, normalizeChat, normalizeImageGeneration, normalizeResponses, serializePrompt, type ModelCheck, type Message, type OutputFormat, type ToolChoice, type ToolDef } from "./api.js";
 import { beginSse, endSse, writeSse } from "./sse.js";
 import { extractCitations } from "./citations.js";
@@ -368,7 +368,7 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
       const route = `${method} ${url.pathname}`;
       if (options.activity) track(options.activity, bridge, response, ENDPOINTS.has(route) ? route : "other", trace);
       if (!authenticated(request, config)) { trace.error = "invalid_api_key"; json(response, 401, { error: { message: "Invalid or missing bearer token.", type: "invalid_request_error", code: "invalid_api_key", param: null } }); return; }
-      if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : MODEL_IDS.map((model) => ({ id: model, ownedBy: "openai" })); json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai" })) }); return; }
+      if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : []; json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai" })) }); return; }
       if (method === "POST" && url.pathname === "/v1/chat/completions") { await handleChat(request, response, config, bridge, trace, options.fetch); return; }
       if (method === "POST" && url.pathname === "/v1/images/generations") { await handleImageGeneration(request, response, config, bridge, trace); return; }
       if (method === "POST" && url.pathname === "/v1/responses") { await handleResponses(request, response, config, bridge, trace, options.fetch); return; }

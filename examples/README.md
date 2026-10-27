@@ -20,7 +20,7 @@ The examples use these environment variables:
 | --- | --- | --- |
 | `PROXY_URL` | `http://127.0.0.1:8787` | Proxy origin, including a non-default port when needed |
 | `PROXY_API_KEY` | `local` | Bearer token sent to the proxy |
-| `PROXY_MODEL` | `gpt-5.6-sol` | Model used by the examples. May be a provider-prefixed id, e.g. `codex/gpt-5.6-sol` or `antigravity/gemini-3.8-flash-low` (see `GET /v1/models`) |
+| `PROXY_MODEL` | `gpt-6-luna` | Model used by the examples. May be a provider-prefixed id, e.g. `codex/gpt-6-luna` or `antigravity/gemini-3.8-flash-low`. The Codex list comes from Codex itself and depends on your plan and the codex-acp version, so check `GET /v1/models` and set this if `gpt-6-luna` is not listed |
 
 `basic.js` checks health, lists models, and makes non-streaming Chat Completions and Responses requests. `streaming.js` makes both streaming requests and prints received text deltas as they arrive.
 
