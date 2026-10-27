@@ -6,3 +6,8 @@ coverage/
 release/
 .claude/temp/
 .claude/director/
+
+.yarn/*
+!.yarn/releases
+!.yarn/plugins
+.pnp.*

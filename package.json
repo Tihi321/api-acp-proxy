@@ -19,7 +19,7 @@
     "dist": "npm run build && electron-builder --win --x64 --config electron-builder.config.cjs && node scripts/verify-package.mjs",
     "dist:installer": "npm run build && electron-builder --win nsis --x64 --config electron-builder.config.cjs && node scripts/verify-package.mjs",
     "dist:portable": "npm run build && electron-builder --win portable --x64 --config electron-builder.config.cjs && node scripts/verify-package.mjs",
-    "dist:dir":"npm run build && electron-builder --win --dir --x64 --config electron-builder.config.cjs",
+    "dist:dir": "npm run build && electron-builder --win --dir --x64 --config electron-builder.config.cjs",
     "verify:package": "node scripts/verify-package.mjs",
     "icons": "node scripts/make-icons.mjs",
     "probe": "node scripts/acp-probe.mjs",
