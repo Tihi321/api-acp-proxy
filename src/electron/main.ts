@@ -81,6 +81,9 @@ async function main(): Promise<void> {
   if (!secretCodec) logger.warn("OS secret storage is unavailable; API keys will be stored in plain text in the settings file.");
 
   const hideWindows = resolveUnpacked(path.join(here, "hide-windows.cjs"));
+  // The hook is also put in NODE_OPTIONS so it reaches the agents' own node grandchildren: codex-acp starts `node codex.js`, which spawns codex.exe without windowsHide (a console window would open for it). The user's existing NODE_OPTIONS is kept and the hook appended.
+  const hideWindowsOption = `--require="${hideWindows.replace(/\\/g, "/")}"`;
+  const nodeOptions = [process.env.NODE_OPTIONS, hideWindowsOption].filter(Boolean).join(" ");
   const proxy = new ProxyController({
     settingsPath,
     logger,
@@ -88,7 +91,7 @@ async function main(): Promise<void> {
     registry: [codexRegistration, antigravityRegistration, claudeRegistration],
     ctx: {
       dataDir,
-      nodeRuntime: { command: process.execPath, argsPrefix: ["--require", hideWindows], env: { ELECTRON_RUN_AS_NODE: "1" } },
+      nodeRuntime: { command: process.execPath, argsPrefix: ["--require", hideWindows], env: { ELECTRON_RUN_AS_NODE: "1", NODE_OPTIONS: nodeOptions } },
       resolveUnpacked,
       fetch: net.fetch as unknown as typeof fetch,
       openUrl: (url: string) => shell.openExternal(url),
