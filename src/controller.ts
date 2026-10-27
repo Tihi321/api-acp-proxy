@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { ActivityLog, type ActivityEntry } from "./activity.js";
 import { createLogger, type Logger } from "./logger.js";
 import { ProviderRouter } from "./router.js";
 import { createProxyServer } from "./server.js";
@@ -52,7 +53,7 @@ export interface SettingsSnapshot { settings: Settings; effective: Settings; ove
 
 interface Running { server: Server; router: ProviderRouter; providers: Provider[]; unsubscribe: Array<() => void>; toolBridge: ToolBridgeHub; }
 
-/** Owns settings, router and HTTP server. Emits "status" (ControllerStatus) on every change. */
+/** Owns settings, router and HTTP server. Emits "status" (ControllerStatus) on every change, "activity" when the request log changes, and "loginNeeded" (provider id, display name) when a request hit a provider that needs login. */
 export class ProxyController extends EventEmitter {
   private readonly env: NodeJS.ProcessEnv;
   private readonly logger: Logger;
@@ -67,6 +68,8 @@ export class ProxyController extends EventEmitter {
   private serverStatus: ServerStatus = { state: "stopped", host: "127.0.0.1", port: 0 };
   private wanted = false;
   private chain: Promise<unknown> = Promise.resolve();
+  /** The last requests (metadata only, in memory); it outlives server restarts. */
+  readonly activity = new ActivityLog();
 
   constructor(private readonly options: ControllerOptions = {}) {
     super();
@@ -78,6 +81,12 @@ export class ProxyController extends EventEmitter {
     this.drainMs = options.drainMs ?? 5000;
     this.dataDir = options.ctx?.dataDir ?? path.dirname(settingsPath);
     this.ctx = defaultRuntimeContext({ ...options.ctx, logger: this.logger, dataDir: this.dataDir });
+    this.activity.on("change", () => this.emit("activity"));
+    this.activity.on("record", (entry: ActivityEntry) => {
+      if (entry.error !== "provider_auth_required" || !entry.provider) return;
+      const name = this.registry.find((candidate) => candidate.id === entry.provider)?.displayName ?? entry.provider;
+      this.emit("loginNeeded", entry.provider, name);
+    });
   }
 
   /** Registers (or replaces) a provider factory. Takes effect on the next start. */
@@ -171,7 +180,7 @@ export class ProxyController extends EventEmitter {
       catch (error) { this.logger.error(`Could not create provider '${entry.id}': ${error instanceof Error ? error.message : String(error)}`); }
     }
     const router = new ProviderRouter({ providers, logger: this.logger, cachePath: path.join(this.dataDir, "models-cache.json"), modelsWaitMs: config.modelsWaitMs });
-    const server = createProxyServer(config, router, { fetch: ctx.fetch, toolBridge });
+    const server = createProxyServer(config, router, { fetch: ctx.fetch, toolBridge, activity: this.activity });
     try {
       await new Promise<void>((resolve, reject) => {
         server.once("error", reject);
@@ -219,6 +228,15 @@ export class ProxyController extends EventEmitter {
     const method = methodId ?? (this.resolved?.providers[providerId]?.authMethodId as string | undefined);
     try { await provider.login(method); } finally { this.publish(); }
     void this.running?.router.refresh(providerId).then(() => this.publish(), () => undefined);
+    return this.status();
+  }
+
+  /** Signs a provider out (see `Provider.logout`): the agent's ACP `logout`, or the provider's own fallback. Not queued behind lifecycle operations. */
+  async logout(providerId: string): Promise<ControllerStatus> {
+    const provider = this.running?.providers.find((entry) => entry.id === providerId);
+    if (!provider) throw new Error(`Provider '${providerId}' is not running; enable it and start the proxy first.`);
+    if (!provider.logout) throw new Error(`${provider.displayName} cannot be logged out from here.`);
+    try { await provider.logout(); } finally { this.publish(); }
     return this.status();
   }
 

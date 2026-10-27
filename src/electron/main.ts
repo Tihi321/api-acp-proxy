@@ -1,6 +1,7 @@
 import { app, clipboard, dialog, ipcMain, net, safeStorage, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ProxyController } from "../controller.js";
@@ -8,12 +9,13 @@ import type { ControllerStatus } from "../controller.js";
 import { createLogger } from "../logger.js";
 import { claudeRegistration } from "../providers/claude.js";
 import { codexRegistration } from "../providers/codex.js";
+import { listMcpServers } from "../mcp-servers.js";
 import { defaultSettingsPath } from "../settings.js";
 import type { SecretCodec, SettingsPatch } from "../settings.js";
 import { antigravityRegistration, installAntigravity, readInstallInfo } from "./antigravity.js";
 import { SettingsWindow } from "./settings-window.js";
 import { TrayController } from "./tray.js";
-import type { ActionResult, FieldError, InstallInfoView, InstallResult, SaveResult, StateView } from "../shared/ipc.js";
+import type { ActionResult, ActivityView, FieldError, InstallInfoView, InstallResult, OpenTarget, SaveResult, StateView } from "../shared/ipc.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(here, "..", "..");
@@ -118,9 +120,14 @@ async function main(): Promise<void> {
       overridden: snapshot.overridden,
       settingsPath: snapshot.path,
       secretsEncrypted: Boolean(secretCodec),
+      codexHome: codexHomeView(snapshot.effective.providers.codex.isolatedHome),
+      mcpServers: listMcpServers(snapshot.effective.mcpServers),
       ...(info ? { antigravityInstall: toInstallView(info) } : {}),
     };
   };
+
+  /** The folder Codex keeps its login in: the proxy's own home, or the user's CODEX_HOME / ~/.codex. */
+  const codexHomeView = (isolated: boolean): StateView["codexHome"] => isolated ? { path: path.join(dataDir, "codex-home"), isolated } : { path: process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), isolated };
 
   let pushTimer: NodeJS.Timeout | undefined;
   const pushState = (): void => {
@@ -132,8 +139,16 @@ async function main(): Promise<void> {
     }, 80);
   };
 
+  const activityViews = (): ActivityView[] => proxy.activity.list(50);
+  let activityTimer: NodeJS.Timeout | undefined;
+  const pushActivity = (): void => {
+    if (activityTimer) return;
+    activityTimer = setTimeout(() => { activityTimer = undefined; if (win.webContents) win.send("proxy:activity", activityViews()); tray?.setActivity(proxy.activity.summary()); }, 150);
+  };
+
   tray = new TrayController({
     assetsDir: path.join(appRoot, "assets"),
+    login: (providerId) => void proxy.login(providerId).catch((error) => logger.warn(`Login from the tray failed: ${error instanceof Error ? error.message : String(error)}`)),
     openSettings: () => win.show(),
     openLogs: () => void shell.openPath(logsDir),
     quit: () => app.quit(),
@@ -142,6 +157,8 @@ async function main(): Promise<void> {
     refreshModels: () => void proxy.refreshModels().catch((error) => logger.warn(`Refresh failed: ${String(error)}`)),
   });
   proxy.on("status", (status: ControllerStatus) => { tray?.update(status); pushState(); });
+  proxy.on("activity", pushActivity);
+  proxy.on("loginNeeded", (providerId: string, name: string) => tray?.loginNeeded(providerId, name));
   tray.update(proxy.status());
 
   // IPC: every handler refuses callers other than our own settings page.
@@ -174,6 +191,20 @@ async function main(): Promise<void> {
   handle("proxy:login", (providerId: string, methodId?: string): Promise<ActionResult> | ActionResult => {
     if (typeof providerId !== "string") return { ok: false, message: "Invalid provider" };
     return action(() => proxy.login(providerId, typeof methodId === "string" && methodId ? methodId : undefined));
+  });
+  handle("proxy:logout", (providerId: string): Promise<ActionResult> | ActionResult => {
+    if (typeof providerId !== "string") return { ok: false, message: "Invalid provider" };
+    return action(() => proxy.logout(providerId));
+  });
+  handle("proxy:activity", () => activityViews());
+  handle("proxy:clearActivity", () => { proxy.activity.clear(); });
+  handle("proxy:openPath", async (target: unknown): Promise<ActionResult> => {
+    const known: Record<OpenTarget, () => Promise<string>> = {
+      codexHome: async () => { const home = codexHomeView((await proxy.getSettings()).effective.providers.codex.isolatedHome); if (home.isolated) await fs.promises.mkdir(home.path, { recursive: true }); return shell.openPath(home.path); },
+      settingsFile: async () => { const error = await shell.openPath(settingsPath); if (error) shell.showItemInFolder(settingsPath); return ""; },
+    };
+    if (typeof target !== "string" || !Object.hasOwn(known, target)) return { ok: false, message: "Invalid target" };
+    try { const error = await known[target as OpenTarget](); return error ? { ok: false, message: error } : { ok: true }; } catch (error) { return failure(error); }
   });
   handle("proxy:pickExecutable", async () => {
     const parent = win.browserWindow;

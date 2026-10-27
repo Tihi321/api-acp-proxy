@@ -59,4 +59,19 @@ fieldset.sub legend { padding: 0 4px; color: var(--muted); font-size: 11px; text
 dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--card); color: var(--fg); max-width: 480px; padding: 16px 20px; }
 dialog::backdrop { background: rgba(0, 0, 0, .5); }
 dialog a { color: var(--accent); }
+.push { margin-left: auto; }
+button.danger { background: var(--err); color: #ffffff; border-color: var(--err); font-weight: 600; }
+.home-row { margin: 2px 0 6px; flex-wrap: wrap; } .home-row .mono { word-break: break-all; }
+.ov-list, .ov-mcp-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.ov-row { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.ov-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; } .ov-actions { margin-left: auto; display: flex; gap: 6px; }
+.ov-line { margin: 4px 0 0; } .ov-home { margin: 4px 0 0; }
+.ov-row .chips { margin-top: 6px; max-height: none; } .chips li.count { background: none; border: 1px solid var(--border); font-family: inherit; }
+.ov-mcp { margin-top: 12px; } .ov-mcp-list { gap: 4px; margin: 6px 0 4px; } .ov-mcp-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; } .ov-mcp-item .mono { word-break: break-all; }
+.table-wrap { overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.table td { padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.table tr:last-child td { border-bottom: 0; }
+.table td.num { text-align: right; font-variant-numeric: tabular-nums; } .table td.ok { color: var(--ok); } .table td.bad { color: var(--err); }
 [hidden] { display: none !important; }

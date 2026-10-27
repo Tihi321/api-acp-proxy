@@ -81,7 +81,7 @@ function appShade(x, y) {
   return color ? [...color, 1] : null;
 }
 
-const colors = { idle: [128, 134, 145], running: [34, 197, 94], error: [239, 68, 68] };
+const colors = { idle: [128, 134, 145], running: [34, 197, 94], warn: [245, 158, 11], error: [239, 68, 68] };
 fs.mkdirSync(path.join(root, "assets"), { recursive: true });
 fs.mkdirSync(path.join(root, "build"), { recursive: true });
 for (const [name, color] of Object.entries(colors)) {

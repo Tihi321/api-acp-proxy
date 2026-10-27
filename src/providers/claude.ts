@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -47,22 +47,28 @@ export function resolveClaudeBinary(ctx: RuntimeContext, settings: ClaudeSetting
   } catch { return undefined; }
 }
 
-/** Runs `claude auth login` in a visible console window and resolves when it exits successfully. The console-subsystem claude binary is started directly (the packaged app exe is a GUI program and would give it no console); falls back to the adapter's --cli. */
-function consoleLogin(ctx: RuntimeContext, settings: ClaudeSettings, env: NodeJS.ProcessEnv, methodId: string): Promise<void> {
-  const flag = LOGIN_FLAGS[methodId];
-  if (!flag) return Promise.reject(new AcpUnavailableError(`Unknown Claude login method '${methodId}'.`));
+/** Runs `claude auth <authArgs>` and resolves when it exits successfully: in a visible console window for a login (`visible`), hidden for a non-interactive command (logout). The console-subsystem claude binary is started directly (the packaged app exe is a GUI program and would give it no console); falls back to the adapter's --cli. */
+function consoleAuth(ctx: RuntimeContext, settings: ClaudeSettings, env: NodeJS.ProcessEnv, authArgs: string[], visible: boolean): Promise<void> {
   const binary = resolveClaudeBinary(ctx, settings);
   const childEnv = claudeEnv(ctx, settings, env);
-  const [program, args] = binary ? [binary, ["auth", "login", flag]] : [ctx.nodeRuntime.command, [adapterEntry(ctx), "--cli", "auth", "login", flag]];
+  const [program, args] = binary ? [binary, ["auth", ...authArgs]] : [ctx.nodeRuntime.command, [adapterEntry(ctx), "--cli", "auth", ...authArgs]];
   if (binary) delete childEnv.ELECTRON_RUN_AS_NODE;
+  const what = authArgs[0] === "logout" ? "logout" : "login";
   if (process.platform !== "win32") return Promise.reject(new AcpUnavailableError(`Run this in a terminal, then retry: "${program}" ${args.map((arg) => /\s/.test(arg) ? `"${arg}"` : arg).join(" ")}`));
-  // cmd /s strips the first and last quote of the command string, so the whole line is wrapped in one extra pair; arguments are passed verbatim.
-  const line = `"start "Claude login" /wait "${program}" ${args.map((arg) => `"${arg}"`).join(" ")}"`;
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn("cmd.exe", ["/d", "/s", "/c", line], { env: childEnv, stdio: "ignore", windowsVerbatimArguments: true, windowsHide: false });
+  const done = (child: ChildProcess) => new Promise<void>((resolve, reject) => {
     child.once("error", reject);
-    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`The Claude login exited with code ${code ?? "unknown"}.`)));
+    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`The Claude ${what} exited with code ${code ?? "unknown"}.`)));
   });
+  if (!visible) return done(spawn(program, args, { env: childEnv, stdio: "ignore", windowsHide: true }));
+  // cmd /s strips the first and last quote of the command string, so the whole line is wrapped in one extra pair; arguments are passed verbatim.
+  const line = `"start "Claude ${what}" /wait "${program}" ${args.map((arg) => `"${arg}"`).join(" ")}"`;
+  return done(spawn("cmd.exe", ["/d", "/s", "/c", line], { env: childEnv, stdio: "ignore", windowsVerbatimArguments: true, windowsHide: false }));
+}
+
+/** `claude auth login --claudeai|--console` in a console window. */
+function consoleLogin(ctx: RuntimeContext, settings: ClaudeSettings, env: NodeJS.ProcessEnv, methodId: string): Promise<void> {
+  const flag = LOGIN_FLAGS[methodId];
+  return flag ? consoleAuth(ctx, settings, env, ["login", flag], true) : Promise.reject(new AcpUnavailableError(`Unknown Claude login method '${methodId}'.`));
 }
 
 /** Even with persistSession off the CLI leaves an empty `<config>/projects/<cwd>/memory` directory per session; remove it (never a directory holding anything else). */
@@ -149,6 +155,10 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
       return undefined;
     },
     externalLogin: (ctx, methodId) => consoleLogin(ctx, settings, env, methodId),
+    // The adapter advertises ACP `logout` (it runs `claude auth logout` itself); this is the same command run by hand for an adapter that does not.
+    logoutFallback: (ctx) => consoleAuth(ctx, settings, env, ["logout"], false),
+    // The login lives in the Claude config dir: the user's own ~/.claude unless the setting names another one.
+    loginHome: (_ctx, processEnv) => ({ path: settings.configDir || processEnv.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), shared: !settings.configDir }),
   };
   return { ...descriptor, ...overrides };
 }

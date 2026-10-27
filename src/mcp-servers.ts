@@ -1,6 +1,7 @@
 import { ApiError, type McpToolRequest } from "./api.js";
 import type { McpServerSpec } from "./mcp-config.js";
 import type { McpServerSetting } from "./settings.js";
+import type { McpServerView } from "./shared/ipc.js";
 
 const asPairs = (record: Record<string, string> | undefined): Array<{ name: string; value: string }> => Object.entries(record ?? {}).map(([name, value]) => ({ name, value }));
 const bad = (message: string, code = "invalid_request"): ApiError => new ApiError(400, code, message, "tools");
@@ -33,5 +34,15 @@ export function resolveMcpServers(requested: McpToolRequest[], configured: Recor
     if (request.headers) throw bad(`The mcp tool '${request.label}' is a configured server: it takes no headers from a request.`);
     if ("command" in known) return { label: request.label, transport: "stdio", command: known.command, headers: [], args: known.args ?? [], env: asPairs(known.env), ...filter };
     return { label: request.label, transport: known.transport === "sse" ? "sse" : "http", url: known.url, headers: asPairs(known.headers), args: [], env: [], ...filter };
+  });
+}
+
+/** The configured servers as the settings window lists them (read-only, sorted by label): a URL shown without userinfo, query and fragment, a command shown without its arguments, never headers or env, since those can hold secrets. */
+export function listMcpServers(configured: Record<string, McpServerSetting> = {}): McpServerView[] {
+  return Object.entries(configured).sort(([a], [b]) => a.localeCompare(b)).map(([label, server]): McpServerView => {
+    if ("command" in server) return { label, transport: "stdio", target: server.command };
+    let target = server.url;
+    try { const url = new URL(server.url); target = `${url.origin}${url.pathname === "/" ? "" : url.pathname}`; } catch { /* the schema checked it is a URL */ }
+    return { label, transport: server.transport === "sse" ? "sse" : "http", target };
   });
 }

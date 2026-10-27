@@ -119,6 +119,8 @@ export class ProviderRouter implements AcpLike {
 
   canUseMcp(id: string): boolean { return this.resolve(id)?.provider.mcpSupport === true; }
 
+  providerOf(id: string): string | undefined { return this.resolve(id)?.provider.id; }
+
   private entries(): ListedModel[] {
     const owners = this.unprefixedOwners();
     const out: ListedModel[] = [];
