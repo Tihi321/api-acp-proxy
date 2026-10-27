@@ -154,9 +154,10 @@ function renderProvider(provider: string, current: StateView): void {
 
   const login = role<HTMLButtonElement>(root, "login");
   const unavailable = ["disabled", "not_installed", "terms_required"].includes(providerState) || current.status.server.state !== "running";
-  login.disabled = unavailable || loggingIn.has(provider);
-  login.textContent = loggingIn.has(provider) ? "Waiting for login…" : "Log in";
-  login.title = unavailable ? "Enable and save the provider (and start the server) first." : "";
+  const signedIn = !unavailable && isSignedIn(status);
+  login.disabled = unavailable || signedIn || loggingIn.has(provider);
+  login.textContent = loginLabel(provider, signedIn);
+  login.title = unavailable ? "Enable and save the provider (and start the server) first." : signedIn ? SIGNED_IN_HINT : "";
 
   const accountNode = root.querySelector<HTMLElement>('[data-role="account"]');
   if (accountNode) { accountNode.textContent = status?.account ? `Signed in as ${status.account}` : ""; accountNode.hidden = !status?.account; }
@@ -175,6 +176,12 @@ function renderProvider(provider: string, current: StateView): void {
 }
 
 const make = <K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text = ""): HTMLElementTagNameMap[K] => { const node = document.createElement(tag); if (className) node.className = className; if (text) node.textContent = text; return node; };
+
+/** The agent is up and signed in (it answered `initialize` and did not ask for a login). */
+const isSignedIn = (status: ProviderStatusView | undefined): boolean => status?.state === "ready";
+const SIGNED_IN_HINT = "Already signed in. Log out first to sign in with another account or method.";
+/** "Logged in" while signed in, so the button does not look like a login is still needed. */
+const loginLabel = (provider: string, signedIn: boolean): string => loggingIn.has(provider) ? "Waiting for login…" : signedIn ? "Logged in" : "Log in";
 
 /** Whether Log in / Log out can do anything now: the provider is on and usable, and the server runs. */
 const providerUsable = (status: ProviderStatusView | undefined, current: StateView): boolean => !["disabled", "not_installed", "terms_required"].includes(status?.state ?? "disabled") && current.status.server.state === "running";
@@ -206,10 +213,11 @@ function renderOverview(current: StateView): void {
     head.append(badge);
     if (status?.agentVersion) head.append(make("span", "muted mono", `v${status.agentVersion}`));
     const actions = make("div", "ov-actions");
-    const login = make("button", "small", loggingIn.has(id) ? "Waiting for login…" : "Log in");
+    const signedIn = usable && isSignedIn(status);
+    const login = make("button", "small", loginLabel(id, signedIn));
     login.type = "button";
-    login.disabled = !usable || loggingIn.has(id) || loggingOut.has(id);
-    login.title = usable ? "Sign in with the method picked in the card below." : "Enable and save the provider (and start the server) first.";
+    login.disabled = !usable || signedIn || loggingIn.has(id) || loggingOut.has(id);
+    login.title = !usable ? "Enable and save the provider (and start the server) first." : signedIn ? SIGNED_IN_HINT : "Sign in with the method picked in the card below.";
     login.onclick = () => void startLogin(id);
     const logout = make("button", "small", loggingOut.has(id) ? "Logging out…" : "Log out");
     logout.type = "button";
