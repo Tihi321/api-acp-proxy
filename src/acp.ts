@@ -25,6 +25,8 @@ export interface AcpLike {
   canGenerateImages?(model: string): boolean;
   /** Whether the model's provider can search the web (a bridge without this method is asked and answers 400 itself). */
   canSearchWeb?(model: string): boolean;
+  /** Whether the model's provider accepts image input: `undefined` until the provider has started and said so (a bridge without this method never knows). */
+  acceptsImages?(model: string): boolean | undefined;
   /** Whether the model's provider can be given function tools (a bridge without this method is asked and answers 400 itself). */
   canCallTools?(model: string): boolean;
   /** Whether the model's provider can be given remote MCP servers (a bridge without this method is asked and answers 400 itself). */

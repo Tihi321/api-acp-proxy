@@ -28,6 +28,11 @@
         <button id="ov-copy" class="small" type="button" hidden>Copy</button>
         <button id="ov-playground" class="small" type="button" hidden title="Try the models in your browser">Open playground</button>
       </div>
+      <div class="status-line">
+        <span class="muted">MCP</span>
+        <span id="ov-mcp-url" class="mono">Not running</span>
+        <button id="ov-mcp-copy" class="small" type="button" hidden title="Copies the claude mcp add command that registers this server in Claude Code">Copy command</button>
+      </div>
       <ul class="ov-list" id="ov-providers"></ul>
       <p class="msg" id="ov-msg" role="status"></p>
       <div class="ov-mcp">

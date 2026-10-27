@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import os from "node:os";
+import path from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import type { AcpLike, GenerateOptions, GenerationResult } from "./acp.js";
 import type { GeneratedImage } from "./provider.js";
@@ -10,6 +12,7 @@ import { beginSse, endSse, writeSse } from "./sse.js";
 import { extractCitations } from "./citations.js";
 import { resolveMcpServers } from "./mcp-servers.js";
 import { ToolBridgeHub } from "./tool-bridge.js";
+import { McpEndpoint, type McpEndpointTuning } from "./mcp-endpoint.js";
 import { servePlayground } from "./playground-files.js";
 import { CHARS_PER_TOKEN, chatUsage, openAiUsage, responsesUsage } from "./usage.js";
 import type { ActivityEntry, ActivityFeature, ActivityLog } from "./activity.js";
@@ -355,9 +358,10 @@ function track(activity: ActivityLog, bridge: AcpLike, response: ServerResponse,
   });
 }
 
-/** `options.fetch` downloads http(s) image URLs (default: the global fetch). `options.toolBridge` is the MCP endpoint `/mcp/<token>` for function tools; the server tells it where it listens. `options.activity` gets one entry per API request (not for /healthz and not for the tool bridge). */
-export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options: { fetch?: typeof fetch; toolBridge?: ToolBridgeHub; activity?: ActivityLog } = {}): Server {
+/** `options.fetch` downloads http(s) image URLs (default: the global fetch). `options.toolBridge` is the MCP endpoint `/mcp/<token>` for function tools; the server tells it where it listens. `options.activity` gets one entry per API request (not for /healthz and not for the tool bridge; `POST /v1/mcp` records one entry per tool call itself). `options.mcpImageDir` is where `generate_image` saves an image the caller named no folder for; `options.isLocalCaller` decides who may name local paths (default: the socket is loopback); `options.mcp` tunes the MCP endpoint (tests). */
+export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options: { fetch?: typeof fetch; toolBridge?: ToolBridgeHub; activity?: ActivityLog; mcpImageDir?: string; isLocalCaller?: (request: IncomingMessage) => boolean; mcp?: McpEndpointTuning } = {}): Server {
   const toolBridge = options.toolBridge ?? new ToolBridgeHub();
+  const mcp = new McpEndpoint({ config, bridge, imageDir: options.mcpImageDir ?? path.join(os.tmpdir(), "api-acp-proxy", "mcp-images"), ...(options.fetch ? { fetch: options.fetch } : {}), ...(options.activity ? { activity: options.activity } : {}), ...(options.isLocalCaller ? { isLocalCaller: options.isLocalCaller } : {}), ...options.mcp });
   const server = createServer(async (request, response) => {
     const trace: Trace = { stream: false, features: new Set() };
     try {
@@ -369,8 +373,11 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
       // The playground page holds no data (its API calls carry the key), so it is served before the key check and is not logged as activity.
       if (await servePlayground(method, url.pathname, response)) return;
       const route = `${method} ${url.pathname}`;
-      if (options.activity) track(options.activity, bridge, response, ENDPOINTS.has(route) ? route : "other", trace);
+      // The MCP endpoint records its own entries (one per tool call), so its HTTP requests are not tracked.
+      const mcpRoute = url.pathname === "/v1/mcp";
+      if (options.activity && !mcpRoute) track(options.activity, bridge, response, ENDPOINTS.has(route) ? route : "other", trace);
       if (!authenticated(request, config)) { trace.error = "invalid_api_key"; json(response, 401, { error: { message: "Invalid or missing bearer token.", type: "invalid_request_error", code: "invalid_api_key", param: null } }); return; }
+      if (mcpRoute) { await mcp.handle(request, response); return; }
       if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : []; json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai" })) }); return; }
       if (method === "POST" && url.pathname === "/v1/chat/completions") { await handleChat(request, response, config, bridge, trace, options.fetch); return; }
       if (method === "POST" && url.pathname === "/v1/images/generations") { await handleImageGeneration(request, response, config, bridge, trace); return; }
@@ -386,6 +393,6 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
     }
   });
   server.on("listening", () => { const address = server.address(); if (address && typeof address === "object") toolBridge.setAddress(address.address, address.port); });
-  server.on("close", () => toolBridge.closeAll());
+  server.on("close", () => { toolBridge.closeAll(); mcp.close(); });
   return server;
 }

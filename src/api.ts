@@ -467,6 +467,11 @@ function imageHints(size: string | null | undefined, quality: string | null | un
   return hints;
 }
 
+/** The user message text of an image request: the prompt and the hint lines (size as an aspect ratio, quality, background). A malformed size is a 400 `invalid_request`. */
+export function imageGenerationText(prompt: string, size?: string | null, quality?: string | null, background?: string | null): string {
+  return [`Generate an image: ${prompt}`, ...imageHints(size, quality, background)].join("\n");
+}
+
 /** `POST /v1/images/generations`: one image from a prompt. Edits (`image`, `mask`), `n` above 1, URL answers and streaming are 400s. */
 export function normalizeImageGeneration(raw: unknown, isKnownModel?: ModelCheck): ImageGenerationRequest {
   const parsed = imageRequestSchema.safeParse(raw);
@@ -479,7 +484,7 @@ export function normalizeImageGeneration(raw: unknown, isKnownModel?: ModelCheck
   if (data.stream === true) reject("stream", "Streaming image generation is not supported.");
   if (data.partial_images != null && data.partial_images !== 0) reject("partial_images", "Partial images are not supported; the image is returned whole.");
   validateModel(data.model, isKnownModel);
-  const text = [`Generate an image: ${data.prompt}`, ...imageHints(data.size, data.quality, data.background)].join("\n");
+  const text = imageGenerationText(data.prompt, data.size, data.quality, data.background);
   return { model: data.model, conversation: [textMessage("user", text)], ...(data.output_format ? { outputFormat: data.output_format } : {}) };
 }
 
