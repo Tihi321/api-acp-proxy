@@ -33,4 +33,6 @@ export interface AcpLike {
   canUseMcp?(model: string): boolean;
   /** The id of the provider the model routes to (for the activity log). */
   providerOf?(model: string): string | undefined;
+  /** Running and waiting requests per provider id (for /healthz). */
+  queueStats?(): Record<string, { active: number; queued: number; limit: number; maxQueue: number }>;
 }

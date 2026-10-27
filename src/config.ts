@@ -19,6 +19,10 @@ export interface ProxyConfig {
   reuseSessions?: boolean;
   /** How long a turn suspended on a tool call waits for the client's result (shorter for agents that give up sooner). */
   toolResultTimeoutMs?: number;
+  /** Requests that may run at once per provider (0 = unlimited; unset = unlimited). */
+  maxConcurrent?: number;
+  /** Requests that may wait per provider before a 429 (0 = unlimited). */
+  maxQueue?: number;
   /** `settings.mcpServers`: the MCP servers a Responses request may name by label. */
   mcpServers?: Record<string, McpServerSetting>;
 }

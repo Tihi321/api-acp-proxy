@@ -94,6 +94,9 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 | `PROXY_IGNORE_SAMPLING` | `false` | Drop `temperature`, `top_p`, penalties, `seed` and the Responses `stream_options` instead of answering 400, for clients that always send them (settings: `server.ignoreSampling`) |
 | `PROXY_REUSE_SESSIONS` | `false` | Keep an agent session after a completed turn and continue it when the next request extends the same conversation, sending only the new messages (settings: `server.reuseSessions`) |
 | `PROXY_TOOL_RESULT_TIMEOUT_MS` | `600000` | How long a request that ended with tool calls waits for the next request to bring the results, before the agent turn is cancelled. Cut to the agent's own limit minus 30 s: 150 s for Antigravity, 270 s for Codex; see [Function calling](#function-calling) (settings: `server.toolResultTimeoutMs`) |
+| `PROXY_MAX_CONCURRENT` | `4` | Requests that run at once per provider; more wait in a FIFO queue, `0` = unlimited; see [Concurrency cap](#concurrency-cap) (settings: `server.maxConcurrent`) |
+| `PROXY_CODEX_MAX_CONCURRENT` / `PROXY_CLAUDE_MAX_CONCURRENT` / `PROXY_ANTIGRAVITY_MAX_CONCURRENT` | unset | Cap of one provider, overriding `PROXY_MAX_CONCURRENT` (`0` = unlimited; settings: `providers.<id>.maxConcurrent`) |
+| `PROXY_MAX_QUEUE` | `0` | Requests that may wait per provider before a 429 `provider_queue_full`; `0` = no limit (settings: `server.maxQueue`) |
 | `PROXY_CODEX_ENABLED` | `true` | Enable the Codex provider (`1/0`, `true/false`, `yes/no`, `on/off`) |
 | `PROXY_CODEX_ISOLATED_HOME` | `true` | Run Codex with its own `CODEX_HOME` (`<data dir>/codex-home`) instead of `~/.codex`; see [Codex](#codex) (settings: `providers.codex.isolatedHome`) |
 | `PROXY_ACP_COMMAND` / `PROXY_ACP_ARGS` | dependency-resolved adapter | Custom Codex ACP executable and space-separated arguments |
@@ -105,6 +108,18 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 | `PROXY_ANTIGRAVITY_COMMAND` | unset | Path to `agy_acp_server.exe` (overrides the `executablePath` setting) |
 | `PROXY_ANTIGRAVITY_ACCEPT_TERMS` | unset | Set to `1` to acknowledge the Antigravity terms headlessly |
 | `GEMINI_API_KEY`, `GEMINI_HOME` | unset | Passed through to the Antigravity server |
+
+## Concurrency cap
+
+Many apps sharing one proxy would otherwise start as many agent turns at once on one subscription. The proxy keeps a **cap per provider** (default 4 running requests); the next ones wait in a **FIFO queue** and start as soon as a slot frees up. Nothing is rejected for being busy.
+
+- **Setting:** `server.maxConcurrent` / `PROXY_MAX_CONCURRENT` is the default for every provider; `providers.codex|claude|antigravity.maxConcurrent` / `PROXY_<PROVIDER>_MAX_CONCURRENT` overrides it for one provider. `0` means unlimited (the old behaviour). Both are fields of the settings window (the server card, and one field on each provider card; empty = the server value). Saving restarts the server.
+- **What counts:** every request that runs an agent turn (chat, Responses, image generation and the MCP `ask_model` / `generate_image`), streaming or not. The slot is held from the start of the turn until it ends, fails, is cancelled or times out. A turn that ends with tool calls returns to the client and frees its slot; the request that brings the tool results queues like any other.
+- **Timeout:** the wait counts toward `PROXY_TIMEOUT_MS`. A request that is still queued when it runs out answers 504 `request_timeout`, and one whose client disconnects while queued is dropped without ever starting.
+- **Queue cap (optional):** `server.maxQueue` / `PROXY_MAX_QUEUE` (default `0` = no limit) caps the waiting requests per provider. A request that finds the queue full gets 429 with `{"error": {"type": "rate_limit_error", "code": "provider_queue_full"}}`.
+- **Visibility:** `GET /healthz` lists `providers.<id>: { active, queued, max_concurrent, max_queue }` for every enabled provider, and the log has an info line each time a request has to wait.
+
+Measured on this machine (hub load test): Codex latency stayed flat (about 2.1 s) up to 6 parallel requests, Antigravity grew from 3.9 s alone to about 8 s at 4 to 6, so a lower cap for Antigravity (for example 2) costs little.
 
 ## Codex
 
@@ -155,7 +170,7 @@ Google's Antigravity terms ([clause 6](https://antigravity.google/terms)) restri
 
 ## Supported API
 
-`GET /healthz` is unauthenticated and returns service health. `GET /v1/models` lists the models of the enabled providers (see [Models and providers](#models-and-providers)). `POST /v1/mcp` is the proxy's own MCP server (Streamable HTTP) for harnesses such as Claude Code, behind the same API key as the other `/v1/*` routes; see [MCP server (for harnesses)](#mcp-server-for-harnesses).
+`GET /healthz` is unauthenticated and returns service health, including the running and queued requests per provider (see [Concurrency cap](#concurrency-cap)). `GET /v1/models` lists the models of the enabled providers (see [Models and providers](#models-and-providers)). `POST /v1/mcp` is the proxy's own MCP server (Streamable HTTP) for harnesses such as Claude Code, behind the same API key as the other `/v1/*` routes; see [MCP server (for harnesses)](#mcp-server-for-harnesses).
 
 `POST /v1/chat/completions` accepts `model`, `messages`, and `stream`. Messages may have `system`, `developer`, `user`, `assistant` or `tool` roles (see [Function calling](#function-calling)) and string or part-array content (`text` parts, and `image_url` parts in user messages, see [Images](#images)). `web_search_options` turns on web search (see [Web search](#web-search)). `stream_options.include_usage: true` adds a final chunk with empty `choices` and the `usage` object before `data: [DONE]` (every other chunk then carries `usage: null`). Streaming uses standard `text/event-stream` frames and terminates with `data: [DONE]`.
 

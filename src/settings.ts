@@ -7,6 +7,7 @@ import { silentLogger, type Logger } from "./logger.js";
 import { HEADER_NAME, MCP_LABEL, plainValue } from "./mcp-config.js";
 import { BRIDGE_SERVER_NAME } from "./tool-bridge.js";
 
+const nonNegative = (fallback: number) => z.number().int().min(0).default(fallback);
 const positive = (fallback: number) => z.number().int().positive().default(fallback);
 
 const mcpLabel = z.string().regex(MCP_LABEL, "An MCP server label is 1 to 64 letters, digits, '_' or '-'.").refine((label) => label !== BRIDGE_SERVER_NAME, `The MCP server label '${BRIDGE_SERVER_NAME}' is reserved for the proxy's own tool bridge.`);
@@ -52,6 +53,10 @@ export const settingsSchema = z.object({
     reuseSessions: z.boolean().default(false),
     /** How long a turn that called a client tool waits for the tool result before the agent turn is cancelled (the agents' own limits can be shorter). */
     toolResultTimeoutMs: positive(10 * 60 * 1000),
+    /** Requests that run at once per provider; more wait in a FIFO queue. 0 = unlimited. */
+    maxConcurrent: nonNegative(4),
+    /** Requests that may wait per provider; a full queue answers 429. 0 = unlimited. */
+    maxQueue: nonNegative(0),
   }).default({}),
   providers: z.object({
     codex: z.object({
@@ -61,6 +66,8 @@ export const settingsSchema = z.object({
       acpArgs: z.array(z.string()).default([]),
       /** Run Codex with its own CODEX_HOME (`<dataDir>/codex-home`: no user skills, plugins or MCP servers; needs its own login). Off keeps ~/.codex. */
       isolatedHome: z.boolean().default(true),
+      /** Overrides `server.maxConcurrent` for this provider (0 = unlimited; absent = the global value). */
+      maxConcurrent: z.number().int().min(0).optional(),
     }).default({}),
     antigravity: z.object({
       enabled: z.boolean().default(false),
@@ -73,6 +80,7 @@ export const settingsSchema = z.object({
       purgeSessions: z.boolean().default(true),
       /** Auth method of the last successful login (written by the provider, not the UI). */
       lastAuthMethodId: z.string().optional(),
+      maxConcurrent: z.number().int().min(0).optional(),
     }).default({}),
     claude: z.object({
       enabled: z.boolean().default(false),
@@ -82,6 +90,7 @@ export const settingsSchema = z.object({
       executablePath: z.string().optional(),
       authMethodId: z.string().optional(),
       termsAcknowledgedAt: z.string().optional(),
+      maxConcurrent: z.number().int().min(0).optional(),
     }).default({}),
   }).default({}),
   /** MCP servers a Responses request may name by `server_label` (JSON only, no settings-window editor). Headers and env are stored as written. */
@@ -204,6 +213,11 @@ function parseInt(value: string | undefined): number | undefined {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
+function parseNonNegative(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
 function parseBool(value: string | undefined): boolean | undefined {
   if (value === undefined || value === "") return undefined;
   const lower = value.toLowerCase();
@@ -228,6 +242,11 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
   apply("server.ignoreSampling", parseBool(env.PROXY_IGNORE_SAMPLING), (v) => { server.ignoreSampling = v; });
   apply("server.reuseSessions", parseBool(env.PROXY_REUSE_SESSIONS), (v) => { server.reuseSessions = v; });
   apply("server.toolResultTimeoutMs", parseInt(env.PROXY_TOOL_RESULT_TIMEOUT_MS), (v) => { server.toolResultTimeoutMs = v; });
+  apply("server.maxConcurrent", parseNonNegative(env.PROXY_MAX_CONCURRENT), (v) => { server.maxConcurrent = v; });
+  apply("server.maxQueue", parseNonNegative(env.PROXY_MAX_QUEUE), (v) => { server.maxQueue = v; });
+  apply("providers.codex.maxConcurrent", parseNonNegative(env.PROXY_CODEX_MAX_CONCURRENT), (v) => { providers.codex.maxConcurrent = v; });
+  apply("providers.antigravity.maxConcurrent", parseNonNegative(env.PROXY_ANTIGRAVITY_MAX_CONCURRENT), (v) => { providers.antigravity.maxConcurrent = v; });
+  apply("providers.claude.maxConcurrent", parseNonNegative(env.PROXY_CLAUDE_MAX_CONCURRENT), (v) => { providers.claude.maxConcurrent = v; });
   apply("providers.codex.enabled", parseBool(env.PROXY_CODEX_ENABLED), (v) => { providers.codex.enabled = v; });
   apply("providers.codex.isolatedHome", parseBool(env.PROXY_CODEX_ISOLATED_HOME), (v) => { providers.codex.isolatedHome = v; });
   apply("providers.codex.acpCommand", env.PROXY_ACP_COMMAND || undefined, (v) => { providers.codex.acpCommand = v; });
@@ -248,6 +267,8 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
     ignoreSampling: server.ignoreSampling,
     reuseSessions: server.reuseSessions,
     toolResultTimeoutMs: server.toolResultTimeoutMs,
+    maxConcurrent: server.maxConcurrent,
+    maxQueue: server.maxQueue,
     mcpServers: effective.mcpServers,
     workRoot: server.workRoot || path.join(os.tmpdir(), "codex-subscription-proxy"),
     acpCommand: providers.codex.acpCommand || undefined,

@@ -34,17 +34,17 @@ export interface StatusView {
 export interface SettingsView {
   server: {
     host: string; port: number; apiKey?: string; maxBodyBytes: number; timeoutMs: number; modelsWaitMs: number;
-    workRoot?: string; launchAtLogin: boolean; toolResultTimeoutMs: number;
+    workRoot?: string; launchAtLogin: boolean; toolResultTimeoutMs: number; maxConcurrent: number; maxQueue: number;
   };
   providers: {
-    codex: { enabled: boolean; authMethodId?: string; isolatedHome?: boolean };
+    codex: { enabled: boolean; authMethodId?: string; isolatedHome?: boolean; maxConcurrent?: number };
     antigravity: {
       enabled: boolean; executablePath?: string; geminiHome?: string; apiKey?: string; authMethodId?: string;
-      termsAcknowledgedAt?: string; purgeSessions?: boolean; lastAuthMethodId?: string;
+      termsAcknowledgedAt?: string; purgeSessions?: boolean; lastAuthMethodId?: string; maxConcurrent?: number;
     };
     claude: {
       enabled: boolean; apiKey?: string; oauthToken?: string; configDir?: string; executablePath?: string; authMethodId?: string;
-      termsAcknowledgedAt?: string;
+      termsAcknowledgedAt?: string; maxConcurrent?: number;
     };
   };
 }
