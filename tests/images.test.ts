@@ -25,7 +25,7 @@ const dataUrl = (type: string, bytes: Buffer) => `data:${type};base64,${bytes.to
 const user = (...parts: Message["parts"]): Message => ({ role: "user", parts });
 const image = (bytes: Buffer, mimeType = "image/png"): Message["parts"][number] => ({ type: "image", mimeType, data: bytes.toString("base64") });
 const big = (bytes: number) => Buffer.concat([png, Buffer.alloc(bytes - png.length)]);
-const PREAMBLE = "This is a text-only API request. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.";
+const PREAMBLE = "This is an API request. Do not use your own environment: no shell commands, no file access, no web access, no permission requests. If the conversation describes actions, functions or a JSON format for you to produce, produce them as text exactly as asked: the calling application executes them. Respond with the answer only.";
 
 const servers: Server[] = [];
 const providers: AcpProvider[] = [];
@@ -76,7 +76,7 @@ describe("image helpers", () => {
     const messages: Message[] = [user({ type: "text", text: "look" }, image(png), image(jpeg, "image/jpeg")), { role: "assistant", parts: [{ type: "text", text: "a dot" }] }, user({ type: "text", text: "and this" }, image(gif, "image/gif"))];
     const blocks = buildPrompt(messages, "be brief", "extra line");
     expect(blocks.map((block) => block.type)).toEqual(["text", "image", "image", "text", "image", "text"]);
-    expect(blocks[0]).toEqual({ type: "text", text: `This is an API request with text and images. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.\nextra line\n\n[user]\nlook` });
+    expect(blocks[0]).toEqual({ type: "text", text: `This is an API request with text and images. Do not use your own environment: no shell commands, no file access, no web access, no permission requests. If the conversation describes actions, functions or a JSON format for you to produce, produce them as text exactly as asked: the calling application executes them. Respond with the answer only.\nextra line\n\n[user]\nlook` });
     expect(blocks[1]).toEqual({ type: "image", mimeType: "image/png", data: PNG_B64 });
     expect(blocks[3]).toEqual({ type: "text", text: "[assistant]\na dot\n\n[user]\nand this" });
     expect(blocks[5]).toEqual({ type: "text", text: "[output format]\nbe brief" });
@@ -338,7 +338,7 @@ describe("image input with session reuse", () => {
     expect(sent).toHaveLength(2);
     expect(sent[1]!.map((block) => block.type)).toEqual(["text", "image"]);
     expect(sent[1]![0]!.text).toContain("[user]\nand now?");
-    expect(sent[1]![0]!.text).not.toContain("describe");
+    expect(sent[1]![0]!.text).not.toContain("[user]\ndescribe");
     expect(sent[1]![1]!.data).toBe(jpeg.toString("base64"));
   });
 

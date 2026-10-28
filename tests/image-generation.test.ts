@@ -19,7 +19,7 @@ vi.setConfig({ testTimeout: 30_000 });
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const root = path.resolve(".claude/temp/image-generation-tests", String(process.pid));
-const PLAIN_PREAMBLE = "This is a text-only API request. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.";
+const PLAIN_PREAMBLE = "This is an API request. Do not use your own environment: no shell commands, no file access, no web access, no permission requests. If the conversation describes actions, functions or a JSON format for you to produce, produce them as text exactly as asked: the calling application executes them. Respond with the answer only.";
 const JPEG_START = "/9j/";
 const PNG_START = "iVBORw0KGgo";
 
@@ -260,7 +260,7 @@ describe("files the agent wrote", () => {
     const blocks = readLog(d).find((entry) => entry.method === "session/prompt")!.params.prompt;
     expect(blocks).toHaveLength(1);
     expect(blocks[0].text).toBe((buildPrompt([textMessage("user", "draw a dolphin")], undefined, antigravityDescriptor(defaultRuntimeContext(), { settings: {}, env: {} }).promptPreamble)[0] as { text: string }).text);
-    expect(blocks[0].text).toContain("This is a text-only API request.");
+    expect(blocks[0].text).toContain("This is an API request.");
     expect(blocks[0].text).not.toContain("allows one generated image");
   });
 });

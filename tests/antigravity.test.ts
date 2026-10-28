@@ -63,7 +63,7 @@ describe("Antigravity prompt", () => {
     const line = antigravityDescriptor(defaultRuntimeContext(), { settings: {}, env: {} }).promptPreamble!;
     expect(line).toMatch(/do not call any tool/i);
     expect(text).toBe(serializePrompt(user, undefined, line));
-    expect(text.startsWith("This is a text-only API request.")).toBe(true);
+    expect(text.startsWith("This is an API request.")).toBe(true);
     expect(text.split("\n")[1]).toBe(line);
     expect(serializePrompt(user)).not.toContain(line);
   });

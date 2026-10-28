@@ -364,7 +364,7 @@ describe("resume and fallback", () => {
     const text = promptTexts(d)[0]!;
     expect(text).toContain("[assistant]\nok\n[tool call call_1] get_weather {}");
     expect(text).toContain("[tool result call_1]\n18 C");
-    expect(text).toContain("This is a text-only API request.");
+    expect(text).toContain("This is an API request.");
     expect(result.body.choices[0].message.content).toBe("no mcp server");
   });
 
@@ -511,7 +511,7 @@ describe("requests without tools", () => {
     const result = await send(base, "/v1/chat/completions", { model: CODEX_MODEL, messages: [{ role: "user", content: "hi" }] });
     expect(result.body.choices[0]).toMatchObject({ finish_reason: "stop", message: { content: "no mcp server" } });
     expect(requests(d, "session/new")[0].mcpServers).toEqual([]);
-    expect(promptTexts(d)[0]).toBe("This is a text-only API request. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.\n\n[user]\nhi");
+    expect(promptTexts(d)[0]).toBe("This is an API request. Do not use your own environment: no shell commands, no file access, no web access, no permission requests. If the conversation describes actions, functions or a JSON format for you to produce, produce them as text exactly as asked: the calling application executes them. Respond with the answer only.\n\n[user]\nhi");
   });
 
   it("do not use the warm session for a tools request, and do use it afterwards", async () => {
