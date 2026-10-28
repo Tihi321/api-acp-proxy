@@ -203,7 +203,7 @@ describe("remote servers reach session/new", () => {
     expect(reply.body.output.map((item: any) => item.type)).toEqual(["message"]);
     expect(requests(d, "session/new")[0].mcpServers).toEqual([]);
     expect(requests(d, "session/new")[0]._meta.claudeCode.options).not.toHaveProperty("allowedTools");
-    expect(promptTexts(d)[0]).toContain("This is a text-only API request.");
+    expect(promptTexts(d)[0]).toContain("This is an API request.");
     const chat = await send(base, "/v1/chat/completions", { model: CLAUDE_MODEL, messages: [{ role: "user", content: "hello" }] });
     expect(chat.status).toBe(200);
   });

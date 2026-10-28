@@ -22,7 +22,7 @@ vi.setConfig({ testTimeout: 30_000 });
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 const root = path.resolve(".claude/temp/web-search-tests", String(process.pid));
-const PLAIN_PREAMBLE = "This is a text-only API request. Do not use tools, run commands, access files, or ask for permissions. Respond with the answer only.";
+const PLAIN_PREAMBLE = "This is an API request. Do not use your own environment: no shell commands, no file access, no web access, no permission requests. If the conversation describes actions, functions or a JSON format for you to produce, produce them as text exactly as asked: the calling application executes them. Respond with the answer only.";
 const ANSWER = "Node.js 26 is the current release, see [Node.js releases](https://nodejs.org/en/about/previous-releases) and https://endoflife.date/nodejs.";
 const LINK = "[Node.js releases](https://nodejs.org/en/about/previous-releases)";
 const BARE = "https://endoflife.date/nodejs";
