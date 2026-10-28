@@ -144,6 +144,13 @@ describe("resolveConfig", () => {
     expect(overridden).toEqual(["server.reuseSessions"]);
   });
 
+  it("lists bare aliases by default; PROXY_LIST_BARE_ALIASES=0 turns it off", () => {
+    expect(resolveConfig(defaultSettings(), {}).config.listBareAliases).toBe(true);
+    const { config, overridden } = resolveConfig(defaultSettings(), { PROXY_LIST_BARE_ALIASES: "0" });
+    expect(config.listBareAliases).toBe(false);
+    expect(overridden).toEqual(["server.listBareAliases"]);
+  });
+
   it("runs Codex in an isolated home by default; PROXY_CODEX_ISOLATED_HOME overrides it", () => {
     expect(defaultSettings().providers.codex.isolatedHome).toBe(true);
     expect(resolveConfig(defaultSettings(), {}).providers.codex?.isolatedHome).toBe(true);

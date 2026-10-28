@@ -42,6 +42,7 @@ const fields: FieldSpec[] = [
   { path: "server.launchAtLogin", kind: "bool", scope: "server" },
   { path: "server.ignoreSampling", kind: "bool", scope: "server" },
   { path: "server.reuseSessions", kind: "bool", scope: "server" },
+  { path: "server.listBareAliases", kind: "bool", scope: "server" },
   { path: "providers.codex.enabled", kind: "bool", scope: "codex" },
   { path: "providers.codex.maxConcurrent", kind: "number", scope: "codex", optional: true },
   { path: "providers.codex.authMethodId", kind: "select", scope: "codex", optional: true },
