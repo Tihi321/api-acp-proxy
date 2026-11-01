@@ -187,6 +187,11 @@ export class ProviderRouter implements AcpLike {
     return Object.fromEntries([...this.limiters].map(([id, limiter]) => [id, limiter.stats()]));
   }
 
+  /** `status().authMethod` per provider, for the providers that report one. */
+  authMethods(): Record<string, string> {
+    return Object.fromEntries(this.providers.flatMap((provider) => { const method = provider.status().authMethod; return method ? [[provider.id, method]] : []; }));
+  }
+
   async close(): Promise<void> {
     await Promise.all(this.providers.map((provider) => provider.close().catch(() => undefined)));
     await this.writeQueue;

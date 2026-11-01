@@ -192,6 +192,8 @@ export class AcpProvider implements Provider {
   private authStatusSeq = 0;
   /** The agent reported (via _auth/status_update) that nobody is signed in. */
   private loggedOut = false;
+  /** `kind` of the agent's last `_auth/status_update` (for `descriptor.authMethod`). */
+  private authKind?: string;
   private loginUrl?: string;
   private loginUrlAt = 0;
   private openedUrl?: string;
@@ -235,7 +237,8 @@ export class AcpProvider implements Provider {
     const state = unstarted ? "needs_login" : this.state;
     const error = unstarted ?? this.error;
     const loginHome = this.descriptor.loginHome?.(this.ctx, process.env);
-    return { id: this.id, name: this.displayName, state, ...(error ? { error } : {}), features: { imageGeneration: this.imageGeneration, tools: this.toolCalling, mcp: this.mcpSupport, webSearch: this.webSearchSupport }, ...(loginHome ? { loginHome } : {}), authMethods: this.authMethods, models: this.staticModels ?? this.discovered ?? [], ...(this.loginUrl ? { loginUrl: this.loginUrl } : {}), ...(this.agentVersion ? { agentVersion: this.agentVersion } : {}), ...(this.account ? { account: this.account } : {}), ...(this.imageInput !== undefined ? { capabilities: { image: this.imageInput } } : {}) };
+    const authMethod = this.descriptor.authMethod?.(this.authKind);
+    return { id: this.id, name: this.displayName, state, ...(error ? { error } : {}), ...(authMethod ? { authMethod } : {}), features: { imageGeneration: this.imageGeneration, tools: this.toolCalling, mcp: this.mcpSupport, webSearch: this.webSearchSupport }, ...(loginHome ? { loginHome } : {}), authMethods: this.authMethods, models: this.staticModels ?? this.discovered ?? [], ...(this.loginUrl ? { loginUrl: this.loginUrl } : {}), ...(this.agentVersion ? { agentVersion: this.agentVersion } : {}), ...(this.account ? { account: this.account } : {}), ...(this.imageInput !== undefined ? { capabilities: { image: this.imageInput } } : {}) };
   }
 
   onStatus(listener: (status: ProviderStatus) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
@@ -350,7 +353,7 @@ export class AcpProvider implements Provider {
     const preflight = await descriptor.preflight?.(this.ctx);
     if (preflight) {
       this.setState(preflight.state, preflight.message);
-      throw preflight.state === "terms_required" ? new ProviderTermsRequiredError(preflight.message) : new ProviderNotInstalledError(preflight.message);
+      throw preflight.state === "terms_required" ? new ProviderTermsRequiredError(preflight.message) : preflight.state === "error" ? new AcpUnavailableError(preflight.message, undefined, preflight.code) : new ProviderNotInstalledError(preflight.message);
     }
     await mkdir(this.options.workRoot, { recursive: true });
     if (this.child) await killProcessTree(this.child);
@@ -433,6 +436,7 @@ export class AcpProvider implements Provider {
   private onAuthStatus(status: { kind?: string; label?: string } | undefined): void {
     if (!status || typeof status.kind !== "string") return;
     this.authStatusSeq++;
+    this.authKind = status.kind;
     if (status.kind === "none") { this.account = undefined; this.loggedOut = true; this.setState("needs_login", "Not logged in."); return; }
     this.loggedOut = false;
     this.account = typeof status.label === "string" && status.label ? status.label : undefined;

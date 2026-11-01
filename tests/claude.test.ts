@@ -7,6 +7,7 @@ import { claudeDescriptor, claudeRegistration, resolveClaudeBinary, type ClaudeS
 import { AcpUnavailableError, ProviderAuthRequiredError, ProviderTermsRequiredError, defaultRuntimeContext, type ProviderDescriptor, type ProviderStatus } from "../src/provider.js";
 import { serializePrompt, textMessage } from "../src/api.js";
 import { createProxyServer } from "../src/server.js";
+import { ProviderRouter } from "../src/router.js";
 import type { AddressInfo } from "node:net";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
@@ -40,7 +41,8 @@ describe("Claude registration", () => {
     expect(claudeRegistration).toMatchObject({ id: "claude", displayName: "Claude" });
     const descriptor = claudeDescriptor({}, {});
     expect(descriptor).toMatchObject({ id: "claude", ownedBy: "anthropic", exposeUnprefixed: false, authMode: "on-demand", readOnlyMode: "required", modeCandidates: ["default"], sessionTimeoutMs: 120000, warmSessions: 1 });
-    expect(descriptor.loginMethods?.map((method) => method.id)).toEqual(["claude-ai-login", "console-login"]);
+    expect(descriptor.loginMethods?.map((method) => method.id)).toEqual(["claude-ai-login"]);
+    expect(claudeDescriptor({ authPolicy: "any" }, {}).loginMethods?.map((method) => method.id)).toEqual(["claude-ai-login", "console-login"]);
     expect(descriptor.chooseAuth([], {})).toBeUndefined();
   });
 });
@@ -49,7 +51,7 @@ describe("Claude launch", () => {
   it("maps settings to credentials and strips nested-session variables", async () => {
     const env = { PATH: "p", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", NODE_OPTIONS: "--x", ANTHROPIC_API_KEY: "from-env" };
     const runtime = defaultRuntimeContext({ nodeRuntime: { command: "node-bin", argsPrefix: ["--prefix"], env: { ELECTRON_RUN_AS_NODE: "1" } }, resolveUnpacked: (file) => file });
-    const spec = await claudeDescriptor({ apiKey: "sk-1", oauthToken: "tok", configDir: "C:\\cfg", executablePath: "C:\\claude.exe" }, env).launch(runtime);
+    const spec = await claudeDescriptor({ authPolicy: "any", apiKey: "sk-1", oauthToken: "tok", configDir: "C:\\cfg", executablePath: "C:\\claude.exe" }, env).launch(runtime);
     expect(spec.command).toBe("node-bin");
     expect(spec.args[0]).toBe("--prefix");
     expect(spec.args[1]).toMatch(/claude-agent-acp[\\/]dist[\\/]index\.js$/);
@@ -57,9 +59,23 @@ describe("Claude launch", () => {
     for (const key of ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "NODE_OPTIONS"]) expect(spec.env).not.toHaveProperty(key);
   });
 
-  it("keeps an environment API key when no setting overrides it", async () => {
-    const spec = await claudeDescriptor({}, { ANTHROPIC_API_KEY: "from-env" }).launch(ctx());
-    expect(spec.env?.ANTHROPIC_API_KEY).toBe("from-env");
+  it("subscription only (the default) never passes an API key to the agent; \"any\" keeps the environment's", async () => {
+    const env = { ANTHROPIC_API_KEY: "from-env", ANTHROPIC_AUTH_TOKEN: "bearer", CLAUDE_CODE_OAUTH_TOKEN: "tok" };
+    const spec = await claudeDescriptor({}, env).launch(ctx());
+    expect(spec.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    expect(spec.env).not.toHaveProperty("ANTHROPIC_AUTH_TOKEN");
+    expect(spec.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe("tok");
+    expect((await claudeDescriptor({ authPolicy: "any" }, env).launch(ctx())).env?.ANTHROPIC_API_KEY).toBe("from-env");
+  });
+
+  it("refuses to start with api_key_not_allowed when the apiKey setting is set under subscription only", async () => {
+    process.env.FAKE_ACP_CLAUDE = "1";
+    const { provider } = make({ apiKey: "sk-1" });
+    const error = await provider.generate("fake-model", user).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AcpUnavailableError);
+    expect((error as AcpUnavailableError).code).toBe("api_key_not_allowed");
+    expect((error as Error).message).not.toContain("sk-1");
+    expect(provider.status().state).toBe("error");
   });
 });
 
@@ -91,7 +107,7 @@ describe("Claude sessions", () => {
     const { provider } = make();
     process.env.FAKE_ACP_CLAUDE = "1";
     await provider.listModels();
-    expect(provider.status().authMethods.map((method) => method.id)).toEqual(["claude-ai-login", "console-login"]);
+    expect(provider.status().authMethods.map((method) => method.id)).toEqual(["claude-ai-login"]);
   });
 });
 
@@ -212,6 +228,29 @@ describe("Claude authentication", () => {
     const { provider } = make({}, {}, { loginTimeoutMs: 100, externalLogin: () => new Promise<void>(() => undefined) });
     await expect(provider.login("claude-ai-login")).rejects.toBeInstanceOf(ProviderAuthRequiredError);
     expect(provider.status().state).toBe("needs_login");
+  });
+});
+
+describe("Claude auth_method", () => {
+  it("maps the pushed auth kind, never guessing before the first push", () => {
+    const method = claudeDescriptor({}, {}).authMethod!;
+    expect([method("account"), method("claude_ai"), method("api_key"), method("gateway"), method("none"), method(undefined)]).toEqual(["subscription", "subscription", "api_key", "api_key", "none", undefined]);
+    expect(claudeDescriptor({ oauthToken: "tok" }, {}).authMethod!("account")).toBe("oauth_token");
+    expect(claudeDescriptor({ authPolicy: "any" }, { ANTHROPIC_API_KEY: "k" }).authMethod!(undefined)).toBe("api_key");
+  });
+
+  it("is reported per provider in /healthz, next to the queue", async () => {
+    Object.assign(process.env, { FAKE_ACP_CLAUDE: "1", FAKE_ACP_AUTH_STATUS: "claude_ai" });
+    const { provider } = make();
+    const router = new ProviderRouter({ providers: [provider], concurrency: { maxConcurrent: 2 } });
+    await provider.listModels();
+    await wait(100);
+    const server = createProxyServer({ host: "127.0.0.1", port: 0, maxBodyBytes: 1024, timeoutMs: 5000, workRoot: root, acpArgs: [] }, router);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const body = await (await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/healthz`)).json() as { providers: Record<string, Record<string, unknown>> };
+      expect(body.providers.claude).toEqual({ active: 0, queued: 0, max_concurrent: 2, max_queue: 0, auth_method: "subscription" });
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
   });
 });
 

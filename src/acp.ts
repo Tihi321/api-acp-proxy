@@ -35,4 +35,6 @@ export interface AcpLike {
   providerOf?(model: string): string | undefined;
   /** Running and waiting requests per provider id (for /healthz). */
   queueStats?(): Record<string, { active: number; queued: number; limit: number; maxQueue: number }>;
+  /** How each provider that knows it authenticates (for /healthz). */
+  authMethods?(): Record<string, string>;
 }

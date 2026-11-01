@@ -7,23 +7,29 @@ import path from "node:path";
 import { AcpProvider } from "../acp-provider.js";
 import type { ProviderRegistration } from "../controller.js";
 import { AcpUnavailableError } from "../provider.js";
-import type { AuthMethodInfo, ProviderDescriptor, RuntimeContext } from "../provider.js";
+import type { AuthMethodInfo, ProviderAuthMethod, ProviderDescriptor, RuntimeContext } from "../provider.js";
 
 /** `settings.providers.claude`. */
-export interface ClaudeSettings { apiKey?: string; oauthToken?: string; configDir?: string; executablePath?: string; authMethodId?: string; termsAcknowledgedAt?: string; }
+export interface ClaudeSettings { /** Absent counts as "subscription". */ authPolicy?: "subscription" | "any"; apiKey?: string; oauthToken?: string; configDir?: string; executablePath?: string; authMethodId?: string; termsAcknowledgedAt?: string; }
 
 /** `Retry-After` of the 503 sent while another Claude Code process holds the OAuth refresh lock (it cleared after about a minute in the spike). */
 const BUSY_RETRY_SECONDS = 30;
 const truthy = (value: string | undefined): boolean => value !== undefined && ["1", "true", "yes", "on"].includes(value.toLowerCase());
 const LOGIN_FLAGS: Record<string, string> = { "claude-ai-login": "--claudeai", "console-login": "--console" };
 const LOGIN_METHODS: AuthMethodInfo[] = [{ id: "claude-ai-login", name: "Claude subscription" }, { id: "console-login", name: "Anthropic Console (API billing)" }];
+/** Environment variables that make the CLI pay per token instead of using the subscription login. */
+const API_KEY_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
+
+/** The subscription-only policy (the default): no API key ever reaches the agent. */
+export function subscriptionOnly(settings: ClaudeSettings): boolean { return settings.authPolicy !== "any"; }
 
 function adapterEntry(ctx: RuntimeContext): string { return ctx.resolveUnpacked(createRequire(import.meta.url).resolve("@agentclientprotocol/claude-agent-acp/dist/index.js")); }
 
 /** Environment for the adapter and its bundled claude CLI: settings become credentials; nested-session guards are removed so it also starts from inside Claude Code. */
 function claudeEnv(ctx: RuntimeContext, settings: ClaudeSettings, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = { ...env, ...ctx.nodeRuntime.env };
-  if (settings.apiKey) childEnv.ANTHROPIC_API_KEY = settings.apiKey;
+  if (subscriptionOnly(settings)) for (const key of API_KEY_ENV) delete childEnv[key];
+  else if (settings.apiKey) childEnv.ANTHROPIC_API_KEY = settings.apiKey;
   if (settings.oauthToken) childEnv.CLAUDE_CODE_OAUTH_TOKEN = settings.oauthToken;
   if (settings.configDir) childEnv.CLAUDE_CONFIG_DIR = settings.configDir;
   if (settings.executablePath) childEnv.CLAUDE_CODE_EXECUTABLE = settings.executablePath;
@@ -67,7 +73,7 @@ function consoleAuth(ctx: RuntimeContext, settings: ClaudeSettings, env: NodeJS.
 
 /** `claude auth login --claudeai|--console` in a console window. */
 function consoleLogin(ctx: RuntimeContext, settings: ClaudeSettings, env: NodeJS.ProcessEnv, methodId: string): Promise<void> {
-  const flag = LOGIN_FLAGS[methodId];
+  const flag = methodId === "console-login" && subscriptionOnly(settings) ? undefined : LOGIN_FLAGS[methodId];
   return flag ? consoleAuth(ctx, settings, env, ["login", flag], true) : Promise.reject(new AcpUnavailableError(`Unknown Claude login method '${methodId}'.`));
 }
 
@@ -76,6 +82,19 @@ async function removeProjectLeftovers(settings: ClaudeSettings, env: NodeJS.Proc
   const dir = path.join(settings.configDir || env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
   await fsp.rmdir(path.join(dir, "memory")).catch(() => undefined);
   await fsp.rmdir(dir).catch(() => undefined);
+}
+
+/**
+ * `/healthz` `auth_method` from the adapter's `_auth/status_update` kind (`account` is a claude.ai login; the older adapter said `claude_ai`).
+ * A key, a gateway or a cloud backend all bill outside the subscription, so they report `api_key`. Before the first push only a key that would
+ * certainly be used (policy "any") is reported; otherwise nothing.
+ */
+function claudeAuthMethod(settings: ClaudeSettings, env: NodeJS.ProcessEnv, kind: string | undefined): ProviderAuthMethod | undefined {
+  if (kind === "none") return "none";
+  if (kind === "api_key" || kind === "gateway" || kind === "external") return "api_key";
+  if (kind === "account" || kind === "claude_ai") return settings.oauthToken || env.CLAUDE_CODE_OAUTH_TOKEN ? "oauth_token" : "subscription";
+  if (kind === undefined && !subscriptionOnly(settings) && (settings.apiKey || env.ANTHROPIC_API_KEY)) return "api_key";
+  return undefined;
 }
 
 /** The tool name of a Claude `tool_call` / permission request (`_meta.claudeCode.toolName`, else the `name` of a permission's tool call). */
@@ -114,11 +133,13 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
     usageScope: "session",
     stderrLogLevel: "debug",
     sessionMeta: { disableBuiltInTools: true, claudeCode: { options: { tools: [], persistSession: false, settingSources: [] } } },
-    loginMethods: LOGIN_METHODS,
+    loginMethods: subscriptionOnly(settings) ? LOGIN_METHODS.filter((method) => method.id !== "console-login") : LOGIN_METHODS,
     preflight() {
       if (!settings.termsAcknowledgedAt && !truthy(env.PROXY_CLAUDE_ACCEPT_TERMS)) return { state: "terms_required", message: "Acknowledge the Claude terms before enabling this provider." };
+      if (settings.apiKey && subscriptionOnly(settings)) return { state: "error", code: "api_key_not_allowed", message: "Claude is set to subscription only: remove the API key setting (or set authPolicy to \"any\")." };
       return undefined;
     },
+    authMethod: (kind) => claudeAuthMethod(settings, env, kind),
     launch(ctx) {
       return { command: ctx.nodeRuntime.command, args: [...ctx.nodeRuntime.argsPrefix, adapterEntry(ctx)], env: claudeEnv(ctx, settings, env) };
     },

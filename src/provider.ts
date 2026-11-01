@@ -40,7 +40,7 @@ export type ProviderState = "disabled" | "stopped" | "starting" | "ready" | "nee
 export interface ProviderFeatures { imageGeneration: boolean; tools: boolean; mcp: boolean; webSearch: boolean; }
 /** Where the agent keeps its login. `shared` is true when that is the user's own folder of the tool (~/.codex, ~/.claude, ~/.gemini): logging out there signs the user out of the tool on this machine. */
 export interface LoginHome { path: string; shared: boolean; }
-export interface ProviderStatus { id: string; name: string; state: ProviderState; error?: string; authMethods: AuthMethodInfo[]; models: ModelInfo[]; /** Browser URL printed by the agent for an interactive login (present while a login may be pending). */ loginUrl?: string; /** Version reported by the agent in initialize.agentInfo. */ agentVersion?: string; /** Signed-in account label pushed by the agent (e.g. via _auth/status_update). */ account?: string; /** What the agent said it accepts in `initialize` (present once it has started). */ capabilities?: { image: boolean }; /** What the proxy can do through this provider. */ features?: ProviderFeatures; /** Where the login lives (see `LoginHome`); undefined when the provider does not say. */ loginHome?: LoginHome; }
+export interface ProviderStatus { id: string; name: string; state: ProviderState; error?: string; authMethods: AuthMethodInfo[]; models: ModelInfo[]; /** Browser URL printed by the agent for an interactive login (present while a login may be pending). */ loginUrl?: string; /** Version reported by the agent in initialize.agentInfo. */ agentVersion?: string; /** Signed-in account label pushed by the agent (e.g. via _auth/status_update). */ account?: string; /** How the provider authenticates (`descriptor.authMethod`); absent when not known. Never a secret. */ authMethod?: ProviderAuthMethod; /** What the agent said it accepts in `initialize` (present once it has started). */ capabilities?: { image: boolean }; /** What the proxy can do through this provider. */ features?: ProviderFeatures; /** Where the login lives (see `LoginHome`); undefined when the provider does not say. */ loginHome?: LoginHome; }
 
 /** How to run an agent process. Under Electron this is process.execPath + ELECTRON_RUN_AS_NODE=1. */
 export interface NodeRuntime { command: string; argsPrefix: string[]; env: Record<string, string>; }
@@ -62,7 +62,10 @@ export function defaultRuntimeContext(overrides: Partial<RuntimeContext> = {}): 
 }
 
 export interface LaunchSpec { command: string; args: string[]; env?: NodeJS.ProcessEnv; cwd?: string; }
-export interface PreflightResult { state: "not_installed" | "terms_required"; message: string; }
+/** "error" refuses the start with `code` (e.g. `api_key_not_allowed`). */
+export interface PreflightResult { state: "not_installed" | "terms_required" | "error"; message: string; code?: string; }
+/** How a provider pays for its turns, as `/healthz` reports it: a subscription login, a subscription OAuth token, a per-token API key (or another billed backend), or nobody signed in. */
+export type ProviderAuthMethod = "subscription" | "oauth_token" | "api_key" | "none";
 
 export interface ProviderDescriptor {
   id: string;
@@ -121,6 +124,8 @@ export interface ProviderDescriptor {
   onLoginSuccess?(methodId: string): void;
   /** Sent as `_meta` on session/new (agent-specific session options). */
   sessionMeta?: Record<string, unknown>;
+  /** Maps the `kind` of the agent's last `_auth/status_update` (undefined before the first one) to `status().authMethod`; undefined when not known. */
+  authMethod?(pushedKind: string | undefined): ProviderAuthMethod | undefined;
   /** Login methods shown in status().authMethods when the agent advertises none. */
   loginMethods?: AuthMethodInfo[];
   /** When present, login() runs this (e.g. a console window) instead of ACP authenticate; on success the agent is restarted. */
