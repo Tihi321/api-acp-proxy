@@ -358,6 +358,17 @@ function track(activity: ActivityLog, bridge: AcpLike, response: ServerResponse,
   });
 }
 
+/** `/healthz` `providers`: per provider its queue (`active`, `queued`, `max_concurrent`, `max_queue`) and how it authenticates (`auth_method`, never a secret); absent when the bridge knows neither. */
+function healthProviders(bridge: AcpLike): { providers?: Record<string, Record<string, unknown>> } {
+  const queues = bridge.queueStats?.();
+  const auth = bridge.authMethods?.();
+  if (!queues && !auth) return {};
+  const providers: Record<string, Record<string, unknown>> = {};
+  for (const [id, q] of Object.entries(queues ?? {})) providers[id] = { active: q.active, queued: q.queued, max_concurrent: q.limit, max_queue: q.maxQueue };
+  for (const [id, method] of Object.entries(auth ?? {})) providers[id] = { ...providers[id], auth_method: method };
+  return { providers };
+}
+
 /** `options.fetch` downloads http(s) image URLs (default: the global fetch). `options.toolBridge` is the MCP endpoint `/mcp/<token>` for function tools; the server tells it where it listens. `options.activity` gets one entry per API request (not for /healthz and not for the tool bridge; `POST /v1/mcp` records one entry per tool call itself). `options.mcpImageDir` is where `generate_image` saves an image the caller named no folder for; `options.isLocalCaller` decides who may name local paths (default: the socket is loopback); `options.mcp` tunes the MCP endpoint (tests). */
 export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options: { fetch?: typeof fetch; toolBridge?: ToolBridgeHub; activity?: ActivityLog; mcpImageDir?: string; isLocalCaller?: (request: IncomingMessage) => boolean; mcp?: McpEndpointTuning } = {}): Server {
   const toolBridge = options.toolBridge ?? new ToolBridgeHub();
@@ -367,7 +378,7 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
     try {
       const method = request.method || "GET";
       const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
-      if (method === "GET" && url.pathname === "/healthz") { const queues = bridge.queueStats?.(); json(response, 200, { status: "ok", uptime_seconds: Math.floor((Date.now() - startedAt) / 1000), ...(queues ? { providers: Object.fromEntries(Object.entries(queues).map(([id, q]) => [id, { active: q.active, queued: q.queued, max_concurrent: q.limit, max_queue: q.maxQueue }])) } : {}) }); return; }
+      if (method === "GET" && url.pathname === "/healthz") { json(response, 200, { status: "ok", uptime_seconds: Math.floor((Date.now() - startedAt) / 1000), ...healthProviders(bridge) }); return; }
       // The agents reach the tool bridge here; its token is the credential, so it is routed before the API key check.
       if (await toolBridge.handle(request, response, url.pathname)) return;
       // The playground page holds no data (its API calls carry the key), so it is served before the key check and is not logged as activity.

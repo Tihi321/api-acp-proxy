@@ -67,7 +67,8 @@ const fields: FieldSpec[] = [
 const fallbackAuth: Record<string, Array<{ id: string; name: string }>> = {
   codex: [{ id: "chat-gpt", name: "ChatGPT account" }, { id: "api-key", name: "API key" }],
   antigravity: [{ id: "oauth-personal", name: "Log in with Google" }, { id: "oauth-business", name: "Log in with Gemini Enterprise" }, { id: "gemini-api-key", name: "Gemini API key" }, { id: "agent-platform", name: "Gemini Enterprise Agent Platform" }],
-  claude: [{ id: "claude-ai-login", name: "Claude subscription" }, { id: "console-login", name: "Anthropic Console (API billing)" }],
+  // Subscription only by default (settings `authPolicy`): the Console (API billing) login is offered by the running provider only under "any".
+  claude: [{ id: "claude-ai-login", name: "Claude subscription" }],
 };
 const defaultAuth: Record<string, string> = { antigravity: "oauth-personal", claude: "claude-ai-login" };
 

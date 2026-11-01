@@ -86,6 +86,8 @@ export const settingsSchema = z.object({
     }).default({}),
     claude: z.object({
       enabled: z.boolean().default(false),
+      /** "subscription" (also when absent): never an API key; `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` are removed from the agent's environment, an `apiKey` setting refuses the start and the Console login is hidden. "any": the old behaviour. */
+      authPolicy: z.enum(["subscription", "any"]).optional(),
       apiKey: z.string().optional(),
       oauthToken: z.string().optional(),
       configDir: z.string().optional(),
