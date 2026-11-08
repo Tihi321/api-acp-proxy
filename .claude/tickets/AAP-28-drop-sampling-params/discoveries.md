@@ -1,0 +1,4 @@
+- 2026-11-08 implement: the JSDoc at src/settings.ts:50 still describes sampling (src/settings.ts:50) - suggested: reword it to match the drop-and-report behaviour
+- 2026-11-08 implement: creative-hub services.json, README and ROADMAP still mention PROXY_IGNORE_SAMPLING (creative-hub services.json, README, ROADMAP) - suggested: remove the variable from the hub config and docs
+- 2026-11-08 implement: the stale worktree is pulled into yarn test because vitest has no exclude for it (.claude/worktrees/eloquent-sutherland-099e79) - suggested: remove the worktree or add it to the vitest exclude
+- 2026-11-08 implement: the x-acp-proxy-ignored-params header is also sent on later 400s from capability checks (src/server.ts) - suggested: decide whether a 400 should carry the header, then test it

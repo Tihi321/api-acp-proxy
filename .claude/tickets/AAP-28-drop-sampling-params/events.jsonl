@@ -1,0 +1,4 @@
+{"ts":"2026-11-08T00:00:00Z","approx":true,"actor":"director-scribe","type":"plan.created","request":"REQ-0002","ticket":"AAP-28-drop-sampling-params","detail":"planner returned the AAP-28 plan (drop sampling params)"}
+{"ts":"2026-11-08T00:00:00Z","approx":true,"actor":"director-scribe","type":"plan.approved","request":"REQ-0002","ticket":"AAP-28-drop-sampling-params","detail":"user approved the plan: Yes, implement"}
+{"ts":"2026-11-08T00:00:00Z","approx":true,"actor":"director-scribe","type":"checker.verdict","request":"REQ-0002","ticket":"AAP-28-drop-sampling-params","detail":"PASS; A6 UI row and real-app start unchecked","data":{"verdict":"PASS","unchecked":["A6","real-app start"]}}
+{"ts":"2026-11-08T00:00:00Z","approx":true,"actor":"director-scribe","type":"ticket.done","request":"REQ-0002","ticket":"AAP-28-drop-sampling-params","detail":"commit 3e70449 on branch; not pushed or merged","data":{"commit":"3e70449","tests":736,"pushed":false}}
