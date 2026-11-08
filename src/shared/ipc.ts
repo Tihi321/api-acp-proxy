@@ -72,6 +72,8 @@ export interface ActivityView {
   /** `images`, `imageGeneration`, `tools`, `mcp`, `search`. */
   features: string[];
   durationMs: number; status: number; error?: string; inputTokens?: number; outputTokens?: number;
+  /** Names of the dropped sampling fields (never values). */
+  ignoredParams?: string[];
 }
 export interface StateView {
   status: StatusView;

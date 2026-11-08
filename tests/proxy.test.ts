@@ -38,18 +38,21 @@ describe("normalization", () => {
     expect((await normalizeResponses({ model: "gpt-5.6-luna", input: "hi", instructions: "answer" })).conversation).toHaveLength(2);
   });
   it("rejects unsupported behavior and unknown models", async () => {
-    await expect(normalizeChat({ model: "gpt-6-luna", messages: [{ role: "user", content: "x" }], temperature: 0 })).rejects.toThrow(/temperature/);
+    await expect(normalizeChat({ model: "gpt-6-luna", messages: [{ role: "user", content: "x" }], n: 2 })).rejects.toThrow(/n/);
     await expect(normalizeResponses({ model: "nope", input: "x" }, (model) => model === "gpt-6-luna")).rejects.toThrow(/does not exist/);
     await expect(normalizeResponses({ model: "nope", input: "x" })).resolves.toMatchObject({ model: "nope" });
   });
-  it("drops sampling fields with ignoreSampling, and still rejects behaviour-changing ones", async () => {
-    const body = { model: "gpt-6-luna", messages: [{ role: "user", content: "x" }], temperature: 0.7, stream_options: { include_usage: true } };
-    const chat = await normalizeChat(body, undefined, { ignoreSampling: true });
-    expect(chat).not.toHaveProperty("temperature");
-    await expect(normalizeChat({ ...body, functions: [{ name: "f" }] }, undefined, { ignoreSampling: true })).rejects.toThrow(/functions/);
-    expect((await normalizeChat({ ...body, response_format: { type: "json_object" } }, undefined, { ignoreSampling: true })).format).toEqual({ type: "json" });
-    expect((await normalizeResponses({ model: "gpt-5.6-luna", input: "x", temperature: 1 }, undefined, { ignoreSampling: true })).conversation).toHaveLength(1);
-    await expect(normalizeChat(body)).rejects.toThrow(/temperature/);
+  it("drops sampling fields and still rejects contract-changing ones", async () => {
+    const body = { model: "gpt-6-luna", messages: [{ role: "user", content: "x" }] };
+    const chat = await normalizeChat({ ...body, temperature: 0.7, top_p: 1, presence_penalty: 0, frequency_penalty: 0, seed: 1, logit_bias: { "1": 2 }, n: 1 });
+    for (const field of ["temperature", "top_p", "presence_penalty", "frequency_penalty", "seed", "logit_bias"]) expect(chat).not.toHaveProperty(field);
+    expect(chat.ignoredParams).toEqual(["temperature", "top_p", "presence_penalty", "frequency_penalty", "seed", "logit_bias"]);
+    expect((await normalizeChat(body)).ignoredParams).toEqual([]);
+    expect((await normalizeResponses({ model: "gpt-5.6-luna", input: "x", stream_options: { include_usage: true }, temperature: 1 })).ignoredParams).toEqual(["temperature", "stream_options"]);
+    await expect(normalizeChat({ ...body, n: 2 })).rejects.toThrow(/n/);
+    await expect(normalizeChat({ ...body, logprobs: true })).rejects.toThrow(/logprobs/);
+    await expect(normalizeChat({ ...body, stop: ["x"] })).rejects.toThrow(/stop/);
+    await expect(normalizeChat({ ...body, functions: [{ name: "f" }] })).rejects.toThrow(/functions/);
   });
   it("maps ACP stop reasons to OpenAI completion semantics", () => {
     expect(mapStopReason("end_turn")).toEqual({ chat: "stop", responseStatus: "completed" });
@@ -151,10 +154,9 @@ describe("token limit", () => {
       return { text: "abcdef".repeat(50), stopReason: signal?.aborted ? "cancelled" : "end_turn", usage: { inputTokens: 9, outputTokens: 300, totalTokens: 309 } };
     },
   });
-  it("accepts limits by default and with ignoreSampling", async () => {
+  it("accepts token limits", async () => {
     expect((await normalizeChat({ ...chatBody, max_tokens: 5 })).maxOutputTokens).toBe(5);
-    expect((await normalizeChat({ ...chatBody, max_completion_tokens: 6 }, undefined, { ignoreSampling: true })).maxOutputTokens).toBe(6);
-    expect((await normalizeChat({ ...chatBody, max_tokens: 5 }, undefined, { ignoreSampling: true })).maxOutputTokens).toBe(5);
+    expect((await normalizeChat({ ...chatBody, max_completion_tokens: 6 })).maxOutputTokens).toBe(6);
     expect((await normalizeChat(chatBody)).maxOutputTokens).toBeUndefined();
     expect((await normalizeResponses({ model: "gpt-6-luna", input: "x", max_output_tokens: 7 })).maxOutputTokens).toBe(7);
     expect((await normalizeResponses({ model: "gpt-6-luna", input: "x" })).maxOutputTokens).toBeUndefined();
@@ -216,11 +218,10 @@ describe("token limit", () => {
 describe("usage", () => {
   const chatBody = { model: "gpt-6-luna", messages: [{ role: "user", content: "hi" }] };
   const dataLines = (text: string) => text.split("\n").filter((line) => line.startsWith("data: ")).map((line) => line.slice(6));
-  it("accepts stream_options without ignoreSampling", async () => {
+  it("accepts chat stream_options", async () => {
     await expect(normalizeChat({ ...chatBody, stream: true, stream_options: { include_usage: true } })).resolves.toBeDefined();
     expect((await normalizeChat({ ...chatBody, stream_options: null })).conversation).toHaveLength(1);
     await expect(normalizeChat({ ...chatBody, stream_options: { include_usage: "yes" } })).rejects.toThrow();
-    await expect(normalizeResponses({ model: "gpt-6-luna", input: "x", stream_options: { include_usage: true } })).rejects.toThrow(/stream_options/);
   });
   it("ends a chat stream with a usage chunk when include_usage is set", async () => {
     const result = await call("POST", "/v1/chat/completions", { ...chatBody, stream: true, stream_options: { include_usage: true } });

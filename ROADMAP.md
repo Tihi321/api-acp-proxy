@@ -4,9 +4,9 @@ What is open for the proxy as the creative hub (`C:\projects\Personal\creative-h
 
 ## Where it stands (2026-10-22)
 
-- **The hub's use:** an `openai-compat` provider for Scriptorium and Book Translator. The hub runs it on port 7461 (its default 8787 clashed with the old flow-mcp panel) with `PROXY_IGNORE_SAMPLING=1`; see the hub's `services.json`, id `acp-proxy`.
-- **AAP-05 merged:** `server.ignoreSampling` / `PROXY_IGNORE_SAMPLING=1` (and a settings checkbox) dropped `stream_options`, `max_tokens` and `temperature`, which both apps send and the proxy answered with 400 `unsupported_parameter`. Not yet tried with a real request (HUB-09).
-- **AAP-07 to AAP-10** (stacked branches `AAP-07_json-output` → `AAP-08_stream-usage` → `AAP-09_token-limit` → `AAP-10_session-reuse`, 147 tests pass, not yet tried with a real request). They change what `PROXY_IGNORE_SAMPLING` drops: chat `stream_options` and the token limits are now honoured, so only `temperature`, `top_p`, penalties, `seed` and the Responses `stream_options` are dropped. The apps' `max_tokens` now cuts answers (≈4 characters per token).
+- **The hub's use:** an `openai-compat` provider for Scriptorium and Book Translator. The hub runs it on port 7461 (its default 8787 clashed with the old flow-mcp panel) (it no longer needs `PROXY_IGNORE_SAMPLING`: AAP-28); see the hub's `services.json`, id `acp-proxy`.
+- **AAP-05 merged, replaced by AAP-28:** `server.ignoreSampling` / `PROXY_IGNORE_SAMPLING=1` (and a settings checkbox) dropped `stream_options`, `max_tokens` and `temperature`, which both apps send and the proxy answered with 400 `unsupported_parameter`. Not yet tried with a real request (HUB-09).
+- **AAP-07 to AAP-10** (stacked branches `AAP-07_json-output` → `AAP-08_stream-usage` → `AAP-09_token-limit` → `AAP-10_session-reuse`, 147 tests pass, not yet tried with a real request). They changed what the sampling drop covers: chat `stream_options` and the token limits are honoured, so only `temperature`, `top_p`, penalties, `seed` and the Responses `stream_options` are dropped. The apps' `max_tokens` now cuts answers (≈4 characters per token).
 - **HUB-09 on hold** (user, 2026-10-22: "no need for now, later if needed").
 
 ## Limits seen from the hub
@@ -24,4 +24,7 @@ What is open for the proxy as the creative hub (`C:\projects\Personal\creative-h
 - [x] Many apps at once: a cap of running requests per provider (default 4, `PROXY_MAX_CONCURRENT`, per provider `PROXY_<PROVIDER>_MAX_CONCURRENT`, settings window) with a FIFO queue instead of rejections, an optional queue cap (429 `provider_queue_full`) and queue counts in `/healthz`. Running on the hub instance since 2026-10-27; merged (PR #21). (AAP-25)
 - [x] Duplicate model ids in `/v1/models`: `PROXY_LIST_BARE_ALIASES=0` / `server.listBareAliases` (default on) hides the unprefixed ids so discovering clients show each model once; bare ids still work in requests. The hub sets it to 0. (AAP-26)
 - [x] App-driven agent loops: the plain prompt preamble no longer says "text-only" or "do not use tools" (codex refused JSON-action prompts with "I can't use tools in this text-only request"); it forbids only the agent's own shell, files, web and permission requests and tells it to produce described actions or JSON as text. (AAP-27)
+- [x] Sampling fields no longer break clients: chat `temperature`, `top_p`, `presence_penalty`, `frequency_penalty`, `seed`, `logit_bias` and Responses `temperature`, `top_p`, `stream_options` are always accepted and dropped (Scriptorium sent `temperature: 0.2` and got a 400); chat `n: 1` is accepted. The dropped names are in the `x-acp-proxy-ignored-params` response header and the Recent requests table. `PROXY_IGNORE_SAMPLING` / `server.ignoreSampling` removed. (AAP-28)
+- [ ] `stop` is still a 400: cut the answer at a stop string (like the token limit does) instead.
+- [ ] `reasoning_effort` (chat) and `reasoning.effort` (Responses) are not passed on: map them to Codex `reasoning_effort` and Claude `effort`.
 - [ ] Audio and files are still rejected. Not needed by the hub's apps.

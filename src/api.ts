@@ -18,20 +18,22 @@ const textPartSchema = z.object({ text: z.string() });
 const chatImagePartSchema = z.object({ image_url: z.object({ url: z.string().min(1), detail: z.string().nullish() }).passthrough() });
 const responsesImagePartSchema = z.object({ image_url: z.string().min(1), detail: z.string().nullish() });
 
-const unsupportedChatFields = ["functions", "function_call", "audio", "logprobs", "top_logprobs", "prediction", "service_tier", "n", "temperature", "top_p", "stop", "presence_penalty", "frequency_penalty", "seed", "logit_bias"] as const;
-const unsupportedResponseFields = ["temperature", "top_p", "truncation", "reasoning", "include", "background", "stream_options"] as const;
+const unsupportedChatFields = ["functions", "function_call", "audio", "logprobs", "top_logprobs", "prediction", "service_tier", "n", "stop"] as const;
+const unsupportedResponseFields = ["truncation", "reasoning", "include", "background"] as const;
 
-// Fields that only tune sampling. The agents behind the proxy cannot honour them, so by default they are
-// rejected; with `ignoreSampling` they are dropped instead, for clients that send them on every request.
-const ignorableChatFields = ["temperature", "top_p", "presence_penalty", "frequency_penalty", "seed"] as const;
-const ignorableResponseFields = ["temperature", "top_p", "stream_options"] as const;
-export interface NormalizeOptions { ignoreSampling?: boolean; /** Used to download http(s) image URLs (default: the global fetch). */ fetch?: typeof fetch }
+// Fields that only tune sampling. The agents behind the proxy cannot honour them, so they are accepted and
+// dropped; the response header `x-acp-proxy-ignored-params` and the activity log name the ones a request sent.
+const droppedChatFields = ["temperature", "top_p", "presence_penalty", "frequency_penalty", "seed", "logit_bias"] as const;
+const droppedResponseFields = ["temperature", "top_p", "stream_options"] as const;
+export interface NormalizeOptions { /** Used to download http(s) image URLs (default: the global fetch). */ fetch?: typeof fetch }
 
-function withoutFields(raw: unknown, fields: readonly string[], on: boolean | undefined): unknown {
-  if (!on || !raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+/** `raw` without `fields`, and the names of the fields it had (a value of `undefined` or `null` does not count). */
+function withoutFields(raw: unknown, fields: readonly string[]): { body: unknown; ignored: string[] } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { body: raw, ignored: [] };
   const copy: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  const ignored = fields.filter((field) => copy[field] !== undefined && copy[field] !== null);
   for (const field of fields) delete copy[field];
-  return copy;
+  return { body: copy, ignored };
 }
 
 const jsonSchemaSpec = z.object({ name: z.string(), schema: z.unknown().optional(), strict: z.boolean().nullish(), description: z.string().optional() });
@@ -147,7 +149,7 @@ function rejectUnsupported(obj: Record<string, unknown>, fields: readonly string
 }
 
 /** `generateImages`: the request asked the agent for images (chat `modalities` with "image", Responses `image_generation` tool). */
-type NormalizedRequest = { model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; generateImages: boolean; /** Set when the request asked for web search (chat `web_search_options`, a Responses `web_search` tool). */ webSearch?: WebSearchRequest; /** The function tools to hand the agent (absent without tools or with `tool_choice: "none"`). */ functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** The Responses `mcp` tools (matched with the settings by `resolveMcpServers`). */ mcpTools?: McpToolRequest[] };
+type NormalizedRequest = { /** The sampling fields the request sent and the proxy dropped (see `droppedChatFields`). */ ignoredParams: string[]; model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; generateImages: boolean; /** Set when the request asked for web search (chat `web_search_options`, a Responses `web_search` tool). */ webSearch?: WebSearchRequest; /** The function tools to hand the agent (absent without tools or with `tool_choice: "none"`). */ functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** The Responses `mcp` tools (matched with the settings by `resolveMcpServers`). */ mcpTools?: McpToolRequest[] };
 
 function unsupportedContent(message: string, param: string): ApiError { return new ApiError(400, "unsupported_content", message, param); }
 
@@ -377,9 +379,11 @@ async function convertChatMessage(message: z.infer<typeof chatMessageSchema>, op
 }
 
 export async function normalizeChat(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Promise<Omit<ChatRequest, "model"> & NormalizedRequest> {
-  const parsed = chatRequestSchema.safeParse(withoutFields(raw, ignorableChatFields, options.ignoreSampling));
+  const { body, ignored: ignoredParams } = withoutFields(raw, droppedChatFields);
+  const parsed = chatRequestSchema.safeParse(body);
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.", issueParam(parsed.error.issues[0]));
-  rejectUnsupported(parsed.data, unsupportedChatFields);
+  // `n: 1` is the only count the proxy can give.
+  rejectUnsupported(parsed.data.n === 1 ? { ...parsed.data, n: undefined } : parsed.data, unsupportedChatFields);
   const generateImages = chatModalities(parsed.data.modalities);
   const toolSpec = chatTools(parsed.data);
   if (generateImages && toolSpec.functionTools) throw toolsError("Function tools cannot be combined with image output (modalities).");
@@ -391,7 +395,7 @@ export async function normalizeChat(raw: unknown, isKnownModel?: ModelCheck, opt
   const format = !rf || rf.type === "text" ? textFormat : jsonFormat(rf.type === "json_object" ? rf : { type: "json_schema", ...rf.json_schema });
   const maxOutputTokens = parsed.data.max_completion_tokens ?? parsed.data.max_tokens;
   const conversation = await Promise.all(parsed.data.messages.map((message) => convertChatMessage(message, options)));
-  return { ...parsed.data, model: parsed.data.model, conversation, format, generateImages, ...toolSpec, ...(webSearch && !(parsed.data.tools != null && toolSpec.functionTools === undefined) ? { webSearch } : {}), ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}) };
+  return { ...parsed.data, model: parsed.data.model, conversation, format, generateImages, ignoredParams, ...toolSpec, ...(webSearch && !(parsed.data.tools != null && toolSpec.functionTools === undefined) ? { webSearch } : {}), ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}) };
 }
 
 /** Responses input items: messages, and `function_call` / `function_call_output` items. A `function_call` joins the assistant message right before it (its text, in the same response), else it is an assistant message of its own. */
@@ -413,7 +417,8 @@ async function convertResponsesInput(input: Array<z.infer<typeof responseMessage
 }
 
 export async function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck, options: NormalizeOptions = {}): Promise<Omit<ResponsesRequest, "model"> & NormalizedRequest> {
-  const parsed = responsesRequestSchema.safeParse(withoutFields(raw, ignorableResponseFields, options.ignoreSampling));
+  const { body, ignored: ignoredParams } = withoutFields(raw, droppedResponseFields);
+  const parsed = responsesRequestSchema.safeParse(body);
   if (!parsed.success) throw new ApiError(400, "invalid_request", parsed.error.issues[0]?.message || "Invalid request.", issueParam(parsed.error.issues[0]));
   const { image: generateImages, functions, mcp, search } = responsesTools(parsed.data);
   // `include: ["web_search_call.action.sources"]` asks for what the web_search_call items carry anyway.
@@ -433,7 +438,7 @@ export async function normalizeResponses(raw: unknown, isKnownModel?: ModelCheck
   if (typeof parsed.data.input === "string") conversation.push(textMessage("user", parsed.data.input));
   else conversation.push(...await convertResponsesInput(parsed.data.input, options));
   const tf = parsed.data.text?.format;
-  return { ...parsed.data, model: parsed.data.model, conversation, format: !tf || tf.type === "text" ? textFormat : jsonFormat(tf), generateImages, ...toolSpec, ...(mcp.length && !(functions.length && !toolSpec.functionTools) ? { mcpTools: mcp } : {}), ...(search && !(functions.length && !toolSpec.functionTools) ? { webSearch: { ...search, ...(!functions.length && (parsed.data.tool_choice === "required" || (plainObject(parsed.data.tool_choice) && parsed.data.tool_choice.type !== "function")) ? { required: true } : {}) } } : {}), ...(parsed.data.max_output_tokens !== undefined ? { maxOutputTokens: parsed.data.max_output_tokens } : {}) };
+  return { ...parsed.data, model: parsed.data.model, conversation, format: !tf || tf.type === "text" ? textFormat : jsonFormat(tf), generateImages, ignoredParams, ...toolSpec, ...(mcp.length && !(functions.length && !toolSpec.functionTools) ? { mcpTools: mcp } : {}), ...(search && !(functions.length && !toolSpec.functionTools) ? { webSearch: { ...search, ...(!functions.length && (parsed.data.tool_choice === "required" || (plainObject(parsed.data.tool_choice) && parsed.data.tool_choice.type !== "function")) ? { required: true } : {}) } } : {}), ...(parsed.data.max_output_tokens !== undefined ? { maxOutputTokens: parsed.data.max_output_tokens } : {}) };
 }
 
 const imageRequestSchema = z.object({
