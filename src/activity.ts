@@ -21,6 +21,8 @@ export interface ActivityEntry {
   error?: string;
   inputTokens?: number;
   outputTokens?: number;
+  /** Names (never values) of the sampling fields the request sent and the proxy dropped. */
+  ignoredParams?: string[];
 }
 
 const DEFAULT_LIMIT = 100;

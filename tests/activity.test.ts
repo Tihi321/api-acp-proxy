@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { request } from "node:http";
+import { request, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { ActivityLog, describeActivity, type ActivityEntry } from "../src/activity.js";
 import { createProxyServer } from "../src/server.js";
@@ -87,10 +87,10 @@ async function serve(activity: ActivityLog, apiKey: string | undefined = "secret
   await new Promise<void>((resolve) => server.listen(0, config.host, resolve));
   return (server.address() as AddressInfo).port;
 }
-function call(port: number, method: string, path: string, body?: unknown, headers: Record<string, string> = { authorization: "Bearer secret" }): Promise<{ status: number; text: string }> {
+function call(port: number, method: string, path: string, body?: unknown, headers: Record<string, string> = { authorization: "Bearer secret" }): Promise<{ status: number; text: string; headers: IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const req = request({ host: config.host, port, path, method, headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) } }, (res) => {
-      const chunks: Buffer[] = []; res.on("data", (chunk) => chunks.push(Buffer.from(chunk))); res.on("end", () => resolve({ status: res.statusCode || 0, text: Buffer.concat(chunks).toString() }));
+      const chunks: Buffer[] = []; res.on("data", (chunk) => chunks.push(Buffer.from(chunk))); res.on("end", () => resolve({ status: res.statusCode || 0, text: Buffer.concat(chunks).toString(), headers: res.headers }));
     });
     req.on("error", reject); if (body) req.end(JSON.stringify(body)); else req.end();
   });
@@ -110,8 +110,18 @@ describe("activity from the server", () => {
     const recorded = await lastEntry(activity);
     expect(recorded).toMatchObject({ endpoint: "POST /v1/chat/completions", model: "fake/m", provider: "fake", stream: false, features: [], status: 200, inputTokens: 11, outputTokens: 4 });
     expect(recorded.error).toBeUndefined();
+    expect(recorded.ignoredParams).toBeUndefined();
     expect(recorded.durationMs).toBeGreaterThanOrEqual(0);
     expect(Math.abs(recorded.time - Date.now())).toBeLessThan(10_000);
+  });
+
+  it("accepts a sampling field, reports it in a header and records its name", async () => {
+    const activity = new ActivityLog();
+    const port = await serve(activity);
+    const answer = await call(port, "POST", "/v1/chat/completions", chat({ temperature: 0.2 }));
+    expect(answer.status).toBe(200);
+    expect(answer.headers["x-acp-proxy-ignored-params"]).toBe("temperature");
+    expect((await lastEntry(activity)).ignoredParams).toEqual(["temperature"]);
   });
 
   it("marks streaming requests, in chat and in Responses", async () => {

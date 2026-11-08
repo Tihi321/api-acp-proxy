@@ -13,8 +13,6 @@ export interface ProxyConfig {
   acpArgs: string[];
   /** How long /v1/models waits for slow providers before answering from cache. */
   modelsWaitMs?: number;
-  /** Drop sampling fields (temperature, top_p, penalties, seed) instead of rejecting the request. */
-  ignoreSampling?: boolean;
   /** Keep an agent session after a completed turn and continue it when the next request extends the same conversation. */
   reuseSessions?: boolean;
   /** List unprefixed model ids in /v1/models next to the `<provider>/<id>` ones (default true); unprefixed ids are accepted in requests either way. */

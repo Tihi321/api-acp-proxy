@@ -48,7 +48,6 @@ export const settingsSchema = z.object({
     workRoot: z.string().optional(),
     launchAtLogin: z.boolean().default(false),
     /** Drop sampling fields (temperature, top_p, penalties, seed) instead of answering 400, for clients that always send them. */
-    ignoreSampling: z.boolean().default(false),
     /** Keep agent sessions across the turns of a conversation. */
     reuseSessions: z.boolean().default(false),
     /** List the unprefixed ids (`gpt-x` next to `codex/gpt-x`) in /v1/models. Requests with an unprefixed id are routed either way. */
@@ -243,7 +242,6 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
   apply("server.timeoutMs", parseInt(env.PROXY_TIMEOUT_MS), (v) => { server.timeoutMs = v; });
   apply("server.modelsWaitMs", parseInt(env.PROXY_MODELS_WAIT_MS), (v) => { server.modelsWaitMs = v; });
   apply("server.workRoot", env.PROXY_WORK_ROOT || undefined, (v) => { server.workRoot = v; });
-  apply("server.ignoreSampling", parseBool(env.PROXY_IGNORE_SAMPLING), (v) => { server.ignoreSampling = v; });
   apply("server.reuseSessions", parseBool(env.PROXY_REUSE_SESSIONS), (v) => { server.reuseSessions = v; });
   apply("server.listBareAliases", parseBool(env.PROXY_LIST_BARE_ALIASES), (v) => { server.listBareAliases = v; });
   apply("server.toolResultTimeoutMs", parseInt(env.PROXY_TOOL_RESULT_TIMEOUT_MS), (v) => { server.toolResultTimeoutMs = v; });
@@ -269,7 +267,6 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
     maxBodyBytes: server.maxBodyBytes,
     timeoutMs: server.timeoutMs,
     modelsWaitMs: server.modelsWaitMs,
-    ignoreSampling: server.ignoreSampling,
     reuseSessions: server.reuseSessions,
     listBareAliases: server.listBareAliases,
     toolResultTimeoutMs: server.toolResultTimeoutMs,

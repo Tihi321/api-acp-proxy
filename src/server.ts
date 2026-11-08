@@ -20,7 +20,7 @@ import type { ActivityEntry, ActivityFeature, ActivityLog } from "./activity.js"
 const startedAt = Date.now();
 
 /** What a request tells the activity log (metadata only: the prompt, the answer and the headers never get here). */
-interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; inputTokens?: number; outputTokens?: number; }
+interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; inputTokens?: number; outputTokens?: number; ignoredParams?: string[]; }
 
 /** The proxy's error code of a failure (what the client sees as `error.code`). */
 function errorCode(error: unknown): string {
@@ -38,6 +38,13 @@ function traceRequest(trace: Trace, parsed: { model: string; stream?: unknown; c
   if (parsed.functionTools) trace.features.add("tools");
   if (mcp) trace.features.add("mcp");
   if (parsed.webSearch) trace.features.add("search");
+}
+
+/** Tells the client (response header) and the activity log which sampling fields were dropped. Call before the response starts. */
+function reportIgnored(response: ServerResponse, trace: Trace, ignored: string[]): void {
+  if (!ignored.length) return;
+  response.setHeader("x-acp-proxy-ignored-params", ignored.join(", "));
+  trace.ignoredParams = ignored;
 }
 
 /** Notes the token counts the client is told (the agent's own, or the estimate). */
@@ -144,7 +151,8 @@ async function runGeneration(bridge: AcpLike, model: string, messages: Message[]
 function finalText(format: OutputFormat, result: GenerationResult): string { return format.type === "json" && !result.toolCalls?.length ? extractJson(result.text) : result.text; }
 
 async function handleChat(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, trace: Trace, fetchImpl?: typeof fetch): Promise<void> {
-  const parsed = await normalizeChat(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling, fetch: fetchImpl });
+  const parsed = await normalizeChat(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { fetch: fetchImpl });
+  reportIgnored(response, trace, parsed.ignoredParams);
   traceRequest(trace, parsed);
   if (parsed.generateImages) requireImageGeneration(bridge, parsed.model);
   if (parsed.functionTools) requireToolCalling(bridge, parsed.model);
@@ -211,7 +219,8 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
 function forResponses(error: unknown): unknown { return error instanceof ApiError && error.param === "messages" ? new ApiError(error.status, error.code, error.message, "input") : error; }
 
 async function handleResponses(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, trace: Trace, fetchImpl?: typeof fetch): Promise<void> {
-  const parsed = await normalizeResponses(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { ignoreSampling: config.ignoreSampling, fetch: fetchImpl });
+  const parsed = await normalizeResponses(await readBody(request, config.maxBodyBytes), modelCheck(bridge), { fetch: fetchImpl });
+  reportIgnored(response, trace, parsed.ignoredParams);
   traceRequest(trace, parsed, parsed.mcpTools !== undefined);
   if (parsed.generateImages) requireImageGeneration(bridge, parsed.model);
   if (parsed.functionTools) requireToolCalling(bridge, parsed.model);
@@ -352,6 +361,7 @@ function track(activity: ActivityLog, bridge: AcpLike, response: ServerResponse,
       time, endpoint, stream: trace.stream, features: [...trace.features], durationMs: Date.now() - time, status: response.statusCode,
       ...(trace.model ? { model: trace.model } : {}), ...(error ? { error } : {}),
       ...(trace.inputTokens !== undefined ? { inputTokens: trace.inputTokens } : {}), ...(trace.outputTokens !== undefined ? { outputTokens: trace.outputTokens } : {}),
+      ...(trace.ignoredParams?.length ? { ignoredParams: trace.ignoredParams } : {}),
     };
     const provider = trace.model ? bridge.providerOf?.(trace.model) : undefined;
     try { activity.record(provider ? { ...entry, provider } : entry); } catch { /* a listener of the log must not break the response */ }
