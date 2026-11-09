@@ -1,4 +1,5 @@
 import { mcpAddCommand, mcpEndpointUrl } from "./mcp-command.js";
+import { initUsageView } from "./usage-view.js";
 import type { ActivityView, InstallProgressView, ProviderStatusView, SaveResult, SettingsPatchView, StateView } from "../shared/ipc.js";
 
 type Scope = "server" | "codex" | "antigravity" | "claude";
@@ -78,7 +79,10 @@ const badgeText: Record<string, string> = { needs_login: "needs login", not_inst
 
 /** The tool a provider's shared login folder belongs to (named in the log-out confirmation). */
 const toolName: Record<string, string> = { codex: "Codex (the Codex app and CLI)", antigravity: "Google Antigravity and the Gemini tools", claude: "Claude Code" };
-const providerOrder = ["codex", "antigravity", "claude"] as const;
+const providerOrder = ["codex", "claude", "antigravity"] as const;
+const views = ["overview", "usage", "requests", "server", "codex", "claude", "antigravity"] as const;
+type ViewName = (typeof views)[number];
+const VIEW_KEY = "acp-proxy.view";
 const featureChips: Array<{ label: string; on: (status: ProviderStatusView) => boolean }> = [
   { label: "images in", on: (status) => status.capabilities?.image === true },
   { label: "image generation", on: (status) => status.features?.imageGeneration === true },
@@ -90,6 +94,7 @@ const featureChips: Array<{ label: string; on: (status: ProviderStatusView) => b
 let state: StateView | undefined;
 let activity: ActivityView[] = [];
 const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, claude: false };
+const usage = initUsageView({ api, showView: (name) => showView(name) });
 const loggingIn = new Set<string>();
 const loggingOut = new Set<string>();
 let installing = false;
@@ -98,6 +103,36 @@ const el = <T extends HTMLElement>(id: string): T => document.getElementById(id)
 const field = (path: string): HTMLInputElement | HTMLSelectElement => el(path);
 const card = (provider: string): HTMLElement => el(`card-${provider}`);
 const role = <T extends HTMLElement>(root: ParentNode, name: string): T => root.querySelector(`[data-role="${name}"]`) as T;
+
+const navItem = (name: string): HTMLElement | null => document.querySelector<HTMLElement>(`.nav-item[data-view="${name}"]`);
+
+/** Sets the unsaved-edits flag of a scope and its marker in the sidebar. */
+function markDirty(scope: Scope, value: boolean): void {
+  dirty[scope] = value;
+  const item = navItem(scope);
+  if (!item) return;
+  item.classList.toggle("is-dirty", value);
+  if (value) item.title = "Unsaved changes"; else item.removeAttribute("title");
+}
+
+/** Shows one view, marks its sidebar item and remembers the choice. */
+function showView(name: string): void {
+  const target: ViewName = (views as readonly string[]).includes(name) ? (name as ViewName) : "overview";
+  for (const section of document.querySelectorAll<HTMLElement>("section.view")) section.hidden = section.dataset.view !== target;
+  for (const item of document.querySelectorAll<HTMLElement>(".nav-item")) {
+    if (item.dataset.view === target) item.setAttribute("aria-current", "page"); else item.removeAttribute("aria-current");
+  }
+  try { localStorage.setItem(VIEW_KEY, target); } catch { /* storage unavailable: the choice is not remembered */ }
+  if (target === "usage") usage.shown();
+}
+
+function storedView(): ViewName {
+  try {
+    const value = localStorage.getItem(VIEW_KEY);
+    if (value && (views as readonly string[]).includes(value)) return value as ViewName;
+  } catch { /* storage unavailable */ }
+  return "overview";
+}
 
 function getPath(root: unknown, path: string): unknown {
   return path.split(".").reduce<unknown>((value, key) => (typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined), root);
@@ -195,7 +230,7 @@ const providerUsable = (status: ProviderStatusView | undefined, current: StateVi
 
 /** The short line under a provider's name in the overview. */
 function describeSignIn(status: ProviderStatusView | undefined, current: StateView): string {
-  if (!status || status.state === "disabled") return "Off. Turn it on in its card below.";
+  if (!status || status.state === "disabled") return "Off. Turn it on on its page.";
   if (current.status.server.state !== "running") return "The server is not running.";
   if (status.state === "needs_login") return status.error ?? "Not signed in.";
   if (status.state === "error" || status.state === "not_installed" || status.state === "terms_required") return status.error ?? "";
@@ -227,14 +262,18 @@ function renderOverview(current: StateView): void {
     const login = make("button", "small", loginLabel(id, signedIn));
     login.type = "button";
     login.disabled = !usable || signedIn || loggingIn.has(id) || loggingOut.has(id);
-    login.title = !usable ? "Enable and save the provider (and start the server) first." : signedIn ? SIGNED_IN_HINT : "Sign in with the method picked in the card below.";
+    login.title = !usable ? "Enable and save the provider (and start the server) first." : signedIn ? SIGNED_IN_HINT : "Sign in with the method picked on its page.";
     login.onclick = () => void startLogin(id);
     const logout = make("button", "small", loggingOut.has(id) ? "Logging out…" : "Log out");
     logout.type = "button";
     logout.disabled = !usable || status?.state === "needs_login" || loggingOut.has(id) || loggingIn.has(id);
     logout.title = status?.state === "needs_login" ? "Not signed in." : "";
     logout.onclick = () => void startLogout(id);
-    actions.append(login, logout);
+    const settingsButton = make("button", "small", "Settings");
+    settingsButton.type = "button";
+    settingsButton.title = `Open the ${status?.name ?? id} page`;
+    settingsButton.onclick = () => showView(id);
+    actions.append(login, logout, settingsButton);
     head.append(actions);
     row.append(head, make("p", "ov-line muted", describeSignIn(status, current)));
     const chips = make("ul", "chips");
@@ -257,7 +296,7 @@ function renderOverview(current: StateView): void {
 }
 
 const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-const ENDPOINT_LABELS: Record<string, string> = { "GET /v1/models": "models", "POST /v1/chat/completions": "chat", "POST /v1/responses": "responses", "POST /v1/images/generations": "images" };
+const ENDPOINT_LABELS: Record<string, string> = { "GET /v1/models": "models", "POST /v1/chat/completions": "chat", "POST /v1/responses": "responses", "POST /v1/images/generations": "images", "MCP ask_model": "MCP ask", "MCP generate_image": "MCP image" };
 const FEATURE_LABELS: Record<string, string> = { images: "image in", imageGeneration: "image out", tools: "tools", mcp: "MCP", search: "search" };
 
 function renderActivity(): void {
@@ -270,6 +309,9 @@ function renderActivity(): void {
     const row = make("tr");
     const bad = entry.status >= 400 || entry.error !== undefined;
     const cell = (text: string, className = ""): HTMLTableCellElement => make("td", className, text);
+    const hasTokens = entry.inputTokens !== undefined || entry.outputTokens !== undefined;
+    const tokenCell = cell(hasTokens ? `${entry.estimated ? "≈ " : ""}${entry.inputTokens ?? 0} in / ${entry.outputTokens ?? 0} out` : "-", "num");
+    if (hasTokens && entry.estimated) tokenCell.title = "Estimated: about 4 characters per token";
     row.append(
       cell(clock.format(entry.time), "mono"),
       cell(`${ENDPOINT_LABELS[entry.endpoint] ?? entry.endpoint}${entry.stream ? " (stream)" : ""}`),
@@ -277,7 +319,7 @@ function renderActivity(): void {
       cell([...entry.features.map((feature) => FEATURE_LABELS[feature] ?? feature), ...(entry.ignoredParams?.length ? [`ignored: ${entry.ignoredParams.join(", ")}`] : [])].join(", ") || "-"),
       cell(entry.durationMs >= 1000 ? `${(entry.durationMs / 1000).toFixed(1)} s` : `${entry.durationMs} ms`, "num"),
       cell(entry.error ? `${entry.status} ${entry.error}` : String(entry.status), bad ? "bad" : "ok"),
-      cell(entry.inputTokens !== undefined || entry.outputTokens !== undefined ? `${entry.inputTokens ?? 0} in / ${entry.outputTokens ?? 0} out` : "-", "num"),
+      tokenCell,
     );
     return row;
   }));
@@ -297,7 +339,7 @@ function render(current: StateView): void {
   const server = current.status.server;
   setBadge(el("server-badge"), server.state);
   setBadge(el("top-badge"), server.state);
-  el("top-url").textContent = server.baseUrl ?? "";
+  el("top-url").textContent = server.baseUrl ?? ""; el("top-url").title = server.baseUrl ?? "";
   el("server-url").textContent = server.baseUrl ?? (server.state === "error" ? "Not listening" : "Not running");
   el("copy-url").hidden = !server.baseUrl;
   const error = server.error ? (server.error.code === "EADDRINUSE" ? `Port ${server.port} is already in use. Pick another port or stop the other program.` : server.error.message) : undefined;
@@ -306,12 +348,22 @@ function render(current: StateView): void {
   el("server-toggle").textContent = active ? "Stop" : server.state === "error" ? "Retry" : "Start";
   renderFields("server", current);
   renderProvider("codex", current);
-  renderProvider("antigravity", current);
   renderProvider("claude", current);
+  renderProvider("antigravity", current);
   renderOverview(current);
   renderInstall(current);
   el("settings-path").textContent = current.settingsPath;
   el("secrets-note").textContent = current.secretsEncrypted ? "Secrets are encrypted with the OS keychain." : "OS secret storage unavailable: secrets are stored as plain text.";
+  el("settings-path").title = current.settingsPath;
+  setNavDot("server", server.state);
+  for (const id of providerOrder) setNavDot(id, current.status.providers.find((entry) => entry.id === id)?.state ?? "disabled");
+  usage.setState(current);
+}
+
+/** Colors a sidebar item's status dot like the badge of the same state. */
+function setNavDot(name: string, value: string): void {
+  const dot = navItem(name)?.querySelector<HTMLElement>('[data-role="nav-dot"]');
+  if (dot) dot.className = `nav-dot ${badgeClass[value] ?? ""}`.trim();
 }
 
 async function refresh(): Promise<void> { render(await api.getState()); }
@@ -418,7 +470,7 @@ async function saveScope(scope: Scope): Promise<void> {
   button.disabled = true;
   try {
     const result: SaveResult = await api.saveSettings(patch);
-    if (result.ok) { dirty[scope] = false; flash(msg, "Saved. The server was restarted."); await refresh(); }
+    if (result.ok) { markDirty(scope, false); flash(msg, "Saved. The server was restarted."); await refresh(); }
     else { showErrors(scope, result.errors); flash(msg, "Could not save.", true); }
   } catch (error) { flash(msg, error instanceof Error ? error.message : String(error), true); }
   finally { button.disabled = false; }
@@ -459,8 +511,9 @@ async function openExternal(url: string, msg?: HTMLElement): Promise<void> {
 
 function wire(): void {
   // Dirty tracking: any edit inside a card marks that card unsaved so state pushes do not overwrite it.
-  for (const spec of fields) field(spec.path).addEventListener("input", () => { dirty[spec.scope] = true; });
-  for (const spec of fields) field(spec.path).addEventListener("change", () => { dirty[spec.scope] = true; });
+  for (const spec of fields) field(spec.path).addEventListener("input", () => markDirty(spec.scope, true));
+  for (const spec of fields) field(spec.path).addEventListener("change", () => markDirty(spec.scope, true));
+  for (const item of document.querySelectorAll<HTMLElement>(".nav-item")) item.addEventListener("click", () => showView(item.dataset.view ?? "overview"));
 
   el("server-save").onclick = () => void saveScope("server");
   el("server-toggle").onclick = async () => {
@@ -479,7 +532,7 @@ function wire(): void {
     const key = `sk-acp-${btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
     const input = field("server.apiKey") as HTMLInputElement;
     input.value = key; input.type = "text"; el("server-key-show").textContent = "Hide";
-    dirty.server = true;
+    markDirty("server", true);
   };
   el("agy-key-show").onclick = () => {
     const input = field("providers.antigravity.apiKey") as HTMLInputElement;
@@ -527,11 +580,11 @@ function wire(): void {
 
   el("browse-exe").onclick = async () => {
     const result = await api.pickExecutable();
-    if (result.path) { (field("providers.antigravity.executablePath") as HTMLInputElement).value = result.path; dirty.antigravity = true; }
+    if (result.path) { (field("providers.antigravity.executablePath") as HTMLInputElement).value = result.path; markDirty("antigravity", true); }
   };
   el("browse-claude-exe").onclick = async () => {
     const result = await api.pickExecutable();
-    if (result.path) { (field("providers.claude.executablePath") as HTMLInputElement).value = result.path; dirty.claude = true; }
+    if (result.path) { (field("providers.claude.executablePath") as HTMLInputElement).value = result.path; markDirty("claude", true); }
   };
   el("install-agy").onclick = async () => {
     installing = true; el("install-text").textContent = "Starting…"; showError(role(card("antigravity"), "general-error"), undefined);
@@ -553,6 +606,7 @@ function wire(): void {
 }
 
 wire();
+showView(storedView());
 api.onState((next) => render(next));
 api.onActivity((next) => { activity = next; renderActivity(); });
 void api.getActivity().then((entries) => { activity = entries; renderActivity(); });

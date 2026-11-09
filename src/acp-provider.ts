@@ -11,6 +11,8 @@ import { killProcessTree } from "./process-tree.js";
 import type { McpServerSpec } from "./mcp-config.js";
 import { BRIDGE_SERVER_NAME, type BridgeSession, type HeldCall } from "./tool-bridge.js";
 import { AcpUnavailableError, ProviderAuthRequiredError, ProviderNotInstalledError, ProviderTermsRequiredError } from "./provider.js";
+import { readRateLimitHint, redactLimitsText } from "./plan-limits.js";
+import type { PlanLimitsView, RateLimitHintView } from "./shared/ipc.js";
 import type { AuthMethodInfo, GeneratedImage, GenerateOptions, GenerationCallbacks, GenerationResult, McpAccess, McpCallResult, ModelInfo, Provider, ProviderDescriptor, ProviderState, ProviderStatus, RuntimeContext, TrackedToolCall, WebSearchResult } from "./provider.js";
 
 type SessionHandler = (update: SessionUpdate) => void;
@@ -102,6 +104,8 @@ const DEFAULT_TOOL_BATCH_MS = 150;
 const DEFAULT_TOOL_RESULT_TIMEOUT_MS = 10 * 60_000;
 /** The proxy gives up on a suspended call this long before the agent's own limit. */
 const DEFAULT_TOOL_CALL_MARGIN_MS = 30_000;
+/** How long a plan-limits probe waits for the agent's answer. */
+const PLAN_LIMITS_TIMEOUT_MS = 30_000;
 const USAGE_FIELDS = ["inputTokens", "outputTokens", "totalTokens", "thoughtTokens", "cachedReadTokens", "cachedWriteTokens"] as const;
 
 /** `extra` merged into `base` (plain objects recursively, arrays joined without duplicates, everything else replaced). */
@@ -206,6 +210,8 @@ export class AcpProvider implements Provider {
   private generation = 0;
   private warming = 0;
   private warnedNoReadOnly = false;
+  /** The last `_claude/rateLimit` hint of a `usage_update` (Claude only). */
+  private hint?: RateLimitHintView;
   private readonly warm: PreparedSession[] = [];
   private readonly kept: KeptSession[] = [];
   private readonly handlers = new Map<string, SessionHandler>();
@@ -369,7 +375,13 @@ export class AcpProvider implements Provider {
     const agentRef: { current?: ClientContext } = {};
     const app = client({ name: "api-acp-proxy" });
     app.onRequest(methods.client.session.requestPermission, async ({ params }) => this.answerPermission(params));
-    app.onNotification(methods.client.session.update, ({ params }) => { this.handlers.get(params.sessionId)?.(params.update); });
+    app.onNotification(methods.client.session.update, ({ params }) => {
+      if (params.update.sessionUpdate === "usage_update") {
+        const hint = readRateLimitHint((params.update as { _meta?: unknown })._meta, Date.now());
+        if (hint) this.hint = hint;
+      }
+      this.handlers.get(params.sessionId)?.(params.update);
+    });
     app.onNotification("_auth/status_update", (params: unknown) => params as { authStatus?: { kind?: string; label?: string } }, ({ params }) => { if (this.agent === agentRef.current) this.onAuthStatus(params.authStatus); });
     const connection = app.connect(stream);
     this.connection = connection;
@@ -660,6 +672,59 @@ export class AcpProvider implements Provider {
     const silent = this.authStatusSeq === seen;
     if (silent || (this.loggedOut && descriptor.authMode === "eager")) this.authBlock = new ProviderAuthRequiredError(`${this.displayName} was logged out.`);
     if (silent) this.setState("needs_login", "Logged out."); else this.emitStatus();
+  }
+
+  rateLimitHint(): RateLimitHintView | undefined { return this.hint; }
+
+  /** Reads the account plan limits: the descriptor's slash command is the only text block of a throwaway session (not warm, not kept, no model, no preamble). The reply text is never logged. */
+  async planLimits(signal?: AbortSignal): Promise<PlanLimitsView> {
+    const spec = this.descriptor.planLimits;
+    const view = (rest: Omit<PlanLimitsView, "provider" | "windows"> & { windows?: PlanLimitsView["windows"] }): PlanLimitsView => ({ provider: this.id, windows: [], ...rest });
+    if (!spec) return view({ state: "unsupported", message: this.descriptor.planLimitsUnavailable ?? "Plan limits are not available for this provider." });
+    const status = this.status();
+    if (status.state === "needs_login") return view({ state: "needs_login", message: `Log in to ${this.displayName} to see its plan limits.` });
+    if (status.state === "not_installed" || status.state === "terms_required" || status.state === "disabled") return view({ state: "unavailable", message: status.error ?? `${this.displayName} is not available.` });
+    let agent: ClientContext | undefined;
+    let session: PreparedSession | undefined;
+    let text = "";
+    try {
+      const cancelled = (): PlanLimitsView => view({ state: "error", message: "Checking the plan limits was cancelled." });
+      if (signal?.aborted) return cancelled();
+      agent = await this.start();
+      if (signal?.aborted) return cancelled();
+      session = await this.createSession(agent);
+      if (signal?.aborted) return cancelled();
+      const sid = session.sessionId;
+      this.handlers.set(sid, (update) => { if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") text += update.content.text; });
+      if (session.readOnlyModeId) await agent.request(methods.agent.session.setMode, { sessionId: sid, modeId: session.readOnlyModeId });
+      if (signal?.aborted) return cancelled();
+      const running = agent;
+      const cancel = () => { void Promise.resolve(running.notify(methods.agent.session.cancel, { sessionId: sid })).catch(() => undefined); };
+      const timeoutMessage = `${this.displayName} did not answer ${spec.command} in time.`;
+      signal?.addEventListener("abort", cancel, { once: true });
+      try {
+        await withTimeout(this.authGuard(() => running.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: spec.command }] })), PLAN_LIMITS_TIMEOUT_MS, timeoutMessage).catch((error) => { if (error instanceof Error && error.message === timeoutMessage) cancel(); throw error; });
+      } finally { signal?.removeEventListener("abort", cancel); }
+      if (signal?.aborted) throw new Error("Checking the plan limits was cancelled.");
+      if (!text.trim()) return this.limitsOutcome(view({ state: "error", message: `${this.displayName} sent no answer to ${spec.command}; this agent version may not support it.` }));
+      const parsed = spec.parse(text);
+      const fetchedAt = Date.now();
+      if (!parsed) return this.limitsOutcome(view({ state: "unparsed", raw: redactLimitsText(text), fetchedAt }));
+      this.log.debug(`Plan limits from ${spec.command}: ${parsed.windows.length} windows`);
+      return view({ state: parsed.windows.length ? "ok" : "no_data", windows: parsed.windows, ...(parsed.plan ? { plan: parsed.plan } : {}), ...(parsed.credits ? { credits: parsed.credits } : {}), fetchedAt });
+    } catch (error) {
+      if (error instanceof ProviderAuthRequiredError) return view({ state: "needs_login", message: `Log in to ${this.displayName} to see its plan limits.` });
+      const message = error instanceof Error ? error.message : String(error);
+      this.log.debug(`Plan limits from ${spec.command} failed: ${message}`);
+      return view({ state: "error", message });
+    } finally {
+      if (session && agent) await this.disposeSession(agent, session);
+    }
+  }
+
+  private limitsOutcome(view: PlanLimitsView): PlanLimitsView {
+    this.log.debug(`Plan limits: ${view.state}`);
+    return view;
   }
 
   /** An auth_required error from the agent means the user must log in: surface it as ProviderAuthRequiredError. */

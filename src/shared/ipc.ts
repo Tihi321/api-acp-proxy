@@ -74,7 +74,58 @@ export interface ActivityView {
   durationMs: number; status: number; error?: string; inputTokens?: number; outputTokens?: number;
   /** Names of the dropped sampling fields (never values). */
   ignoredParams?: string[];
+  /** True when the token counts are an estimate (about 4 characters per token; the agent reported none). */
+  estimated?: boolean;
 }
+/** One provider's (or the total's) counts over a range. `estimated`: requests whose token counts are the chars/4 estimate. */
+export interface UsageCountsView { requests: number; errors: number; inputTokens: number; outputTokens: number; estimated: number }
+export type UsageRangeKey = "today" | "last7" | "last30" | "allTime";
+export interface UsageProviderView { id: string; today: UsageCountsView; last7: UsageCountsView; last30: UsageCountsView; allTime: UsageCountsView }
+/** One local day; `byProvider` has an entry for every provider of `UsageView.providers` (zeros included). */
+export interface UsageDayView { day: string /* YYYY-MM-DD, local */; byProvider: Record<string, UsageCountsView> }
+export interface UsageView {
+  generatedAt: number;
+  /** Today's local day key, YYYY-MM-DD. */
+  today: string;
+  /** First day counted since the store was created or last reset (YYYY-MM-DD); absent when nothing was ever counted. */
+  since?: string;
+  /** Requested provider ids first, in the requested order, then any other id found in the data (sorted). */
+  providers: UsageProviderView[];
+  total: Record<UsageRangeKey, UsageCountsView>;
+  /** Exactly 30 entries, oldest first, the last one is today; days without data are zero-filled. */
+  days: UsageDayView[];
+}
+
+export interface PlanLimitWindowView {
+  /** As the agent names it: "5h limit", "Weekly limit", "5-hour limit", "Weekly · all models", ... */
+  label: string;
+  /** 0-100, percent USED (Codex "% left" is converted). */
+  usedPercent: number;
+  /** Epoch ms, only when known exactly (the Claude push hint). */
+  resetsAt?: number;
+  /** The agent's own reset wording, e.g. "15:00", "09:30 on 12 Nov", "Nov 8, 3:00 PM GMT+1". */
+  resetText?: string;
+}
+/** `idle`: never fetched. `ok`: windows parsed. `no_data`: the agent answered but has no limits (API key logins, "data not available yet"). `unparsed`: answer not understood, `raw` holds it (redacted). `unsupported`: the provider cannot report limits. `unavailable`: provider off, not installed, terms pending or server stopped. `needs_login`: not probed because the provider needs login. `error`: the probe failed (`message`). */
+export type PlanLimitsState = "idle" | "ok" | "no_data" | "unparsed" | "unsupported" | "unavailable" | "needs_login" | "error";
+/** Claude's pushed `_claude/rateLimit` (one window per event). `utilization` normalised to 0-100, `resetsAt` to epoch ms. */
+export interface RateLimitHintView { status: "allowed" | "allowed_warning" | "rejected"; rateLimitType?: string; utilization?: number; resetsAt?: number; at: number }
+export interface PlanLimitsView {
+  provider: string;
+  state: PlanLimitsState;
+  windows: PlanLimitWindowView[];
+  /** "ChatGPT plus", "API key", "Claude max": never an email. */
+  plan?: string;
+  /** Codex credits line, e.g. "unlimited". */
+  credits?: string;
+  /** Epoch ms of the probe's answer (ok, no_data, unparsed, error). */
+  fetchedAt?: number;
+  /** Only for `unparsed`: the reply with emails, cost lines and session/directory lines removed, at most 4000 characters. */
+  raw?: string;
+  message?: string;
+  hint?: RateLimitHintView;
+}
+
 export interface StateView {
   status: StatusView;
   /** Stored settings (what is in the file). */
@@ -121,6 +172,14 @@ export interface ProxyApi {
   copyText(text: string): Promise<void>;
   openExternal(url: string): Promise<ActionResult>;
   onState(callback: (state: StateView) => void): () => void;
+  getUsage(): Promise<UsageView>;
+  /** Sets every total back to zero and rewrites usage.json. */
+  resetUsage(): Promise<ActionResult>;
+  onUsage(callback: (usage: UsageView) => void): () => void;
+  /** Cached plan limits, one per registered provider; never probes. */
+  getPlanLimits(): Promise<PlanLimitsView[]>;
+  /** Probes unless a value younger than 60 s exists and `force` is not true. */
+  refreshPlanLimits(providerId: string, force?: boolean): Promise<PlanLimitsView>;
 }
 
 declare global {

@@ -6,6 +6,7 @@ import path from "node:path";
 import type { ProxyConfig } from "../config.js";
 import { AcpProvider } from "../acp-provider.js";
 import type { ProviderRegistration } from "../controller.js";
+import { parseCodexStatus } from "../plan-limits.js";
 import type { ProviderDescriptor, RuntimeContext } from "../provider.js";
 
 export interface CodexOptions { authMethodId?: string; /** Run Codex with its own `<dataDir>/codex-home` instead of the user's ~/.codex (default true). */ isolatedHome?: boolean; }
@@ -73,6 +74,8 @@ export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArg
     },
     mcpTarget: codexTarget,
     toolCallLimitMs: 300_000,
+    // Plan limits come from the bundled adapter's `/status` answer; a custom adapter (PROXY_ACP_COMMAND) is not asked.
+    ...(config.acpCommand ? { planLimitsUnavailable: "Plan limits need the bundled Codex adapter; PROXY_ACP_COMMAND is set." } : { planLimits: { command: "/status", parse: parseCodexStatus } }),
     // Status without a request: an own home with no auth.json and no API key is "needs login" (nothing is started, nothing is opened or read).
     needsLogin: (ctx, env) => {
       const home = ownHome(ctx);
@@ -96,5 +99,6 @@ export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArg
 export const codexRegistration: ProviderRegistration = {
   id: "codex",
   displayName: "Codex",
+  planLimits: true,
   create: ({ config, providerSettings, ctx }) => new AcpProvider(codexDescriptor(config, { authMethodId: providerSettings.authMethodId as string | undefined, isolatedHome: providerSettings.isolatedHome !== false }), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions, toolResultTimeoutMs: config.toolResultTimeoutMs }),
 };

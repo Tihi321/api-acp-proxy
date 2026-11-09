@@ -14,13 +14,13 @@ import { resolveMcpServers } from "./mcp-servers.js";
 import { ToolBridgeHub } from "./tool-bridge.js";
 import { McpEndpoint, type McpEndpointTuning } from "./mcp-endpoint.js";
 import { servePlayground } from "./playground-files.js";
-import { CHARS_PER_TOKEN, chatUsage, openAiUsage, responsesUsage } from "./usage.js";
+import { CHARS_PER_TOKEN, chatUsage, openAiUsage, responsesUsage, usageEstimated } from "./usage.js";
 import type { ActivityEntry, ActivityFeature, ActivityLog } from "./activity.js";
 
 const startedAt = Date.now();
 
 /** What a request tells the activity log (metadata only: the prompt, the answer and the headers never get here). */
-interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; inputTokens?: number; outputTokens?: number; ignoredParams?: string[]; }
+interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; inputTokens?: number; outputTokens?: number; estimated?: boolean; ignoredParams?: string[]; }
 
 /** The proxy's error code of a failure (what the client sees as `error.code`). */
 function errorCode(error: unknown): string {
@@ -52,6 +52,7 @@ function traceUsage(trace: Trace, result: GenerationResult, promptText: string):
   const usage = openAiUsage(result, promptText);
   trace.inputTokens = usage.prompt;
   trace.outputTokens = usage.completion;
+  trace.estimated = usageEstimated(result);
 }
 
 function json(response: ServerResponse, status: number, payload: unknown): void {
@@ -361,6 +362,7 @@ function track(activity: ActivityLog, bridge: AcpLike, response: ServerResponse,
       time, endpoint, stream: trace.stream, features: [...trace.features], durationMs: Date.now() - time, status: response.statusCode,
       ...(trace.model ? { model: trace.model } : {}), ...(error ? { error } : {}),
       ...(trace.inputTokens !== undefined ? { inputTokens: trace.inputTokens } : {}), ...(trace.outputTokens !== undefined ? { outputTokens: trace.outputTokens } : {}),
+      ...(trace.estimated && (trace.inputTokens !== undefined || trace.outputTokens !== undefined) ? { estimated: true as const } : {}),
       ...(trace.ignoredParams?.length ? { ignoredParams: trace.ignoredParams } : {}),
     };
     const provider = trace.model ? bridge.providerOf?.(trace.model) : undefined;

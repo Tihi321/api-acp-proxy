@@ -6,214 +6,356 @@
   <meta name="color-scheme" content="light dark">
   <title>ACP Proxy</title>
   <link rel="stylesheet" href="settings.css">
+  <link rel="stylesheet" href="usage.css">
 </head>
 <body>
-  <header class="top">
-    <div>
-      <h1>ACP Proxy</h1>
-      <p class="muted">OpenAI-compatible API in front of your agent subscriptions.</p>
-    </div>
-    <div class="top-status"><span id="top-badge" class="badge">-</span> <span id="top-url" class="mono"></span></div>
-  </header>
-
-  <main>
-    <section class="card" id="card-overview">
-      <div class="card-head">
-        <h2>Overview</h2>
-        <span id="ov-summary" class="muted"></span>
-      </div>
-      <div class="status-line">
-        <span class="muted">API address</span>
-        <span id="ov-url" class="mono">Not running</span>
-        <button id="ov-copy" class="small" type="button" hidden>Copy</button>
-        <button id="ov-playground" class="small" type="button" hidden title="Try the models in your browser">Open playground</button>
-      </div>
-      <div class="status-line">
-        <span class="muted">MCP</span>
-        <span id="ov-mcp-url" class="mono">Not running</span>
-        <button id="ov-mcp-copy" class="small" type="button" hidden title="Copies the claude mcp add command that registers this server in Claude Code">Copy command</button>
-      </div>
-      <ul class="ov-list" id="ov-providers"></ul>
-      <p class="msg" id="ov-msg" role="status"></p>
-      <div class="ov-mcp">
-        <div class="row between"><strong>MCP servers <span class="muted" id="ov-mcp-count"></span></strong><button id="open-settings-file" class="small" type="button">Open settings.json</button></div>
-        <ul class="ov-mcp-list" id="ov-mcp"></ul>
-        <small>Read-only. A request names a server by its label. They are configured in the <code>mcpServers</code> object of settings.json; quit and start the app again after editing the file.</small>
-      </div>
-    </section>
-
-    <section class="card" id="card-activity">
-      <div class="card-head">
-        <h2>Recent requests</h2>
-        <span id="act-summary" class="muted"></span>
-        <button id="act-clear" class="small push" type="button">Clear</button>
-      </div>
-      <div class="table-wrap">
-        <table class="table" id="act-table">
-          <thead><tr><th>Time</th><th>Request</th><th>Model</th><th>Uses</th><th>Took</th><th>Result</th><th>Tokens</th></tr></thead>
-          <tbody id="act-body"></tbody>
-        </table>
-      </div>
-      <p class="muted small-text" id="act-empty">No requests yet. They show up here as they come in; only their kind, model, timing and token counts are kept, in memory, never the text.</p>
-    </section>
-
-    <section class="card" id="card-server">
-      <div class="card-head">
-        <h2>Server</h2>
-        <span id="server-badge" class="badge">-</span>
-      </div>
-      <div class="status-line">
-        <span id="server-url" class="mono muted">Not running</span>
-        <button id="copy-url" class="small" type="button" hidden>Copy</button>
-      </div>
-      <p id="server-error" class="error" hidden></p>
-      <div class="grid">
-        <label class="field"><span>Host</span><input id="server.host" type="text" autocomplete="off" spellcheck="false"><small data-note-for="server.host"></small><small class="error" data-error-for="server.host"></small></label>
-        <label class="field"><span>Port</span><input id="server.port" type="number" min="0" max="65535"><small data-note-for="server.port"></small><small class="error" data-error-for="server.port"></small></label>
-        <label class="field wide"><span>API key <em class="muted">(optional; clients send it as a Bearer token)</em></span>
-          <div class="row"><input id="server.apiKey" type="password" autocomplete="off" spellcheck="false"><button id="server-key-show" class="small" type="button">Show</button><button id="server-key-gen" class="small" type="button">Generate</button></div>
-          <small data-note-for="server.apiKey"></small><small class="error" data-error-for="server.apiKey"></small></label>
-        <label class="field"><span>Request timeout (ms)</span><input id="server.timeoutMs" type="number" min="1"><small data-note-for="server.timeoutMs"></small><small class="error" data-error-for="server.timeoutMs"></small></label>
-        <label class="field"><span>Max body (bytes)</span><input id="server.maxBodyBytes" type="number" min="1"><small data-note-for="server.maxBodyBytes"></small><small class="error" data-error-for="server.maxBodyBytes"></small></label>
-        <label class="field"><span>Models wait (ms)</span><input id="server.modelsWaitMs" type="number" min="1"><small data-note-for="server.modelsWaitMs"></small><small class="error" data-error-for="server.modelsWaitMs"></small></label>
-        <label class="field"><span>Tool result wait (ms)</span><input id="server.toolResultTimeoutMs" type="number" min="1"><small>How long a call to one of your tools waits for its result before the agent turn is cancelled.</small><small data-note-for="server.toolResultTimeoutMs"></small><small class="error" data-error-for="server.toolResultTimeoutMs"></small></label>
-        <label class="field"><span>Max concurrent per provider</span><input id="server.maxConcurrent" type="number" min="0"><small>Requests running at once per provider; extra ones wait in a queue. 0 = unlimited.</small><small data-note-for="server.maxConcurrent"></small><small class="error" data-error-for="server.maxConcurrent"></small></label>
-        <label class="field"><span>Max queued per provider</span><input id="server.maxQueue" type="number" min="0"><small>Waiting requests beyond this get a 429. 0 = unlimited.</small><small data-note-for="server.maxQueue"></small><small class="error" data-error-for="server.maxQueue"></small></label>
-        <label class="check"><input id="server.launchAtLogin" type="checkbox"><span>Launch at login</span></label>
-        <label class="check"><input id="server.listBareAliases" type="checkbox"><span>List unprefixed model ids in /v1/models (requests with them work either way)</span></label>
-        <label class="check"><input id="server.reuseSessions" type="checkbox"><span>Reuse agent sessions across conversation turns</span></label>
-      </div>
-      <div class="actions">
-        <button id="server-save" class="primary" type="button">Save and restart</button>
-        <button id="server-toggle" type="button">Stop</button>
-        <span class="muted hint">Saving restarts the server; in-flight requests will be dropped after 5 s.</span>
-      </div>
-      <p class="msg" id="server-msg" role="status"></p>
-      <p class="error" id="server-general-error" hidden></p>
-    </section>
-
-    <section class="card provider" data-provider="codex" id="card-codex">
-      <div class="card-head">
-        <h2>Codex</h2>
-        <span class="badge" data-role="badge">-</span>
-        <span class="muted mono" data-role="version"></span>
-        <label class="switch"><input id="providers.codex.enabled" type="checkbox"><span>Enabled</span></label>
-      </div>
-      <small data-note-for="providers.codex.enabled"></small>
-      <label class="field"><span>Max concurrent requests <em class="muted">(empty = the server value)</em></span><input id="providers.codex.maxConcurrent" type="number" min="0"><small data-note-for="providers.codex.maxConcurrent"></small><small class="error" data-error-for="providers.codex.maxConcurrent"></small></label>
-      <p class="error" data-role="error" hidden></p>
-      <div class="row auth-row">
-        <label class="field"><span>Sign-in method</span><select id="providers.codex.authMethodId"></select><small data-note-for="providers.codex.authMethodId"></small></label>
-        <button type="button" data-role="login">Log in</button>
-      </div>
-      <div class="login-link" data-role="login-link" hidden><span class="muted">Open this link to sign in:</span> <a href="#" data-role="login-url" class="mono"></a> <button type="button" class="small" data-role="copy-login">Copy link</button></div>
-      <label class="check"><input id="providers.codex.isolatedHome" type="checkbox"><span>Use a separate Codex home for the proxy (no skills, plugins or MCP servers from ~/.codex; needs its own login)</span></label>
-      <small data-note-for="providers.codex.isolatedHome"></small>
-      <div class="row home-row"><span class="muted">Codex home</span> <span class="mono" id="codex-home-path"></span> <button type="button" class="small" id="open-codex-home">Open folder</button></div>
-      <div class="models">
-        <div class="row between"><strong>Models <span class="muted" data-role="model-count"></span></strong><button type="button" class="small" data-role="refresh">Refresh</button></div>
-        <ul class="chips" data-role="models"></ul>
-      </div>
-      <div class="actions"><button type="button" class="primary" data-role="save">Save and restart</button></div>
-      <p class="msg" data-role="msg" role="status"></p>
-      <p class="error" data-role="general-error" hidden></p>
-    </section>
-
-    <section class="card provider" data-provider="antigravity" id="card-antigravity">
-      <div class="card-head">
-        <h2>Google Antigravity</h2>
-        <span class="badge" data-role="badge">-</span>
-        <span class="muted mono" data-role="version"></span>
-        <label class="switch"><input id="providers.antigravity.enabled" type="checkbox"><span>Enabled</span></label>
-      </div>
-      <small data-note-for="providers.antigravity.enabled"></small>
-      <label class="field"><span>Max concurrent requests <em class="muted">(empty = the server value)</em></span><input id="providers.antigravity.maxConcurrent" type="number" min="0"><small data-note-for="providers.antigravity.maxConcurrent"></small><small class="error" data-error-for="providers.antigravity.maxConcurrent"></small></label>
-      <p class="error" data-role="error" hidden></p>
-      <div class="row auth-row">
-        <label class="field"><span>Sign-in method</span><select id="providers.antigravity.authMethodId"></select><small data-note-for="providers.antigravity.authMethodId"></small></label>
-        <button type="button" data-role="login">Log in</button>
-      </div>
-      <div class="login-link" data-role="login-link" hidden><span class="muted">Open this link to sign in:</span> <a href="#" data-role="login-url" class="mono"></a> <button type="button" class="small" data-role="copy-login">Copy link</button></div>
-
-      <fieldset class="sub">
-        <legend>Agent</legend>
-        <label class="field"><span>Executable path</span>
-          <div class="row"><input id="providers.antigravity.executablePath" type="text" autocomplete="off" spellcheck="false" placeholder="Leave empty to use the downloaded agent"><button type="button" class="small" id="browse-exe">Browse…</button></div>
-          <small data-note-for="providers.antigravity.executablePath"></small><small class="error" data-error-for="providers.antigravity.executablePath"></small></label>
-        <div class="row install-row">
-          <button type="button" id="install-agy">Download from registry</button>
-          <progress id="install-progress" max="100" hidden></progress>
-          <span class="muted" id="install-text"></span>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div class="brand-text">
+          <strong>ACP Proxy</strong>
+          <span class="brand-sub">OpenAI-compatible API over your agents</span>
         </div>
-        <p class="muted mono small-text" id="install-info"></p>
-      </fieldset>
-
-      <fieldset class="sub">
-        <legend>Credentials and data</legend>
-        <label class="field"><span>GEMINI_API_KEY <em class="muted">(only for the "Gemini API key" method)</em></span>
-          <div class="row"><input id="providers.antigravity.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="agy-key-show">Show</button></div>
-          <small data-note-for="providers.antigravity.apiKey"></small><small class="error" data-error-for="providers.antigravity.apiKey"></small></label>
-        <label class="field"><span>GEMINI_HOME <em class="muted">(default: ~/.gemini)</em></span><input id="providers.antigravity.geminiHome" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.antigravity.geminiHome"></small></label>
-        <label class="check"><input id="providers.antigravity.purgeSessions" type="checkbox"><span>Purge proxy sessions after each request</span></label>
-      </fieldset>
-
-      <div class="models">
-        <div class="row between"><strong>Models <span class="muted" data-role="model-count"></span></strong><button type="button" class="small" data-role="refresh">Refresh</button></div>
-        <ul class="chips" data-role="models"></ul>
       </div>
-      <div class="actions"><button type="button" class="primary" data-role="save">Save and restart</button></div>
-      <p class="msg" data-role="msg" role="status"></p>
-      <p class="error" data-role="general-error" hidden></p>
-    </section>
+      <div class="server-pill"><span id="top-badge" class="badge">-</span><span id="top-url" class="mono"></span></div>
 
-    <section class="card provider" data-provider="claude" id="card-claude">
-      <div class="card-head">
-        <h2>Claude</h2>
-        <span class="badge" data-role="badge">-</span>
-        <span class="muted mono" data-role="version"></span>
-        <label class="switch"><input id="providers.claude.enabled" type="checkbox"><span>Enabled</span></label>
+      <nav aria-label="Sections">
+        <p class="nav-group">General</p>
+        <button type="button" class="nav-item" data-view="overview"><span class="nav-label">Overview</span></button>
+        <button type="button" class="nav-item" data-view="usage"><span class="nav-label">Usage</span></button>
+        <button type="button" class="nav-item" data-view="requests"><span class="nav-label">Requests</span></button>
+        <button type="button" class="nav-item" data-view="server"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Server</span></button>
+        <p class="nav-group">Providers</p>
+        <button type="button" class="nav-item" data-view="codex"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Codex</span></button>
+        <button type="button" class="nav-item" data-view="claude"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Claude</span></button>
+        <button type="button" class="nav-item" data-view="antigravity"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Antigravity</span></button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <button type="button" class="small" id="open-logs">Open logs folder</button>
+        <p class="foot-line">Settings: <span id="settings-path" class="mono"></span></p>
+        <p class="foot-note" id="secrets-note"></p>
       </div>
-      <small data-note-for="providers.claude.enabled"></small>
-      <label class="field"><span>Max concurrent requests <em class="muted">(empty = the server value)</em></span><input id="providers.claude.maxConcurrent" type="number" min="0"><small data-note-for="providers.claude.maxConcurrent"></small><small class="error" data-error-for="providers.claude.maxConcurrent"></small></label>
-      <p class="muted small-text">Uses Anthropic's official Claude Agent SDK. Using a Claude subscription through third-party tools may conflict with Anthropic's terms; use at your own risk.</p>
-      <p class="muted" data-role="account" hidden></p>
-      <p class="error" data-role="error" hidden></p>
-      <div class="row auth-row">
-        <label class="field"><span>Sign-in method</span><select id="providers.claude.authMethodId"></select><small data-note-for="providers.claude.authMethodId"></small></label>
-        <button type="button" data-role="login">Log in</button>
-      </div>
-      <div class="login-link" data-role="login-link" hidden><span class="muted">Open this link to sign in:</span> <a href="#" data-role="login-url" class="mono"></a> <button type="button" class="small" data-role="copy-login">Copy link</button></div>
+    </aside>
 
-      <fieldset class="sub">
-        <legend>Credentials and data</legend>
-        <p class="muted small-text">Leave these empty to reuse the credentials of an existing Claude Code login.</p>
-        <label class="field"><span>ANTHROPIC_API_KEY</span>
-          <div class="row"><input id="providers.claude.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="claude-key-show">Show</button></div>
-          <small data-note-for="providers.claude.apiKey"></small><small class="error" data-error-for="providers.claude.apiKey"></small></label>
-        <label class="field"><span>CLAUDE_CODE_OAUTH_TOKEN <em class="muted">(from <code>claude setup-token</code>)</em></span>
-          <div class="row"><input id="providers.claude.oauthToken" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="claude-token-show">Show</button></div>
-          <small data-note-for="providers.claude.oauthToken"></small><small class="error" data-error-for="providers.claude.oauthToken"></small></label>
-        <label class="field"><span>CLAUDE_CONFIG_DIR <em class="muted">(default: ~/.claude)</em></span><input id="providers.claude.configDir" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.claude.configDir"></small></label>
-        <label class="field"><span>Claude executable path <em class="muted">(optional)</em></span>
-          <div class="row"><input id="providers.claude.executablePath" type="text" autocomplete="off" spellcheck="false" placeholder="Leave empty to use the bundled Claude"><button type="button" class="small" id="browse-claude-exe">Browse…</button></div>
-          <small data-note-for="providers.claude.executablePath"></small><small class="error" data-error-for="providers.claude.executablePath"></small></label>
-      </fieldset>
+    <main class="content">
+      <!-- Overview -->
+      <section class="view" id="view-overview" data-view="overview" aria-labelledby="overview-title">
+        <div class="view-head">
+          <div><h1 id="overview-title">Overview</h1><p class="view-sub">The address, the providers and what went through today.</p></div>
+          <div class="view-actions"><span id="ov-summary" class="muted"></span></div>
+        </div>
+        <div class="view-body" id="card-overview">
+          <section class="card">
+            <div class="card-head"><h2>Connect</h2></div>
+            <div class="status-line">
+              <span class="muted">API address</span>
+              <span id="ov-url" class="mono">Not running</span>
+              <button id="ov-copy" class="small" type="button" hidden>Copy</button>
+              <button id="ov-playground" class="small" type="button" hidden title="Try the models in your browser">Open playground</button>
+            </div>
+            <div class="status-line">
+              <span class="muted">MCP</span>
+              <span id="ov-mcp-url" class="mono">Not running</span>
+              <button id="ov-mcp-copy" class="small" type="button" hidden title="Copies the claude mcp add command that registers this server in Claude Code">Copy command</button>
+            </div>
+          </section>
 
-      <div class="models">
-        <div class="row between"><strong>Models <span class="muted" data-role="model-count"></span></strong><button type="button" class="small" data-role="refresh">Refresh</button></div>
-        <ul class="chips" data-role="models"></ul>
-      </div>
-      <div class="actions"><button type="button" class="primary" data-role="save">Save and restart</button></div>
-      <p class="msg" data-role="msg" role="status"></p>
-      <p class="error" data-role="general-error" hidden></p>
-    </section>
-  </main>
+          <section class="card">
+            <div class="card-head"><h2>Today</h2><button id="ov-usage-open" class="small link-button push" type="button">Open usage</button></div>
+            <div class="stats" id="ov-usage"></div>
+          </section>
 
-  <footer class="foot muted">
-    <span>Settings: <span id="settings-path" class="mono"></span></span>
-    <span id="secrets-note"></span>
-    <button type="button" class="small" id="open-logs">Open logs folder</button>
-  </footer>
+          <section class="card">
+            <div class="card-head"><h2>Providers</h2></div>
+            <ul class="ov-list" id="ov-providers"></ul>
+            <p class="msg" id="ov-msg" role="status"></p>
+          </section>
+
+          <section class="card ov-mcp">
+            <div class="card-head"><h2>MCP servers <span class="muted" id="ov-mcp-count"></span></h2><button id="open-settings-file" class="small push" type="button">Open settings.json</button></div>
+            <ul class="ov-mcp-list" id="ov-mcp"></ul>
+            <small>Read-only. A request names a server by its label. They are configured in the <code>mcpServers</code> object of settings.json; quit and start the app again after editing the file.</small>
+          </section>
+        </div>
+      </section>
+
+      <!-- Usage -->
+      <section class="view" id="view-usage" data-view="usage" aria-labelledby="usage-title" hidden>
+        <div class="view-head"><div><h1 id="usage-title">Usage</h1><p class="view-sub">What went through this proxy, and how much of each plan is left.</p></div></div>
+        <section class="card" id="usage-proxy">
+          <div class="card-head"><h2>Counted by the proxy</h2>
+            <div class="segmented" id="usage-range" role="group" aria-label="Range">
+              <button type="button" data-range="today">Today</button><button type="button" data-range="last7">7 days</button><button type="button" data-range="last30">30 days</button><button type="button" data-range="allTime">All time</button>
+            </div>
+            <button type="button" id="usage-reset" class="small quiet-danger push">Reset usage</button>
+          </div>
+          <div class="stats" id="usage-stats"></div>
+          <div class="table-wrap"><table class="table" id="usage-table"><thead><tr><th>Provider</th><th>Requests</th><th>Errors</th><th>Input tokens</th><th>Output tokens</th></tr></thead><tbody id="usage-body"></tbody><tfoot id="usage-foot"></tfoot></table></div>
+          <div class="chart-head"><h3>Last 30 days</h3>
+            <div class="segmented" id="usage-metric" role="group" aria-label="Chart metric"><button type="button" data-metric="requests">Requests</button><button type="button" data-metric="tokens">Tokens</button></div>
+          </div>
+          <div class="chart" id="usage-chart" role="img" aria-label="Requests per day, last 30 days"></div>
+          <ul class="legend" id="usage-legend"></ul>
+          <p class="note" id="usage-note"></p>
+        </section>
+        <section class="card" id="usage-limits">
+          <div class="card-head"><h2>Plan limits</h2><button type="button" id="limits-refresh-all" class="small push">Refresh all</button></div>
+          <div class="limits-grid" id="limits-list"></div>
+          <p class="note">Read from the agents on demand (Codex: /status, Claude: /usage) and cached for a minute. Limits are shared with your other tools, so they change without proxy traffic.</p>
+        </section>
+      </section>
+
+      <!-- Requests -->
+      <section class="view" id="view-requests" data-view="requests" aria-labelledby="requests-title" hidden>
+        <div class="view-head">
+          <div><h1 id="requests-title">Requests</h1><p class="view-sub">The latest requests, newest first.</p></div>
+          <div class="view-actions"><span id="act-summary" class="muted"></span><button id="act-clear" class="small" type="button">Clear</button></div>
+        </div>
+        <div class="view-body" id="card-activity">
+          <section class="card">
+            <div class="table-wrap">
+              <table class="table" id="act-table">
+                <thead><tr><th>Time</th><th>Request</th><th>Model</th><th>Uses</th><th>Took</th><th>Result</th><th>Tokens</th></tr></thead>
+                <tbody id="act-body"></tbody>
+              </table>
+            </div>
+            <p class="empty-state" id="act-empty">No requests yet. They show up here as they come in. Only their kind, model, timing and token counts are kept, in memory (the last 100), never the text. Totals per provider are on the Usage page and are not affected by Clear.</p>
+          </section>
+        </div>
+      </section>
+
+      <!-- Server -->
+      <section class="view" id="view-server" data-view="server" aria-labelledby="server-title" hidden>
+        <div class="view-head">
+          <div><h1 id="server-title">Server</h1><p class="view-sub">Where the API listens, who may call it and how much it takes.</p></div>
+          <div class="view-actions"><span id="server-badge" class="badge">-</span><button id="server-toggle" type="button">Stop</button></div>
+        </div>
+        <div class="view-body" id="card-server">
+          <section class="card">
+            <div class="card-head"><h2>Address</h2></div>
+            <div class="status-line">
+              <span id="server-url" class="mono muted">Not running</span>
+              <button id="copy-url" class="small" type="button" hidden>Copy</button>
+            </div>
+            <p id="server-error" class="error" hidden></p>
+            <div class="grid">
+              <label class="field"><span>Host</span><input id="server.host" type="text" autocomplete="off" spellcheck="false"><small data-note-for="server.host"></small><small class="error" data-error-for="server.host"></small></label>
+              <label class="field"><span>Port</span><input id="server.port" type="number" min="0" max="65535"><small data-note-for="server.port"></small><small class="error" data-error-for="server.port"></small></label>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Access</h2></div>
+            <label class="field wide"><span>API key <em class="muted">(optional; clients send it as a Bearer token)</em></span>
+              <div class="row"><input id="server.apiKey" type="password" autocomplete="off" spellcheck="false"><button id="server-key-show" class="small" type="button">Show</button><button id="server-key-gen" class="small" type="button">Generate</button></div>
+              <small data-note-for="server.apiKey"></small><small class="error" data-error-for="server.apiKey"></small></label>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Limits and timeouts</h2></div>
+            <div class="grid">
+              <label class="field"><span>Request timeout (ms)</span><input id="server.timeoutMs" type="number" min="1"><small data-note-for="server.timeoutMs"></small><small class="error" data-error-for="server.timeoutMs"></small></label>
+              <label class="field"><span>Max body (bytes)</span><input id="server.maxBodyBytes" type="number" min="1"><small data-note-for="server.maxBodyBytes"></small><small class="error" data-error-for="server.maxBodyBytes"></small></label>
+              <label class="field"><span>Models wait (ms)</span><input id="server.modelsWaitMs" type="number" min="1"><small data-note-for="server.modelsWaitMs"></small><small class="error" data-error-for="server.modelsWaitMs"></small></label>
+              <label class="field"><span>Tool result wait (ms)</span><input id="server.toolResultTimeoutMs" type="number" min="1"><small>How long a call to one of your tools waits for its result before the agent turn is cancelled.</small><small data-note-for="server.toolResultTimeoutMs"></small><small class="error" data-error-for="server.toolResultTimeoutMs"></small></label>
+              <label class="field"><span>Max concurrent per provider</span><input id="server.maxConcurrent" type="number" min="0"><small>Requests running at once per provider; extra ones wait in a queue. 0 = unlimited.</small><small data-note-for="server.maxConcurrent"></small><small class="error" data-error-for="server.maxConcurrent"></small></label>
+              <label class="field"><span>Max queued per provider</span><input id="server.maxQueue" type="number" min="0"><small>Waiting requests beyond this get a 429. 0 = unlimited.</small><small data-note-for="server.maxQueue"></small><small class="error" data-error-for="server.maxQueue"></small></label>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Behaviour</h2></div>
+            <div class="checks">
+              <label class="check"><input id="server.launchAtLogin" type="checkbox"><span>Launch at login</span></label>
+              <label class="check"><input id="server.listBareAliases" type="checkbox"><span>List unprefixed model ids in /v1/models (requests with them work either way)</span></label>
+              <label class="check"><input id="server.reuseSessions" type="checkbox"><span>Reuse agent sessions across conversation turns</span></label>
+            </div>
+          </section>
+
+          <div class="save-bar">
+            <button id="server-save" class="primary" type="button">Save and restart</button>
+            <span class="muted hint">Saving restarts the server; in-flight requests will be dropped after 5 s.</span>
+            <p class="msg" id="server-msg" role="status"></p>
+            <p class="error" id="server-general-error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Codex -->
+      <section class="view" id="view-codex" data-view="codex" aria-labelledby="codex-title" hidden>
+        <div class="view-body provider" data-provider="codex" id="card-codex">
+          <div class="view-head">
+            <div><h1 id="codex-title">Codex</h1><p class="view-sub">Your ChatGPT or API key login, through the Codex agent.</p></div>
+            <div class="view-actions">
+              <span class="badge" data-role="badge">-</span>
+              <span class="muted mono" data-role="version"></span>
+              <label class="switch"><input id="providers.codex.enabled" type="checkbox"><span>Enabled</span></label>
+            </div>
+          </div>
+          <small data-note-for="providers.codex.enabled"></small>
+
+          <section class="card">
+            <div class="card-head"><h2>Sign-in</h2></div>
+            <p class="error" data-role="error" hidden></p>
+            <div class="row auth-row">
+              <label class="field"><span>Sign-in method</span><select id="providers.codex.authMethodId"></select><small data-note-for="providers.codex.authMethodId"></small></label>
+              <button type="button" data-role="login">Log in</button>
+            </div>
+            <div class="login-link" data-role="login-link" hidden><span class="muted">Open this link to sign in:</span> <a href="#" data-role="login-url" class="mono"></a> <button type="button" class="small" data-role="copy-login">Copy link</button></div>
+            <label class="check"><input id="providers.codex.isolatedHome" type="checkbox"><span>Use a separate Codex home for the proxy (no skills, plugins or MCP servers from ~/.codex; needs its own login)</span></label>
+            <small data-note-for="providers.codex.isolatedHome"></small>
+            <div class="row home-row"><span class="muted">Codex home</span> <span class="mono" id="codex-home-path"></span> <button type="button" class="small" id="open-codex-home">Open folder</button></div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Capacity</h2></div>
+            <label class="field"><span>Max concurrent requests <em class="muted">(empty = the server value)</em></span><input id="providers.codex.maxConcurrent" type="number" min="0"><small data-note-for="providers.codex.maxConcurrent"></small><small class="error" data-error-for="providers.codex.maxConcurrent"></small></label>
+          </section>
+
+          <section class="card models">
+            <div class="card-head"><h2>Models <span class="muted" data-role="model-count"></span></h2><button type="button" class="small push" data-role="refresh">Refresh</button></div>
+            <ul class="chips" data-role="models"></ul>
+          </section>
+
+          <div class="save-bar">
+            <button type="button" class="primary" data-role="save">Save and restart</button>
+            <span class="muted hint">Saving restarts the server; in-flight requests will be dropped after 5 s.</span>
+            <p class="msg" data-role="msg" role="status"></p>
+            <p class="error" data-role="general-error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Claude -->
+      <section class="view" id="view-claude" data-view="claude" aria-labelledby="claude-title" hidden>
+        <div class="view-body provider" data-provider="claude" id="card-claude">
+          <div class="view-head">
+            <div><h1 id="claude-title">Claude</h1><p class="view-sub">Your Claude login, through Anthropic's Claude Agent SDK.</p></div>
+            <div class="view-actions">
+              <span class="badge" data-role="badge">-</span>
+              <span class="muted mono" data-role="version"></span>
+              <label class="switch"><input id="providers.claude.enabled" type="checkbox"><span>Enabled</span></label>
+            </div>
+          </div>
+          <small data-note-for="providers.claude.enabled"></small>
+          <p class="note">Uses Anthropic's official Claude Agent SDK. Using a Claude subscription through third-party tools may conflict with Anthropic's terms; use at your own risk.</p>
+
+          <section class="card">
+            <div class="card-head"><h2>Sign-in</h2></div>
+            <p class="muted" data-role="account" hidden></p>
+            <p class="error" data-role="error" hidden></p>
+            <div class="row auth-row">
+              <label class="field"><span>Sign-in method</span><select id="providers.claude.authMethodId"></select><small data-note-for="providers.claude.authMethodId"></small></label>
+              <button type="button" data-role="login">Log in</button>
+            </div>
+            <div class="login-link" data-role="login-link" hidden><span class="muted">Open this link to sign in:</span> <a href="#" data-role="login-url" class="mono"></a> <button type="button" class="small" data-role="copy-login">Copy link</button></div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Capacity</h2></div>
+            <label class="field"><span>Max concurrent requests <em class="muted">(empty = the server value)</em></span><input id="providers.claude.maxConcurrent" type="number" min="0"><small data-note-for="providers.claude.maxConcurrent"></small><small class="error" data-error-for="providers.claude.maxConcurrent"></small></label>
+          </section>
+
+          <section class="card">
+            <fieldset class="sub">
+              <legend>Credentials and data</legend>
+              <p class="note">Leave these empty to reuse the credentials of an existing Claude Code login.</p>
+              <label class="field"><span>ANTHROPIC_API_KEY</span>
+                <div class="row"><input id="providers.claude.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="claude-key-show">Show</button></div>
+                <small data-note-for="providers.claude.apiKey"></small><small class="error" data-error-for="providers.claude.apiKey"></small></label>
+              <label class="field"><span>CLAUDE_CODE_OAUTH_TOKEN <em class="muted">(from <code>claude setup-token</code>)</em></span>
+                <div class="row"><input id="providers.claude.oauthToken" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="claude-token-show">Show</button></div>
+                <small data-note-for="providers.claude.oauthToken"></small><small class="error" data-error-for="providers.claude.oauthToken"></small></label>
+              <label class="field"><span>CLAUDE_CONFIG_DIR <em class="muted">(default: ~/.claude)</em></span><input id="providers.claude.configDir" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.claude.configDir"></small></label>
+              <label class="field"><span>Claude executable path <em class="muted">(optional)</em></span>
+                <div class="row"><input id="providers.claude.executablePath" type="text" autocomplete="off" spellcheck="false" placeholder="Leave empty to use the bundled Claude"><button type="button" class="small" id="browse-claude-exe">Browse…</button></div>
+                <small data-note-for="providers.claude.executablePath"></small><small class="error" data-error-for="providers.claude.executablePath"></small></label>
+            </fieldset>
+          </section>
+
+          <section class="card models">
+            <div class="card-head"><h2>Models <span class="muted" data-role="model-count"></span></h2><button type="button" class="small push" data-role="refresh">Refresh</button></div>
+            <ul class="chips" data-role="models"></ul>
+          </section>
+
+          <div class="save-bar">
+            <button type="button" class="primary" data-role="save">Save and restart</button>
+            <span class="muted hint">Saving restarts the server; in-flight requests will be dropped after 5 s.</span>
+            <p class="msg" data-role="msg" role="status"></p>
+            <p class="error" data-role="general-error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Antigravity -->
+      <section class="view" id="view-antigravity" data-view="antigravity" aria-labelledby="antigravity-title" hidden>
+        <div class="view-body provider" data-provider="antigravity" id="card-antigravity">
+          <div class="view-head">
+            <div><h1 id="antigravity-title">Google Antigravity</h1><p class="view-sub">Your Google login, through the Antigravity ACP agent.</p></div>
+            <div class="view-actions">
+              <span class="badge" data-role="badge">-</span>
+              <span class="muted mono" data-role="version"></span>
+              <label class="switch"><input id="providers.antigravity.enabled" type="checkbox"><span>Enabled</span></label>
+            </div>
+          </div>
+          <small data-note-for="providers.antigravity.enabled"></small>
+
+          <section class="card">
+            <div class="card-head"><h2>Sign-in</h2></div>
+            <p class="error" data-role="error" hidden></p>
+            <div class="row auth-row">
+              <label class="field"><span>Sign-in method</span><select id="providers.antigravity.authMethodId"></select><small data-note-for="providers.antigravity.authMethodId"></small></label>
+              <button type="button" data-role="login">Log in</button>
+            </div>
+            <div class="login-link" data-role="login-link" hidden><span class="muted">Open this link to sign in:</span> <a href="#" data-role="login-url" class="mono"></a> <button type="button" class="small" data-role="copy-login">Copy link</button></div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Capacity</h2></div>
+            <label class="field"><span>Max concurrent requests <em class="muted">(empty = the server value)</em></span><input id="providers.antigravity.maxConcurrent" type="number" min="0"><small data-note-for="providers.antigravity.maxConcurrent"></small><small class="error" data-error-for="providers.antigravity.maxConcurrent"></small></label>
+          </section>
+
+          <section class="card">
+            <fieldset class="sub">
+              <legend>Agent</legend>
+              <label class="field"><span>Executable path</span>
+                <div class="row"><input id="providers.antigravity.executablePath" type="text" autocomplete="off" spellcheck="false" placeholder="Leave empty to use the downloaded agent"><button type="button" class="small" id="browse-exe">Browse…</button></div>
+                <small data-note-for="providers.antigravity.executablePath"></small><small class="error" data-error-for="providers.antigravity.executablePath"></small></label>
+              <div class="row install-row">
+                <button type="button" id="install-agy">Download from registry</button>
+                <progress id="install-progress" max="100" hidden></progress>
+                <span class="muted" id="install-text"></span>
+              </div>
+              <p class="muted mono small-text" id="install-info"></p>
+            </fieldset>
+
+            <fieldset class="sub">
+              <legend>Credentials and data</legend>
+              <label class="field"><span>GEMINI_API_KEY <em class="muted">(only for the "Gemini API key" method)</em></span>
+                <div class="row"><input id="providers.antigravity.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="agy-key-show">Show</button></div>
+                <small data-note-for="providers.antigravity.apiKey"></small><small class="error" data-error-for="providers.antigravity.apiKey"></small></label>
+              <label class="field"><span>GEMINI_HOME <em class="muted">(default: ~/.gemini)</em></span><input id="providers.antigravity.geminiHome" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.antigravity.geminiHome"></small></label>
+              <label class="check"><input id="providers.antigravity.purgeSessions" type="checkbox"><span>Purge proxy sessions after each request</span></label>
+            </fieldset>
+          </section>
+
+          <section class="card models">
+            <div class="card-head"><h2>Models <span class="muted" data-role="model-count"></span></h2><button type="button" class="small push" data-role="refresh">Refresh</button></div>
+            <ul class="chips" data-role="models"></ul>
+          </section>
+
+          <div class="save-bar">
+            <button type="button" class="primary" data-role="save">Save and restart</button>
+            <span class="muted hint">Saving restarts the server; in-flight requests will be dropped after 5 s.</span>
+            <p class="msg" data-role="msg" role="status"></p>
+            <p class="error" data-role="general-error" hidden></p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
 
   <dialog id="logout-dialog">
     <h2 id="logout-title"></h2>
@@ -231,6 +373,15 @@
     <div class="actions end">
       <button type="button" id="terms-cancel">Cancel</button>
       <button type="button" id="terms-accept" class="primary">I understand</button>
+    </div>
+  </dialog>
+
+  <dialog id="reset-usage-dialog" aria-labelledby="reset-usage-title">
+    <h2 id="reset-usage-title">Reset usage totals?</h2>
+    <p>This sets the request and token counts of every provider back to zero and clears the daily history in usage.json. Recent requests and plan limits are not affected. This cannot be undone.</p>
+    <div class="actions end">
+      <button type="button" id="reset-usage-cancel">Cancel</button>
+      <button type="button" id="reset-usage-confirm" class="danger">Reset</button>
     </div>
   </dialog>
 

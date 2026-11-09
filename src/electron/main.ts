@@ -15,7 +15,7 @@ import type { SecretCodec, SettingsPatch } from "../settings.js";
 import { antigravityRegistration, installAntigravity, readInstallInfo } from "./antigravity.js";
 import { SettingsWindow } from "./settings-window.js";
 import { TrayController } from "./tray.js";
-import type { ActionResult, ActivityView, FieldError, InstallInfoView, InstallResult, OpenTarget, SaveResult, StateView } from "../shared/ipc.js";
+import type { ActionResult, ActivityView, FieldError, InstallInfoView, InstallResult, OpenTarget, SaveResult, StateView, UsageView } from "../shared/ipc.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(here, "..", "..");
@@ -68,6 +68,8 @@ async function main(): Promise<void> {
     void (async () => {
       const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5000));
       try { await Promise.race([controller?.stop().then(() => undefined), timeout]); } catch (error) { logger.error(`Error while stopping: ${String(error)}`); }
+      // The flush has its own budget: a slow drain above must not starve the usage write.
+      try { await Promise.race([controller?.flushUsage(), new Promise<void>((resolve) => setTimeout(resolve, 2000))]); } catch (error) { logger.error(`Error while saving usage: ${String(error)}`); }
       tray?.destroy();
       app.exit(0);
     })();
@@ -149,6 +151,13 @@ async function main(): Promise<void> {
     activityTimer = setTimeout(() => { activityTimer = undefined; if (win.webContents) win.send("proxy:activity", activityViews()); tray?.setActivity(proxy.activity.summary()); }, 150);
   };
 
+  const usageView = (): UsageView => proxy.usageSummary();
+  let usageTimer: NodeJS.Timeout | undefined;
+  const pushUsage = (): void => {
+    if (usageTimer) return;
+    usageTimer = setTimeout(() => { usageTimer = undefined; if (win.webContents) win.send("proxy:usage", usageView()); }, 500);
+  };
+
   /** `<server>/playground` in the default browser. The address comes from the server status, never from the window. */
   const openPlayground = async (): Promise<void> => {
     const baseUrl = proxy.status().server.baseUrl;
@@ -169,6 +178,7 @@ async function main(): Promise<void> {
   });
   proxy.on("status", (status: ControllerStatus) => { tray?.update(status); pushState(); });
   proxy.on("activity", pushActivity);
+  proxy.on("usage", pushUsage);
   proxy.on("loginNeeded", (providerId: string, name: string) => tray?.loginNeeded(providerId, name));
   tray.update(proxy.status());
 
@@ -209,6 +219,10 @@ async function main(): Promise<void> {
   });
   handle("proxy:activity", () => activityViews());
   handle("proxy:clearActivity", () => { proxy.activity.clear(); });
+  handle("proxy:usage", () => usageView());
+  handle("proxy:resetUsage", () => action(() => proxy.resetUsage()));
+  handle("proxy:planLimits", () => proxy.planLimits.list());
+  handle("proxy:refreshPlanLimits", (providerId: unknown, force: unknown) => typeof providerId === "string" ? proxy.planLimits.get(providerId, force === true) : { provider: "", state: "error" as const, windows: [], message: "Invalid provider" });
   handle("proxy:openPath", async (target: unknown): Promise<ActionResult> => {
     const known: Record<OpenTarget, () => Promise<string>> = {
       codexHome: async () => { const home = codexHomeView((await proxy.getSettings()).effective.providers.codex.isolatedHome); if (home.isolated) await fs.promises.mkdir(home.path, { recursive: true }); return shell.openPath(home.path); },

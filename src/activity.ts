@@ -21,6 +21,8 @@ export interface ActivityEntry {
   error?: string;
   inputTokens?: number;
   outputTokens?: number;
+  /** The token counts are the chars/4 estimate (the agent reported none). */
+  estimated?: true;
   /** Names (never values) of the sampling fields the request sent and the proxy dropped. */
   ignoredParams?: string[];
 }
