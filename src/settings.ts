@@ -47,7 +47,6 @@ export const settingsSchema = z.object({
     modelsWaitMs: positive(3000),
     workRoot: z.string().optional(),
     launchAtLogin: z.boolean().default(false),
-    /** Drop sampling fields (temperature, top_p, penalties, seed) instead of answering 400, for clients that always send them. */
     /** Keep agent sessions across the turns of a conversation. */
     reuseSessions: z.boolean().default(false),
     /** List the unprefixed ids (`gpt-x` next to `codex/gpt-x`) in /v1/models. Requests with an unprefixed id are routed either way. */
