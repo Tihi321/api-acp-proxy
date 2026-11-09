@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { AcpProvider } from "../acp-provider.js";
 import type { ProviderRegistration } from "../controller.js";
+import { parseClaudeUsage } from "../plan-limits.js";
 import { AcpUnavailableError } from "../provider.js";
 import type { AuthMethodInfo, ProviderAuthMethod, ProviderDescriptor, RuntimeContext } from "../provider.js";
 
@@ -131,6 +132,7 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
     sessionTimeoutMs: 120_000,
     warmSessions: 1,
     usageScope: "session",
+    planLimits: { command: "/usage", parse: parseClaudeUsage },
     stderrLogLevel: "debug",
     sessionMeta: { disableBuiltInTools: true, claudeCode: { options: { tools: [], persistSession: false, settingSources: [] } } },
     loginMethods: subscriptionOnly(settings) ? LOGIN_METHODS.filter((method) => method.id !== "console-login") : LOGIN_METHODS,
@@ -187,5 +189,6 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
 export const claudeRegistration: ProviderRegistration = {
   id: "claude",
   displayName: "Claude",
+  planLimits: true,
   create: ({ providerSettings, ctx, env, config }) => new AcpProvider(claudeDescriptor(providerSettings as ClaudeSettings, env), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions, toolResultTimeoutMs: config.toolResultTimeoutMs }),
 };

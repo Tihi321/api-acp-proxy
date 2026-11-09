@@ -7,6 +7,9 @@ import { createLogger, type Logger } from "./logger.js";
 import { ProviderRouter } from "./router.js";
 import { createProxyServer } from "./server.js";
 import { ToolBridgeHub } from "./tool-bridge.js";
+import { UsageStore } from "./usage-store.js";
+import { PlanLimitsCache } from "./plan-limits.js";
+import type { UsageView } from "./shared/ipc.js";
 import { codexRegistration } from "./providers/codex.js";
 import { antigravityRegistration } from "./providers/antigravity.js";
 import { claudeRegistration } from "./providers/claude.js";
@@ -31,6 +34,8 @@ export interface ProviderFactoryArgs {
 export interface ProviderRegistration {
   id: string;
   displayName: string;
+  /** The provider can report account plan limits (T3 sets it for Codex and Claude). */
+  planLimits?: boolean;
   create(args: ProviderFactoryArgs): Provider;
 }
 
@@ -53,7 +58,7 @@ export interface SettingsSnapshot { settings: Settings; effective: Settings; ove
 
 interface Running { server: Server; router: ProviderRouter; providers: Provider[]; unsubscribe: Array<() => void>; toolBridge: ToolBridgeHub; }
 
-/** Owns settings, router and HTTP server. Emits "status" (ControllerStatus) on every change, "activity" when the request log changes, and "loginNeeded" (provider id, display name) when a request hit a provider that needs login. */
+/** Owns settings, router and HTTP server. Emits "status" (ControllerStatus) on every change, "activity" when the request log changes, "usage" when the usage totals change, and "loginNeeded" (provider id, display name) when a request hit a provider that needs login. */
 export class ProxyController extends EventEmitter {
   private readonly env: NodeJS.ProcessEnv;
   private readonly logger: Logger;
@@ -70,6 +75,10 @@ export class ProxyController extends EventEmitter {
   private chain: Promise<unknown> = Promise.resolve();
   /** The last requests (metadata only, in memory); it outlives server restarts. */
   readonly activity = new ActivityLog();
+  /** Per-provider request and token totals, persisted in <dataDir>/usage.json; survives Clear and restarts. */
+  readonly usage: UsageStore;
+  /** Account plan limits, fetched on demand and cached for 60 s. */
+  readonly planLimits: PlanLimitsCache;
 
   constructor(private readonly options: ControllerOptions = {}) {
     super();
@@ -81,8 +90,20 @@ export class ProxyController extends EventEmitter {
     this.drainMs = options.drainMs ?? 5000;
     this.dataDir = options.ctx?.dataDir ?? path.dirname(settingsPath);
     this.ctx = defaultRuntimeContext({ ...options.ctx, logger: this.logger, dataDir: this.dataDir });
+    this.usage = new UsageStore({ file: path.join(this.dataDir, "usage.json"), logger: this.logger });
+    this.usage.on("change", () => this.emit("usage"));
+    this.planLimits = new PlanLimitsCache({
+      providerIds: () => this.registry.map((entry) => entry.id),
+      supported: (id) => this.registry.find((entry) => entry.id === id)?.planLimits === true,
+      live: (id) => {
+        const running = this.running;
+        const provider = running?.providers.find((entry) => entry.id === id);
+        return running && provider ? { provider, probe: (signal) => running.router.probePlanLimits(id, signal) } : undefined;
+      },
+    });
     this.activity.on("change", () => this.emit("activity"));
     this.activity.on("record", (entry: ActivityEntry) => {
+      this.usage.add(entry);
       if (entry.error !== "provider_auth_required" || !entry.provider) return;
       const name = this.registry.find((candidate) => candidate.id === entry.provider)?.displayName ?? entry.provider;
       this.emit("loginNeeded", entry.provider, name);
@@ -96,6 +117,12 @@ export class ProxyController extends EventEmitter {
   }
 
   get settingsPath(): string { return this.store.file; }
+
+  /** Usage totals for every registered provider (and any other id found in the data). */
+  usageSummary(): UsageView { return this.usage.summary(this.registry.map((entry) => entry.id)); }
+
+  /** Sets every usage total back to zero and rewrites usage.json. */
+  async resetUsage(): Promise<void> { await this.usage.reset(); }
 
   private exclusive<T>(run: () => Promise<T>): Promise<T> {
     const next = this.chain.then(run, run);
@@ -137,7 +164,16 @@ export class ProxyController extends EventEmitter {
 
   stop(): Promise<ControllerStatus> {
     this.wanted = false;
-    return this.exclusive(async () => { await this.stopServer(); return this.publish(); });
+    return this.exclusive(async () => {
+      await this.stopServer();
+      await this.flushUsage();
+      return this.publish();
+    });
+  }
+
+  /** Writes pending usage totals now; a failure is logged, not thrown. Independent of the server drain so a quit can call it on its own. */
+  async flushUsage(): Promise<void> {
+    await this.usage.flush().catch((error) => this.logger.warn(`Could not save the usage totals: ${error instanceof Error ? error.message : String(error)}`));
   }
 
   /** Persists a settings patch and restarts the server (drain, then new server and bridges) when it is meant to be running. */
@@ -237,6 +273,7 @@ export class ProxyController extends EventEmitter {
     if (!provider) throw new Error(`Provider '${providerId}' is not running; enable it and start the proxy first.`);
     if (!provider.logout) throw new Error(`${provider.displayName} cannot be logged out from here.`);
     try { await provider.logout(); } finally { this.publish(); }
+    this.planLimits.forget(providerId);
     return this.status();
   }
 

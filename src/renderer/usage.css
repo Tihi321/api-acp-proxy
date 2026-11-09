@@ -1,0 +1,38 @@
+/* Usage view. Uses the tokens and shared components of settings.css only. */
+.series-codex { background: var(--series-codex); }
+.series-claude { background: var(--series-claude); }
+.series-antigravity { background: var(--series-antigravity); }
+.series-other { background: var(--series-other); }
+
+#usage-table th:not(:first-child) { text-align: right; }
+.is-zero td { color: var(--text-faint); }
+.legend-swatch { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 2px; margin-right: var(--space-2); vertical-align: baseline; }
+
+.chart-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin: var(--space-5) 0 var(--space-3); flex-wrap: wrap; }
+.chart { margin-bottom: var(--space-2); }
+.chart-bars { display: flex; align-items: flex-end; gap: 2px; height: 140px; border-bottom: 1px solid var(--border-strong); }
+.chart-day { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column-reverse; justify-content: flex-start; border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+.chart-day:hover { background: var(--surface-2); }
+.chart-seg { flex: none; min-height: 2px; width: 100%; }
+.chart-seg.is-top { border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+.chart-axis { display: flex; gap: 2px; height: 18px; margin-top: var(--space-1); color: var(--text-faint); font-size: var(--text-xs); }
+.chart-tick { flex: 1; min-width: 0; position: relative; }
+.chart-tick span { position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap; }
+.chart-tick:first-child span { left: 0; transform: none; }
+.chart-tick:last-child span { left: auto; right: 0; transform: none; }
+.legend { list-style: none; margin: var(--space-2) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-4); color: var(--text-muted); font-size: var(--text-sm); }
+.legend li { display: inline-flex; align-items: center; }
+
+.limits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--space-3); margin-bottom: var(--space-3); }
+.limit-card { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.limit-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.limit-window { display: flex; flex-direction: column; gap: var(--space-1); }
+.limit-window-head { display: flex; justify-content: space-between; gap: var(--space-2); }
+.limit-percent { font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.meter { height: 8px; background: var(--surface-2); border-radius: var(--radius-sm); overflow: hidden; }
+.meter-fill { height: 100%; background: var(--accent); border-radius: var(--radius-sm); }
+.meter-fill.is-warn { background: var(--warn); }
+.meter-fill.is-err { background: var(--err); }
+.limit-meta { margin: 0; color: var(--text-muted); font-size: var(--text-xs); }
+.limit-card > button.link-button { align-self: flex-start; }
+.limit-raw { margin: var(--space-1) 0 0; font: var(--text-xs)/1.4 var(--font-mono); max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: var(--surface-2); padding: var(--space-2); border-radius: var(--radius-sm); }

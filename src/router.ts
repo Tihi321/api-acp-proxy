@@ -5,6 +5,7 @@ import type { AcpLike, ModelEntry } from "./acp.js";
 import { ApiError, type Message } from "./api.js";
 import { silentLogger, type Logger } from "./logger.js";
 import { ConcurrencyLimiter, QueueAbortedError, type LimiterStats } from "./limiter.js";
+import type { PlanLimitsView } from "./shared/ipc.js";
 import type { GenerateOptions, GenerationCallbacks, GenerationResult, ModelInfo, Provider } from "./provider.js";
 
 export interface RouterOptions {
@@ -180,6 +181,24 @@ export class ProviderRouter implements AcpLike {
     }
     try { return await target.provider.generate(target.model, messages, callbacks, signal, options); }
     finally { release(); }
+  }
+
+  /** Reads one provider's account plan limits; the probe takes a slot of the provider's cap like a request does, but it is not a request (never logged or counted). */
+  async probePlanLimits(providerId: string, signal: AbortSignal): Promise<PlanLimitsView> {
+    const provider = this.byId.get(providerId);
+    if (!provider?.planLimits) return { provider: providerId, state: "unsupported", windows: [], message: "Plan limits are not available for this provider." };
+    const limiter = this.limiters.get(providerId);
+    let release: (() => void) | undefined;
+    if (limiter) {
+      try { release = await limiter.acquire(signal); }
+      catch (error) {
+        if (error instanceof QueueAbortedError) return { provider: providerId, state: "error", windows: [], message: "No free slot for this provider in time; try again." };
+        if (error instanceof ApiError && error.code === "provider_queue_full") return { provider: providerId, state: "error", windows: [], message: "The provider's queue is full; try again shortly." };
+        throw error;
+      }
+    }
+    try { return { ...(await provider.planLimits(signal)), provider: providerId }; }
+    finally { release?.(); }
   }
 
   /** Running and waiting requests per provider (only providers with a cap). */

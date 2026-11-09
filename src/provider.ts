@@ -5,6 +5,8 @@ import type { Message, ToolCall, ToolChoice, ToolDef, WebSearchRequest } from ".
 import type { McpServerSpec } from "./mcp-config.js";
 import { silentLogger, type Logger } from "./logger.js";
 import type { ToolBridgeHub } from "./tool-bridge.js";
+import type { ParsedPlanLimits } from "./plan-limits.js";
+import type { PlanLimitsView, RateLimitHintView } from "./shared/ipc.js";
 
 /** An image the agent generated: base64 `data` as taken from the agent's update; Codex also reports the prompt it actually used. */
 export interface GeneratedImage { mimeType: string; data: string; revisedPrompt?: string; }
@@ -66,6 +68,13 @@ export interface LaunchSpec { command: string; args: string[]; env?: NodeJS.Proc
 export interface PreflightResult { state: "not_installed" | "terms_required" | "error"; message: string; code?: string; }
 /** How a provider pays for its turns, as `/healthz` reports it: a subscription login, a subscription OAuth token, a per-token API key (or another billed backend), or nobody signed in. */
 export type ProviderAuthMethod = "subscription" | "oauth_token" | "api_key" | "none";
+
+/** How to read a provider's account plan limits: a slash command the agent answers with markdown, and its parser. */
+export interface PlanLimitsSpec {
+  /** Slash command sent as the only text block, e.g. "/status". */
+  command: string;
+  parse(text: string): ParsedPlanLimits | undefined;
+}
 
 export interface ProviderDescriptor {
   id: string;
@@ -146,6 +155,10 @@ export interface ProviderDescriptor {
   mcpSessionMeta?(servers: ReadonlyArray<{ label: string; tools?: readonly string[] }>): Record<string, unknown> | undefined;
   /** How long the agent keeps one MCP `tools/call` open before it gives up (undefined: no limit). The proxy answers or drops a suspended call 30 s before that. */
   toolCallLimitMs?: number;
+  /** How to read the account plan limits. Absent: not available. */
+  planLimits?: PlanLimitsSpec;
+  /** Why plan limits are not available (shown instead of the generic text), e.g. a custom adapter. */
+  planLimitsUnavailable?: string;
 }
 
 /** The fields of an ACP `tool_call` / `tool_call_update` the proxy keeps per tool call id (Codex's permission request names only the id). */
@@ -191,6 +204,10 @@ export interface Provider {
   login(methodId?: string): Promise<void>;
   /** Signs the agent out (ACP `logout` when it advertises it, the descriptor's fallback otherwise), drops kept and warm sessions, and leaves the provider in `needs_login`. Absent: the provider cannot log out. */
   logout?(): Promise<void>;
+  /** Reads the account plan limits in a throwaway session (never recorded as a request). Absent: not available. */
+  planLimits?(signal?: AbortSignal): Promise<PlanLimitsView>;
+  /** The last rate-limit hint the agent pushed (Claude), if any. */
+  rateLimitHint?(): RateLimitHintView | undefined;
   onStatus(listener: (status: ProviderStatus) => void): () => void;
   close(): Promise<void>;
 }

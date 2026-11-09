@@ -233,6 +233,7 @@ describe("ProxyController status, log out and activity", () => {
     expect(controller.activity.list()).toHaveLength(2);
     controller.activity.clear();
     expect(controller.activity.list()).toEqual([]);
+    expect(controller.usageSummary().total.today).toMatchObject({ requests: 1 });
   });
 
   it("announces a provider that needs login when a request hits it", async () => {

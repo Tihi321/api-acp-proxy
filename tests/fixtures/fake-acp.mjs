@@ -57,7 +57,9 @@ import path from "node:path";
 //                                    With FAKE_ACP_MCP / FAKE_ACP_REMOTE the search runs first and its answer text is the first result of the "got: ..." answer. Logged as {method: "mcp", params: {phase: "search-permission" | "search-stray" | "search-denied", ...}}.
 //   FAKE_ACP_LOGOUT=1                advertise agentCapabilities.auth.logout and handle `logout` (answers {}, forgets the authenticate, and with FAKE_ACP_AUTH_STATUS set pushes an
 //                                    _auth/status_update kind "none" like Claude's adapter does). The request shows up in FAKE_ACP_LOG as {method: "logout"}. Without it the agent advertises nothing.
-//   FAKE_ACP_LOG=<file>              append every request as a JSON line {method, params}; permission answers as {method: "permission_response", params: <the response result>}
+//   FAKE_ACP_SLASH=<json>            maps a slash command to markdown, e.g. {"/status": "**Model:** x"}: a prompt that is exactly one text block with that text is answered with the markdown
+//                                    as one agent_message_chunk and ends with end_turn at once (no delay, no other switch applies)
+//   FAKE_ACP_LOG=<file>             append every request as a JSON line {method, params}; permission answers as {method: "permission_response", params: <the response result>}
 const env = process.env;
 const pending = new Map();
 const models = new Map();
@@ -366,6 +368,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const sessionId = params.sessionId;
     const images = (params.prompt ?? []).filter((block) => block.type === "image");
     if (env.FAKE_ACP_IMAGE === "1" && images.some((block) => typeof block.data !== "string" || !block.data)) { fail(id, -32602, "Invalid params: image data: expected string, received undefined"); return; }
+    const blocks = params.prompt ?? [];
+    const slash = env.FAKE_ACP_SLASH && blocks.length === 1 && blocks[0].type === "text" ? JSON.parse(env.FAKE_ACP_SLASH)[blocks[0].text] : undefined;
+    if (typeof slash === "string") { update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: slash } }); finish(id, "end_turn", sessionId); return; }
     imageCounts.set(sessionId, images.length);
     pending.set(sessionId, id);
     turns.set(sessionId, (turns.get(sessionId) ?? 0) + 1);

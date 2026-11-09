@@ -14,6 +14,9 @@ export function openAiUsage(result: GenerationResult, promptText: string): OpenA
   return { prompt, completion: usage.outputTokens, total: prompt + usage.outputTokens, cached: usage.cachedReadTokens ?? 0, reasoning: usage.thoughtTokens ?? 0 };
 }
 
+/** True when `openAiUsage` had to estimate the token counts (the agent reported none). */
+export function usageEstimated(result: GenerationResult): boolean { return !result.usage; }
+
 export function chatUsage(result: GenerationResult, promptText: string): Record<string, unknown> {
   const u = openAiUsage(result, promptText);
   return { prompt_tokens: u.prompt, completion_tokens: u.completion, total_tokens: u.total, prompt_tokens_details: { cached_tokens: u.cached }, completion_tokens_details: { reasoning_tokens: u.reasoning } };
