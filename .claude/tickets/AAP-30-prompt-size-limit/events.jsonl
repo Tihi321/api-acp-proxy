@@ -1,0 +1,7 @@
+{"ts":"2026-11-11T15:00:00Z","actor":"director-scribe","type":"plan.created","request":"REQ-0009","ticket":"AAP-30-prompt-size-limit","detail":"planner wrote the plan; read by the director"}
+{"ts":"2026-11-11T15:00:00Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0009","ticket":"AAP-30-prompt-size-limit","detail":"user approved the plan (180,000 character limit)"}
+{"ts":"2026-11-11T14:45:37Z","actor":"implement","type":"implement.started","request":"REQ-0009","ticket":"AAP-30-prompt-size-limit","detail":"branch AAP-30_prompt-size-limit from master"}
+{"ts":"2026-11-11T14:52:16Z","actor":"implement","type":"verify.passed","request":"REQ-0009","ticket":"AAP-30-prompt-size-limit","detail":"typecheck clean, 454 tests passed"}
+{"ts":"2026-11-11T14:52:16Z","actor":"implement","type":"changelog.written","request":"REQ-0009","ticket":"AAP-30-prompt-size-limit","detail":"typecheck clean, 454 tests passed"}
+{"ts":"2026-11-11T16:30:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0009","ticket":"AAP-30-prompt-size-limit","detail":"PASS; A7 and A8 UNTESTED by design","data":{"pass":"A1-A6, timer, docs","untested":["A7","A8"],"tests":{"passed":454,"skipped":1},"master_baseline":452,"plan_test_count_stale":742}}
+{"ts":"2026-11-11T18:20:00Z","actor":"director-scribe","type":"ticket.done","request":"REQ-0009","ticket":"AAP-30-prompt-size-limit","detail":"PASS; committed 28dfba0; A7/A8 untested by design","data":{"commit":"28dfba0","untested":["A7","A8"]}}
