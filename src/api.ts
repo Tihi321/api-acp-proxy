@@ -569,6 +569,16 @@ export function serializePrompt(messages: Message[], instructions?: string, extr
   return buildPrompt(messages, instructions, extraPreamble).map((block) => block.type === "text" ? block.text : "").filter(Boolean).join("\n\n");
 }
 
+/** Characters of text in a prompt (image blocks are not counted). */
+export function promptChars(blocks: PromptBlock[]): number {
+  return blocks.reduce((sum, block) => sum + (block.type === "text" ? block.text.length : 0), 0);
+}
+
+/** The 400 for a prompt over a provider's limit; the message starts "The prompt is too long" so clients can tell a size problem from other errors. */
+export function promptTooLong(displayName: string, chars: number, limit: number, param = "messages"): ApiError {
+  return new ApiError(400, "context_length_exceeded", `The prompt is too long for ${displayName}: ${chars} characters, the limit is ${limit}. The agent would silently drop the rest, so the proxy refused it. Shorten the prompt or use another model.`, param);
+}
+
 function parsesAsJson(text: string): boolean {
   try { JSON.parse(text); return true; } catch { return false; }
 }

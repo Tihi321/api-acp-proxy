@@ -146,6 +146,8 @@ export function antigravityDescriptor(ctxForHooks: RuntimeContext, options: Anti
     displayName: "Google Antigravity",
     ownedBy: "google",
     exposeUnprefixed: false,
+    // The agent keeps only the first ~192,000 characters of a prompt and silently drops the rest (measured 2026-11, REQ-0009); stay about 6% under.
+    maxPromptChars: 180_000,
     authMode: "eager",
     // The server has no read-only mode: "default" sends every tool permission to the client, and the client always cancels. Never auto_edit/yolo.
     readOnlyMode: "required",
@@ -232,5 +234,5 @@ export function antigravityDescriptor(ctxForHooks: RuntimeContext, options: Anti
 export const antigravityRegistration: ProviderRegistration = {
   id: "antigravity",
   displayName: "Google Antigravity",
-  create: ({ providerSettings, ctx, env, config, saveSettings }) => new AcpProvider(antigravityDescriptor(ctx, { settings: providerSettings as AntigravityOptions["settings"], env, saveSettings }), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions, toolResultTimeoutMs: config.toolResultTimeoutMs }),
+  create: ({ providerSettings, ctx, env, config, saveSettings }) => new AcpProvider(antigravityDescriptor(ctx, { settings: providerSettings as AntigravityOptions["settings"], env, saveSettings }), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions, toolResultTimeoutMs: config.toolResultTimeoutMs, maxPromptChars: providerSettings.maxPromptChars as number | undefined }),
 };

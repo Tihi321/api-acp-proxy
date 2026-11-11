@@ -37,14 +37,14 @@ export interface SettingsView {
     workRoot?: string; launchAtLogin: boolean; toolResultTimeoutMs: number; maxConcurrent: number; maxQueue: number;
   };
   providers: {
-    codex: { enabled: boolean; authMethodId?: string; isolatedHome?: boolean; maxConcurrent?: number };
+    codex: { enabled: boolean; authMethodId?: string; isolatedHome?: boolean; maxConcurrent?: number; maxPromptChars?: number };
     antigravity: {
       enabled: boolean; executablePath?: string; geminiHome?: string; apiKey?: string; authMethodId?: string;
-      termsAcknowledgedAt?: string; purgeSessions?: boolean; lastAuthMethodId?: string; maxConcurrent?: number;
+      termsAcknowledgedAt?: string; purgeSessions?: boolean; lastAuthMethodId?: string; maxConcurrent?: number; maxPromptChars?: number;
     };
     claude: {
       enabled: boolean; apiKey?: string; oauthToken?: string; configDir?: string; executablePath?: string; authMethodId?: string;
-      termsAcknowledgedAt?: string; maxConcurrent?: number;
+      termsAcknowledgedAt?: string; maxConcurrent?: number; maxPromptChars?: number;
     };
   };
 }

@@ -212,6 +212,7 @@
           <section class="card">
             <div class="card-head"><h2>Capacity</h2></div>
             <label class="field"><span>Max concurrent requests <em class="muted">(empty = the server value)</em></span><input id="providers.codex.maxConcurrent" type="number" min="0"><small data-note-for="providers.codex.maxConcurrent"></small><small class="error" data-error-for="providers.codex.maxConcurrent"></small></label>
+            <label class="field"><span>Max prompt characters <em class="muted">(empty = no limit)</em></span><input id="providers.codex.maxPromptChars" type="number" min="0"><small>Longer prompts are refused with a 400 "prompt is too long" instead of being cut by the agent. 0 = no limit.</small><small data-note-for="providers.codex.maxPromptChars"></small><small class="error" data-error-for="providers.codex.maxPromptChars"></small></label>
           </section>
 
           <section class="card models">
@@ -256,6 +257,7 @@
           <section class="card">
             <div class="card-head"><h2>Capacity</h2></div>
             <label class="field"><span>Max concurrent requests <em class="muted">(empty = the server value)</em></span><input id="providers.claude.maxConcurrent" type="number" min="0"><small data-note-for="providers.claude.maxConcurrent"></small><small class="error" data-error-for="providers.claude.maxConcurrent"></small></label>
+            <label class="field"><span>Max prompt characters <em class="muted">(empty = no limit)</em></span><input id="providers.claude.maxPromptChars" type="number" min="0"><small>Longer prompts are refused with a 400 "prompt is too long" instead of being cut by the agent. 0 = no limit.</small><small data-note-for="providers.claude.maxPromptChars"></small><small class="error" data-error-for="providers.claude.maxPromptChars"></small></label>
           </section>
 
           <section class="card">
@@ -315,6 +317,7 @@
           <section class="card">
             <div class="card-head"><h2>Capacity</h2></div>
             <label class="field"><span>Max concurrent requests <em class="muted">(empty = the server value)</em></span><input id="providers.antigravity.maxConcurrent" type="number" min="0"><small data-note-for="providers.antigravity.maxConcurrent"></small><small class="error" data-error-for="providers.antigravity.maxConcurrent"></small></label>
+            <label class="field"><span>Max prompt characters <em class="muted">(empty = 180000, Antigravity's limit)</em></span><input id="providers.antigravity.maxPromptChars" type="number" min="0"><small>Longer prompts are refused with a 400 "prompt is too long" instead of being cut by the agent. 0 = no limit.</small><small data-note-for="providers.antigravity.maxPromptChars"></small><small class="error" data-error-for="providers.antigravity.maxPromptChars"></small></label>
           </section>
 
           <section class="card">

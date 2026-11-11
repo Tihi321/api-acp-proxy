@@ -15,7 +15,7 @@ export class AcpBridge extends AcpProvider {
   }
 }
 
-export interface ModelEntry { id: string; ownedBy?: string; }
+export interface ModelEntry { id: string; ownedBy?: string; /** Limit on the prompt text in characters, when the provider has one. */ maxPromptChars?: number; }
 export interface AcpLike {
   generate(model: ModelId, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   close?(): Promise<void>;
@@ -23,6 +23,8 @@ export interface AcpLike {
   hasModel?(model: string): boolean;
   /** Whether the model's provider can generate images (a bridge without this method is asked and answers 400 itself). */
   canGenerateImages?(model: string): boolean;
+  /** Throws a 400 `context_length_exceeded` before anything starts when the prompt is over the model's provider limit. */
+  checkPrompt?(model: string, messages: Message[], options?: GenerateOptions): void;
   /** Whether the model's provider can search the web (a bridge without this method is asked and answers 400 itself). */
   canSearchWeb?(model: string): boolean;
   /** Whether the model's provider accepts image input: `undefined` until the provider has started and said so (a bridge without this method never knows). */

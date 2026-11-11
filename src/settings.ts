@@ -68,6 +68,8 @@ export const settingsSchema = z.object({
       isolatedHome: z.boolean().default(true),
       /** Overrides `server.maxConcurrent` for this provider (0 = unlimited; absent = the global value). */
       maxConcurrent: z.number().int().min(0).optional(),
+      /** Limit on the prompt text in characters; longer prompts are refused with a 400 (0 = unlimited; absent = the provider default: 180000 for Antigravity, none for Codex and Claude). */
+      maxPromptChars: z.number().int().min(0).optional(),
     }).default({}),
     antigravity: z.object({
       enabled: z.boolean().default(false),
@@ -81,6 +83,8 @@ export const settingsSchema = z.object({
       /** Auth method of the last successful login (written by the provider, not the UI). */
       lastAuthMethodId: z.string().optional(),
       maxConcurrent: z.number().int().min(0).optional(),
+      /** Limit on the prompt text in characters; longer prompts are refused with a 400 (0 = unlimited; absent = the provider default: 180000 for Antigravity, none for Codex and Claude). */
+      maxPromptChars: z.number().int().min(0).optional(),
     }).default({}),
     claude: z.object({
       enabled: z.boolean().default(false),
@@ -93,6 +97,8 @@ export const settingsSchema = z.object({
       authMethodId: z.string().optional(),
       termsAcknowledgedAt: z.string().optional(),
       maxConcurrent: z.number().int().min(0).optional(),
+      /** Limit on the prompt text in characters; longer prompts are refused with a 400 (0 = unlimited; absent = the provider default: 180000 for Antigravity, none for Codex and Claude). */
+      maxPromptChars: z.number().int().min(0).optional(),
     }).default({}),
   }).default({}),
   /** MCP servers a Responses request may name by `server_label` (JSON only, no settings-window editor). Headers and env are stored as written. */
@@ -247,8 +253,11 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
   apply("server.maxConcurrent", parseNonNegative(env.PROXY_MAX_CONCURRENT), (v) => { server.maxConcurrent = v; });
   apply("server.maxQueue", parseNonNegative(env.PROXY_MAX_QUEUE), (v) => { server.maxQueue = v; });
   apply("providers.codex.maxConcurrent", parseNonNegative(env.PROXY_CODEX_MAX_CONCURRENT), (v) => { providers.codex.maxConcurrent = v; });
+  apply("providers.codex.maxPromptChars", parseNonNegative(env.PROXY_CODEX_MAX_PROMPT_CHARS), (v) => { providers.codex.maxPromptChars = v; });
   apply("providers.antigravity.maxConcurrent", parseNonNegative(env.PROXY_ANTIGRAVITY_MAX_CONCURRENT), (v) => { providers.antigravity.maxConcurrent = v; });
+  apply("providers.antigravity.maxPromptChars", parseNonNegative(env.PROXY_ANTIGRAVITY_MAX_PROMPT_CHARS), (v) => { providers.antigravity.maxPromptChars = v; });
   apply("providers.claude.maxConcurrent", parseNonNegative(env.PROXY_CLAUDE_MAX_CONCURRENT), (v) => { providers.claude.maxConcurrent = v; });
+  apply("providers.claude.maxPromptChars", parseNonNegative(env.PROXY_CLAUDE_MAX_PROMPT_CHARS), (v) => { providers.claude.maxPromptChars = v; });
   apply("providers.codex.enabled", parseBool(env.PROXY_CODEX_ENABLED), (v) => { providers.codex.enabled = v; });
   apply("providers.codex.isolatedHome", parseBool(env.PROXY_CODEX_ISOLATED_HOME), (v) => { providers.codex.isolatedHome = v; });
   apply("providers.codex.acpCommand", env.PROXY_ACP_COMMAND || undefined, (v) => { providers.codex.acpCommand = v; });
