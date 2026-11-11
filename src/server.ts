@@ -167,6 +167,8 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
   const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}) };
+  // Refuse an oversized prompt with a real HTTP 400 before a stream starts.
+  try { bridge.checkPrompt?.(parsed.model, parsed.conversation, options); } catch (error) { clearTimeout(timer); throw error; }
   const asJson = parsed.format.type === "json";
   const promptText = serializePrompt(parsed.conversation, options.instructions);
   /** `url_citation` annotations of the answer (only for a request with web search; none otherwise). */
@@ -239,6 +241,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
   const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(mcpServers ? { mcpServers } : {}), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}) };
+  try { bridge.checkPrompt?.(parsed.model, parsed.conversation, options); } catch (error) { clearTimeout(timer); throw forResponses(error); }
   const asJson = parsed.format.type === "json";
   const withTools = parsed.functionTools !== undefined;
   // The message item comes after the generated images, the web searches and the MCP calls, so its text is not streamed live (it is only known when the turn is over).
@@ -401,7 +404,7 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
       if (options.activity && !mcpRoute) track(options.activity, bridge, response, ENDPOINTS.has(route) ? route : "other", trace);
       if (!authenticated(request, config)) { trace.error = "invalid_api_key"; json(response, 401, { error: { message: "Invalid or missing bearer token.", type: "invalid_request_error", code: "invalid_api_key", param: null } }); return; }
       if (mcpRoute) { await mcp.handle(request, response); return; }
-      if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : []; json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai" })) }); return; }
+      if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : []; json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai", ...(model.maxPromptChars ? { max_prompt_chars: model.maxPromptChars } : {}) })) }); return; }
       if (method === "POST" && url.pathname === "/v1/chat/completions") { await handleChat(request, response, config, bridge, trace, options.fetch); return; }
       if (method === "POST" && url.pathname === "/v1/images/generations") { await handleImageGeneration(request, response, config, bridge, trace); return; }
       if (method === "POST" && url.pathname === "/v1/responses") { await handleResponses(request, response, config, bridge, trace, options.fetch); return; }

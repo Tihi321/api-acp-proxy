@@ -101,6 +101,7 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 | `PROXY_TOOL_RESULT_TIMEOUT_MS` | `600000` | How long a request that ended with tool calls waits for the next request to bring the results, before the agent turn is cancelled. Cut to the agent's own limit minus 30 s: 150 s for Antigravity, 270 s for Codex; see [Function calling](#function-calling) (settings: `server.toolResultTimeoutMs`) |
 | `PROXY_MAX_CONCURRENT` | `4` | Requests that run at once per provider; more wait in a FIFO queue, `0` = unlimited; see [Concurrency cap](#concurrency-cap) (settings: `server.maxConcurrent`) |
 | `PROXY_CODEX_MAX_CONCURRENT` / `PROXY_CLAUDE_MAX_CONCURRENT` / `PROXY_ANTIGRAVITY_MAX_CONCURRENT` | unset | Cap of one provider, overriding `PROXY_MAX_CONCURRENT` (`0` = unlimited; settings: `providers.<id>.maxConcurrent`) |
+| `PROXY_CODEX_MAX_PROMPT_CHARS` / `PROXY_CLAUDE_MAX_PROMPT_CHARS` / `PROXY_ANTIGRAVITY_MAX_PROMPT_CHARS` | unset (Antigravity: `180000`) | Refuse prompts longer than this many characters with a 400 `context_length_exceeded`; `0` = no limit; see [Prompt size limit](#prompt-size-limit) (settings: `providers.<id>.maxPromptChars`) |
 | `PROXY_MAX_QUEUE` | `0` | Requests that may wait per provider before a 429 `provider_queue_full`; `0` = no limit (settings: `server.maxQueue`) |
 | `PROXY_CODEX_ENABLED` | `true` | Enable the Codex provider (`1/0`, `true/false`, `yes/no`, `on/off`) |
 | `PROXY_CODEX_ISOLATED_HOME` | `true` | Run Codex with its own `CODEX_HOME` (`<data dir>/codex-home`) instead of `~/.codex`; see [Codex](#codex) (settings: `providers.codex.isolatedHome`) |
@@ -125,6 +126,16 @@ Many apps sharing one proxy would otherwise start as many agent turns at once on
 - **Visibility:** `GET /healthz` lists `providers.<id>: { active, queued, max_concurrent, max_queue }` for every enabled provider (Claude adds `auth_method`, see [Claude](#claude)), and the log has an info line each time a request has to wait.
 
 Measured on this machine (hub load test): Codex latency stayed flat (about 2.1 s) up to 6 parallel requests, Antigravity grew from 3.9 s alone to about 8 s at 4 to 6, so a lower cap for Antigravity (for example 2) costs little.
+
+## Prompt size limit
+
+The Antigravity agent keeps only the first ~192,000 characters of a prompt and silently drops the rest (measured live), so a client would get a confident answer to a cut prompt. The proxy refuses such a prompt instead: **HTTP 400, `code: "context_length_exceeded"`, `type: "invalid_request_error"`**, with a message that starts "The prompt is too long for Google Antigravity: N characters, the limit is M." A client should treat it as "too big for this model" (use another model or shorten the input) and not retry.
+
+- **Default:** 180,000 characters for Antigravity (about 6% under the measured cap); no limit for Codex and Claude.
+- **Setting:** `providers.<id>.maxPromptChars` / `PROXY_<ID>_MAX_PROMPT_CHARS` (`PROXY_CODEX_MAX_PROMPT_CHARS`, `PROXY_CLAUDE_MAX_PROMPT_CHARS`, `PROXY_ANTIGRAVITY_MAX_PROMPT_CHARS`); absent = the default above, `0` = no limit. One field per provider in the settings window ("Max prompt characters"); saving restarts the server. Use it if a newer agent build changes the cap.
+- **What is counted:** all text of the prompt the agent receives, including the proxy's own preamble and the `[output format]` block. Images are not counted. With `server.reuseSessions` on, the whole conversation is counted, not only the new part.
+- **Where:** chat completions (also streaming: the 400 comes before the stream starts), Responses (`param: "input"`), image generations and the MCP `ask_model` / `generate_image` tools. The check runs before a request takes a concurrency slot or starts the agent.
+- **Discovery:** `GET /v1/models` adds `max_prompt_chars` to each model whose provider has a limit.
 
 ## Codex
 
@@ -161,6 +172,8 @@ Using a Claude subscription through third-party tooling may conflict with Anthro
 
 ## Google Antigravity
 
+The agent silently cuts prompts after ~192,000 characters, so the proxy refuses longer ones; see [Prompt size limit](#prompt-size-limit).
+
 1. **Install the server.** Either `npm run antigravity:install` (headless; downloads from the ACP registry into `agents\antigravity-acp\<version>` and verifies the Authenticode signature of Google LLC), or press "Download from registry" on the Antigravity page. Alternatively point `executablePath` / `PROXY_ANTIGRAVITY_COMMAND` at an existing `agy_acp_server.exe`. Only `https` downloads from `cdn.agentclientprotocol.com` and `dl.google.com` are accepted.
 2. **Acknowledge the terms.** The desktop app shows a warning the first time you enable Antigravity and stores `termsAcknowledgedAt`. Headless: `PROXY_ANTIGRAVITY_ACCEPT_TERMS=1`. Without it the provider reports `terms_required` and does not start.
 3. **Enable it** in the UI, or `PROXY_ANTIGRAVITY_ENABLED=1`.
@@ -177,7 +190,7 @@ Google's Antigravity terms ([clause 6](https://antigravity.google/terms)) restri
 
 ## Supported API
 
-`GET /healthz` is unauthenticated and returns service health, including the running and queued requests per provider (see [Concurrency cap](#concurrency-cap)). `GET /v1/models` lists the models of the enabled providers (see [Models and providers](#models-and-providers)). `POST /v1/mcp` is the proxy's own MCP server (Streamable HTTP) for harnesses such as Claude Code, behind the same API key as the other `/v1/*` routes; see [MCP server (for harnesses)](#mcp-server-for-harnesses).
+`GET /healthz` is unauthenticated and returns service health, including the running and queued requests per provider (see [Concurrency cap](#concurrency-cap)). `GET /v1/models` lists the models of the enabled providers (see [Models and providers](#models-and-providers)); a model whose provider has a prompt limit carries `max_prompt_chars` (see [Prompt size limit](#prompt-size-limit)). `POST /v1/mcp` is the proxy's own MCP server (Streamable HTTP) for harnesses such as Claude Code, behind the same API key as the other `/v1/*` routes; see [MCP server (for harnesses)](#mcp-server-for-harnesses).
 
 `POST /v1/chat/completions` accepts `model`, `messages`, and `stream`. Messages may have `system`, `developer`, `user`, `assistant` or `tool` roles (see [Function calling](#function-calling)) and string or part-array content (`text` parts, and `image_url` parts in user messages, see [Images](#images)). `web_search_options` turns on web search (see [Web search](#web-search)). `stream_options.include_usage: true` adds a final chunk with empty `choices` and the `usage` object before `data: [DONE]` (every other chunk then carries `usage: null`). Streaming uses standard `text/event-stream` frames and terminates with `data: [DONE]`.
 

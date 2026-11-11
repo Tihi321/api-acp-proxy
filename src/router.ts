@@ -19,7 +19,7 @@ export interface RouterOptions {
   /** Cap on simultaneous generations per provider; extra requests wait in a FIFO queue. `perProvider` overrides `maxConcurrent` for a provider id. 0 = unlimited. Without this option nothing is limited. */
   concurrency?: { maxConcurrent: number; maxQueue?: number; perProvider?: Record<string, number | undefined> };
 }
-export interface ListedModel extends ModelEntry { ownedBy: string; provider: string; }
+export interface ListedModel extends ModelEntry { ownedBy: string; provider: string; maxPromptChars?: number; }
 
 /**
  * Routes model ids to providers. Every model is listed as `<provider>/<raw>`; providers with `exposeUnprefixed`
@@ -139,9 +139,10 @@ export class ProviderRouter implements AcpLike {
     const owners = this.unprefixedOwners();
     const out: ListedModel[] = [];
     for (const provider of this.providers) {
+      const limit = provider.maxPromptChars ? { maxPromptChars: provider.maxPromptChars } : {};
       for (const model of this.known.get(provider.id) ?? []) {
-        if (this.options.listBareAliases !== false && owners.get(model.id) === provider) out.push({ id: model.id, ownedBy: provider.ownedBy, provider: provider.id });
-        out.push({ id: `${provider.id}/${model.id}`, ownedBy: provider.ownedBy, provider: provider.id });
+        if (this.options.listBareAliases !== false && owners.get(model.id) === provider) out.push({ id: model.id, ownedBy: provider.ownedBy, provider: provider.id, ...limit });
+        out.push({ id: `${provider.id}/${model.id}`, ownedBy: provider.ownedBy, provider: provider.id, ...limit });
       }
     }
     return out;
@@ -167,9 +168,15 @@ export class ProviderRouter implements AcpLike {
     await Promise.all(this.providers.filter((p) => !providerId || p.id === providerId).map((provider) => this.refreshOne(provider, 0, true)));
   }
 
+  /** Throws the provider's 400 when the prompt is over its limit; an unknown model passes (`generate` answers the 404). */
+  checkPrompt(model: string, messages: Message[], options?: GenerateOptions): void {
+    this.resolve(model)?.provider.checkPrompt?.(messages, options);
+  }
+
   async generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
     const target = this.resolve(model);
     if (!target) throw new ApiError(404, "model_not_found", `The model '${model}' does not exist.`, "model");
+    target.provider.checkPrompt?.(messages, options);
     const limiter = this.limiters.get(target.provider.id);
     if (!limiter) return target.provider.generate(target.model, messages, callbacks, signal, options);
     let release: () => void;

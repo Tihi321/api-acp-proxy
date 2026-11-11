@@ -5,7 +5,7 @@ import { Readable, Writable } from "node:stream";
 import { client, methods, ndJsonStream, type ClientConnection, type ClientContext } from "@agentclientprotocol/sdk";
 import type { ContentBlock, McpServer, PromptResponse, RequestPermissionRequest, SessionConfigOption, SessionUpdate, Usage } from "@agentclientprotocol/sdk";
 import { createHash } from "node:crypto";
-import { ApiError, buildPrompt, hasImages, messageText, type Message } from "./api.js";
+import { ApiError, buildPrompt, hasImages, messageText, promptChars, promptTooLong, type Message, type PromptBlock } from "./api.js";
 import { deleteGeneratedFile } from "./generated-images.js";
 import { killProcessTree } from "./process-tree.js";
 import type { McpServerSpec } from "./mcp-config.js";
@@ -121,7 +121,7 @@ function mergeMeta(base: Record<string, unknown> | undefined, extra: Record<stri
 
 /** An authenticate call did not finish in time; the request itself is left pending. */
 class AuthTimeoutError extends Error { constructor(message: string) { super(message); this.name = "AuthTimeoutError"; } }
-export interface AcpProviderOptions { workRoot: string; /** Keep a session after a completed turn for the next turn of the same conversation. */ reuseSessions?: boolean; /** Most kept sessions at once, suspended ones included (default 8). */ retainedSessions?: number; /** A kept session is disposed after this idle time (default 10 minutes). */ retainedIdleMs?: number; /** How long a turn suspended on a tool call waits for the result (default 10 minutes, cut to the agent's own limit minus the margin). */ toolResultTimeoutMs?: number; /** Quiet time after a `tools/call` before its batch is returned (default 150 ms). */ toolBatchMs?: number; /** How long before the agent's own tool call limit a suspended call is given up (default 30 s). */ toolCallMarginMs?: number; }
+export interface AcpProviderOptions { workRoot: string; /** Limit on the prompt text in characters: absent = the descriptor default, 0 = unlimited. */ maxPromptChars?: number; /** Keep a session after a completed turn for the next turn of the same conversation. */ reuseSessions?: boolean; /** Most kept sessions at once, suspended ones included (default 8). */ retainedSessions?: number; /** A kept session is disposed after this idle time (default 10 minutes). */ retainedIdleMs?: number; /** How long a turn suspended on a tool call waits for the result (default 10 minutes, cut to the agent's own limit minus the margin). */ toolResultTimeoutMs?: number; /** Quiet time after a `tools/call` before its batch is returned (default 150 ms). */ toolBatchMs?: number; /** How long before the agent's own tool call limit a suspended call is given up (default 30 s). */ toolCallMarginMs?: number; }
 
 const AUTH_REQUIRED = -32000;
 
@@ -166,6 +166,7 @@ export class AcpProvider implements Provider {
   readonly displayName: string;
   readonly ownedBy: string;
   readonly exposeUnprefixed: boolean;
+  readonly maxPromptChars?: number;
   readonly staticModels?: ModelInfo[];
   /** The agent can generate images (its descriptor says so). */
   readonly imageGeneration: boolean;
@@ -229,6 +230,7 @@ export class AcpProvider implements Provider {
     this.displayName = descriptor.displayName;
     this.ownedBy = descriptor.ownedBy;
     this.exposeUnprefixed = descriptor.exposeUnprefixed;
+    this.maxPromptChars = (options.maxPromptChars ?? descriptor.maxPromptChars) || undefined;
     this.staticModels = descriptor.staticModels?.map((id) => ({ id }));
     this.imageGeneration = descriptor.imageGeneration !== undefined;
     this.webSearchSupport = descriptor.webSearch !== undefined;
@@ -747,7 +749,23 @@ export class AcpProvider implements Provider {
     return true;
   }
 
+  /** The prompt `generate` builds for a fresh session from the whole request (the tools path when the request has tools). */
+  private promptBlocks(messages: Message[], options?: GenerateOptions): PromptBlock[] {
+    const mcp = options?.mcpServers?.length ? options.mcpServers : undefined;
+    const mcpPrompt = mcp?.map(({ label, allowedTools }) => ({ label, ...(allowedTools ? { tools: allowedTools } : {}) }));
+    if (options?.tools?.length) return buildPrompt(messages, options.instructions, undefined, false, { choice: options.toolChoice, parallel: options.parallelToolCalls, ...(mcpPrompt ? { mcp: mcpPrompt } : {}) }, options.webSearch);
+    return buildPrompt(messages, options?.instructions, this.descriptor.promptPreamble, options?.images === true, mcpPrompt ? { client: false, mcp: mcpPrompt } : undefined, options?.webSearch);
+  }
+
+  checkPrompt(messages: Message[], options?: GenerateOptions): void {
+    const limit = this.maxPromptChars;
+    if (!limit) return;
+    const chars = promptChars(this.promptBlocks(messages, options));
+    if (chars > limit) throw promptTooLong(this.displayName, chars, limit);
+  }
+
   async generate(model: string, messages: Message[], callbacks: GenerationCallbacks = {}, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
+    this.checkPrompt(messages, options);
     if (options?.tools?.length) return this.generateWithTools(model, messages, callbacks, signal, options);
     let agent: ClientContext | undefined;
     let session: PreparedSession | undefined;
@@ -802,7 +820,7 @@ export class AcpProvider implements Provider {
       if (!reused && !await this.configureSession(agent, session, model, () => aborted)) return cancelled();
       if (aborted) return cancelled();
       promptSent = true;
-      const prompt: ContentBlock[] = buildPrompt(fresh, options?.instructions, this.descriptor.promptPreamble, wantImages, mcp ? { client: false, mcp: mcp.map(({ label, allowedTools }) => ({ label, ...(allowedTools ? { tools: allowedTools } : {}) })) } : undefined, search);
+      const prompt: ContentBlock[] = this.promptBlocks(fresh, options);
       const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt }));
       let usage = result.usage ?? null;
       let cumulative = reused?.usage;
@@ -1029,7 +1047,7 @@ export class AcpProvider implements Provider {
           if (!await this.configureSession(agent, session, model, () => aborted)) return cancelled();
         }
         if (aborted) return cancelled();
-        const prompt: ContentBlock[] = buildPrompt(fresh, options.instructions, undefined, false, { choice: options.toolChoice, parallel: options.parallelToolCalls, ...(mcp ? { mcp: mcp.map(({ label, allowedTools }) => ({ label, ...(allowedTools ? { tools: allowedTools } : {}) })) } : {}) }, search);
+        const prompt: ContentBlock[] = this.promptBlocks(fresh, options);
         promptSent = true;
         turn.finished = this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: session!.sessionId, prompt })).then((result): PromptOutcome => ({ result }), (error): PromptOutcome => ({ error }));
       }

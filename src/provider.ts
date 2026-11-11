@@ -82,6 +82,8 @@ export interface ProviderDescriptor {
   ownedBy: string;
   /** Also expose raw model ids without the `<id>/` prefix. */
   exposeUnprefixed: boolean;
+  /** Default limit on the prompt text in characters (the agent silently drops the rest); absent = unlimited. The `maxPromptChars` setting overrides it. */
+  maxPromptChars?: number;
   /** Fixed model list; when set no session is needed to list models. */
   staticModels?: readonly string[];
   /** "eager" authenticates right after initialize; "on-demand" only after an auth_required error or an explicit login. */
@@ -198,6 +200,10 @@ export interface Provider {
   readonly toolCalling?: boolean;
   /** The agent can be given remote MCP servers (it has a permission rule and a way to name their calls). */
   readonly mcpSupport?: boolean;
+  /** The effective limit on the prompt text in characters; absent = none. */
+  readonly maxPromptChars?: number;
+  /** Throws a 400 `context_length_exceeded` when the prompt built from these messages is over `maxPromptChars`. Synchronous, no side effects. */
+  checkPrompt?(messages: Message[], options?: GenerateOptions): void;
   generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   listModels(options?: { force?: boolean }): Promise<ModelInfo[]>;
   status(): ProviderStatus;
