@@ -1,5 +1,5 @@
 ---
-status: approved
+status: done
 request: REQ-0026
 repos: [api-acp-proxy]
 branch: AAP-32_exhausted-provider-card
