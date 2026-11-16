@@ -112,14 +112,20 @@ export type OutputFormat = { type: "text" } | { type: "json"; name?: string; sch
 const textFormat: OutputFormat = { type: "text" };
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, public readonly code: string, message: string, public readonly param?: string) {
+  /** Seconds for the `Retry-After` header. */
+  readonly retryAfterSeconds?: number;
+  /** Extra fields of the error object in the response body. */
+  readonly details?: Record<string, unknown>;
+  constructor(public readonly status: number, public readonly code: string, message: string, public readonly param?: string, extra: { retryAfterSeconds?: number; details?: Record<string, unknown> } = {}) {
     super(message);
     this.name = "ApiError";
+    if (extra.retryAfterSeconds !== undefined) this.retryAfterSeconds = extra.retryAfterSeconds;
+    if (extra.details) this.details = extra.details;
   }
 }
 
 export function errorEnvelope(error: ApiError | Error): { error: Record<string, unknown> } {
-  if (error instanceof ApiError) return { error: { message: error.message, type: error.status === 429 ? "rate_limit_error" : "invalid_request_error", param: error.param ?? null, code: error.code } };
+  if (error instanceof ApiError) return { error: { message: error.message, type: error.status === 429 ? "rate_limit_error" : "invalid_request_error", param: error.param ?? null, code: error.code, ...error.details } };
   return { error: { message: error.message || "Internal server error", type: "server_error", param: null, code: "internal_error" } };
 }
 

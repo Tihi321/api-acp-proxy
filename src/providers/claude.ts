@@ -190,5 +190,5 @@ export const claudeRegistration: ProviderRegistration = {
   id: "claude",
   displayName: "Claude",
   planLimits: true,
-  create: ({ providerSettings, ctx, env, config }) => new AcpProvider(claudeDescriptor(providerSettings as ClaudeSettings, env), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions, toolResultTimeoutMs: config.toolResultTimeoutMs, maxPromptChars: providerSettings.maxPromptChars as number | undefined }),
+  create: ({ providerSettings, ctx, env, config }) => new AcpProvider(claudeDescriptor(providerSettings as ClaudeSettings, env), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions, toolResultTimeoutMs: config.toolResultTimeoutMs, maxPromptChars: providerSettings.maxPromptChars as number | undefined, usageLimitPattern: providerSettings.usageLimitPattern as string | undefined }),
 };

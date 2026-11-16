@@ -15,7 +15,7 @@ export class AcpBridge extends AcpProvider {
   }
 }
 
-export interface ModelEntry { id: string; ownedBy?: string; /** Limit on the prompt text in characters, when the provider has one. */ maxPromptChars?: number; }
+export interface ModelEntry { id: string; ownedBy?: string; /** Limit on the prompt text in characters, when the provider has one. */ maxPromptChars?: number; /** ISO time the provider's usage limit resets; present only while it is exhausted. */ exhaustedUntil?: string; }
 export interface AcpLike {
   generate(model: ModelId, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   close?(): Promise<void>;
@@ -39,4 +39,6 @@ export interface AcpLike {
   queueStats?(): Record<string, { active: number; queued: number; limit: number; maxQueue: number }>;
   /** How each provider that knows it authenticates (for /healthz). */
   authMethods?(): Record<string, string>;
+  /** Providers whose usage limit is used up: id -> ISO time they are refused until (for /healthz). */
+  exhaustedProviders?(): Record<string, string>;
 }

@@ -377,10 +377,12 @@ function track(activity: ActivityLog, bridge: AcpLike, response: ServerResponse,
 function healthProviders(bridge: AcpLike): { providers?: Record<string, Record<string, unknown>> } {
   const queues = bridge.queueStats?.();
   const auth = bridge.authMethods?.();
-  if (!queues && !auth) return {};
+  const exhausted = bridge.exhaustedProviders?.();
+  if (!queues && !auth && !exhausted) return {};
   const providers: Record<string, Record<string, unknown>> = {};
   for (const [id, q] of Object.entries(queues ?? {})) providers[id] = { active: q.active, queued: q.queued, max_concurrent: q.limit, max_queue: q.maxQueue };
   for (const [id, method] of Object.entries(auth ?? {})) providers[id] = { ...providers[id], auth_method: method };
+  for (const [id, until] of Object.entries(exhausted ?? {})) providers[id] = { ...providers[id], exhausted_until: until };
   return { providers };
 }
 
@@ -404,7 +406,7 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
       if (options.activity && !mcpRoute) track(options.activity, bridge, response, ENDPOINTS.has(route) ? route : "other", trace);
       if (!authenticated(request, config)) { trace.error = "invalid_api_key"; json(response, 401, { error: { message: "Invalid or missing bearer token.", type: "invalid_request_error", code: "invalid_api_key", param: null } }); return; }
       if (mcpRoute) { await mcp.handle(request, response); return; }
-      if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : []; json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai", ...(model.maxPromptChars ? { max_prompt_chars: model.maxPromptChars } : {}) })) }); return; }
+      if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : []; json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai", ...(model.maxPromptChars ? { max_prompt_chars: model.maxPromptChars } : {}), ...(model.exhaustedUntil ? { exhausted_until: model.exhaustedUntil } : {}) })) }); return; }
       if (method === "POST" && url.pathname === "/v1/chat/completions") { await handleChat(request, response, config, bridge, trace, options.fetch); return; }
       if (method === "POST" && url.pathname === "/v1/images/generations") { await handleImageGeneration(request, response, config, bridge, trace); return; }
       if (method === "POST" && url.pathname === "/v1/responses") { await handleResponses(request, response, config, bridge, trace, options.fetch); return; }
@@ -413,7 +415,7 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
     } catch (error) {
       trace.error = errorCode(error);
       if (response.headersSent) { response.end(); return; }
-      if (error instanceof ApiError) { json(response, error.status, errorEnvelope(error)); return; }
+      if (error instanceof ApiError) { if (error.retryAfterSeconds) response.setHeader("Retry-After", String(error.retryAfterSeconds)); json(response, error.status, errorEnvelope(error)); return; }
       if (error instanceof AcpUnavailableError) { if (error.retryAfterSeconds) response.setHeader("Retry-After", String(error.retryAfterSeconds)); json(response, 503, { error: { message: error.message, type: "server_error", code: error.code ?? "backend_unavailable", param: null } }); return; }
       json(response, 500, errorEnvelope(error instanceof Error ? error : new Error(String(error))));
     }
