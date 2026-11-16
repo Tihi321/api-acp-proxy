@@ -129,12 +129,12 @@ export function couldBeAntigravityNotice(text: string): boolean {
  * Antigravity answers a turn it has no quota for with text like "Usage Limit Reached ... Your limit will reset in 6 days, 15 hours" and ends the turn normally.
  * Strict, so that a genuine answer about usage limits is never taken for it: the whole answer is at most 500 characters, its first non-empty line is
  * the heading "Usage Limit Reached" and nothing else (after whitespace, Markdown marks other than `>` and trailing punctuation), or the heading, a sentence mark
- * (`. ! :`, an en or an em dash) and the reset sentence on that one line, and the answer holds "your limit will reset in N".
+ * (`. ! :`, an en or an em dash) and the reset sentence on that one line, and the answer holds "your limit will reset in N <weeks|days|hours|minutes>".
  * Wording from REQ-0025 bug 8; no full capture was found.
  */
 export function matchAntigravityUsageLimit(text: string): boolean {
   const first = firstLine(text);
-  return text.length <= ANTIGRAVITY_NOTICE_MAX_CHARS && first !== undefined && isHeadingLine(first.line) && RESET_SENTENCE.test(text);
+  return text.length <= ANTIGRAVITY_NOTICE_MAX_CHARS && first !== undefined && isHeadingLine(first.line) && RESET_SENTENCE.test(text) && RELATIVE.test(text);
 }
 
 export const DEFAULT_COOLDOWN_MS = 60 * 60 * 1000;
