@@ -11,6 +11,7 @@ import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
 import type { ProxyConfig } from "../src/config.js";
 import { UsageStore } from "../src/usage-store.js";
+import { ActivityLog, type ActivityEntry } from "../src/activity.js";
 import { exhaustedUntil, matchCodexUsageLimit, matchPattern, parseResetTime } from "../src/usage-limit.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -102,13 +103,33 @@ describe("usage limit, over HTTP", () => {
 });
 
 describe("usage limit and the usage totals", () => {
-  it("leaves a refused request out of the totals but counts the first failure and other errors", () => {
-    const store = new UsageStore();
-    const base = { time: Date.now(), endpoint: "POST /v1/chat/completions", stream: false, features: [], durationMs: 1, provider: "codex" };
-    store.add({ ...base, status: 429, error: "usage_limit_exceeded", refused: true });
-    store.add({ ...base, status: 429, error: "usage_limit_exceeded" });
-    store.add({ ...base, status: 503, error: "backend_unavailable" });
-    expect(store.summary(["codex"]).providers[0]!.today).toMatchObject({ requests: 2, errors: 2 });
+  it("counts the first failure (it ran the agent) as 1 request and 1 error, and leaves the refusals (HTTP and MCP) out", async () => {
+    const dir = path.join(root, "totals"); mkdirSync(dir, { recursive: true });
+    Object.assign(process.env, { FAKE_ACP_PROMPT_ERROR: JSON.stringify(limitError) });
+    const codex = new AcpProvider(codexDescriptor({ acpCommand: process.execPath, acpArgs: [fixture] }, { isolatedHome: false }), defaultRuntimeContext({ dataDir: dir }), { workRoot: path.join(dir, "work") });
+    providers.push(codex);
+    const now = new Date(2026, 10, 26, 12, 0).getTime();
+    const router = new ProviderRouter({ providers: [codex], logger: createLogger({ console: false }), now: () => now });
+    // Wired as the controller wires them: every activity entry goes to the usage totals.
+    const activity = new ActivityLog();
+    const usage = new UsageStore();
+    let recorded = 0;
+    activity.on("record", (entry: ActivityEntry) => { usage.add(entry); recorded++; });
+    const server = createProxyServer(config, router, { activity }); servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, config.host, resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const post = (url: string, body: unknown) => fetch(`${base}${url}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const today = () => usage.summary(["codex"]).providers[0]!.today;
+    const chat = { model: "codex/gpt-6-luna", messages: [{ role: "user", content: "hi" }] };
+
+    expect((await post("/v1/chat/completions", chat)).status).toBe(429);
+    expect((await post("/v1/chat/completions", chat)).status).toBe(429);
+    await vi.waitFor(() => expect(recorded).toBe(2));
+    expect(today()).toMatchObject({ requests: 1, errors: 1 });
+
+    await (await post("/v1/mcp", { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "ask_model", arguments: { model: "codex/gpt-6-luna", prompt: "hi" } } })).text();
+    await vi.waitFor(() => expect(recorded).toBe(3));
+    expect(today()).toMatchObject({ requests: 1, errors: 1 });
   });
 });
 

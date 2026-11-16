@@ -11,7 +11,7 @@ Repo api-acp-proxy, branch AAP-31_usage-limit (from master). What changed, in sh
 - src/providers/claude.ts, src/providers/antigravity.ts: now pass `usageLimitPattern` through to the ACP provider.
 - src/router.ts: per provider `exhausted` state; `refuseIfExhausted` in `checkPrompt` and `generate`; `exhaustedProviders()`; `exhausted_until` on listed models.
 - src/server.ts, src/acp.ts, src/controller.ts, src/settings.ts, src/config.ts: `Retry-After`, `/healthz` and `/v1/models` fields, `server.usageLimitCooldownMinutes` / `PROXY_USAGE_LIMIT_COOLDOWN_MINUTES`.
-- src/usage-store.ts, src/server.ts, src/activity.ts, src/usage-limit.ts: a refused request (`refused: true` on the activity entry) is not counted in the usage totals (it stays in the activity log). Other errors (400, 429 first failure, 503) count as before.
+- src/usage-store.ts, src/server.ts, src/mcp-endpoint.ts, src/activity.ts, src/usage-limit.ts: a request refused by the pre-check (`refused: true` on the activity entry, over HTTP and over MCP `ask_model` / `generate_image`) is not counted in the usage totals (it stays in the activity log). Other errors (400, the first 429 that ran the agent, 503) count as before.
 - tests/usage-limit.test.ts (HTTP, parsing and totals), tests/router.test.ts, README.md, ROADMAP.md (two items added: the usage-limit item and the Antigravity out-of-quota follow-up, a separate ticket after AAP-31, since Antigravity answers its limit text as a normal 200; the hub's port corrected from 7461 to 8787, as in the hub's services.json).
 
 Reproduction on master (test T1 against the unfixed code): request 1 answered 503 `backend_unavailable`, request 2 answered 503 again, and the fake agent's log showed 2 `session/prompt` lines. With the fix: request 1 answers 429 with the contract body and `Retry-After`; request 2 (stream too) answers an HTTP 429 JSON and the log shows only 1 `session/prompt` line.
@@ -19,7 +19,7 @@ Reproduction on master (test T1 against the unfixed code): request 1 answered 50
 Worker decisions:
 - Re-check after the queue slot: `generate` calls `refuseIfExhausted` a second time once `limiter.acquire` returns. A request that waited in the queue may have been overtaken by one that found the limit used up; without the re-check it would run the agent and fail again.
 - "cancelled" does not clear the state: `track` clears the exhausted mark only on a result whose `stopReason` is not `cancelled`. A client that left or a timeout proves nothing about the limit, so it must not lift the refusal.
-- Only refusals stay out of the usage totals: `usageLimitRefusal` marks its `UsageLimitError` as `refused`, the server copies that to the activity entry (`refused: true`), and `UsageStore.add` skips only such entries. The first failing request (it ran the agent, then answers the same 429) counts as 1 request plus 1 error, like other errors. The activity log records everything.
+- Only refusals stay out of the usage totals: `usageLimitRefusal` takes a `refused` flag; only the pre-check `refuseIfExhausted` passes true, while `track` (the failure that ran the agent) passes false. `refusedMark` (src/usage-limit.ts) copies the mark to the activity entry (`refused: true`) in both the HTTP server and the MCP endpoint, and `UsageStore.add` skips only such entries. The first failing request (it ran the agent, then answers the same 429) counts as 1 request plus 1 error, like other errors. The activity log records everything.
 
 Verification: `npm run typecheck` clean; `npm test` 462 passed, 1 skipped (463 total).
 

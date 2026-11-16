@@ -197,7 +197,7 @@ export class ProviderRouter implements AcpLike {
   /** Throws the 429 `usage_limit_exceeded` while the provider's usage limit is used up (before the limiter: nothing queues). */
   private refuseIfExhausted(provider: Provider): void {
     const until = this.exhaustedUntilMs(provider.id);
-    if (until !== undefined) throw usageLimitRefusal(provider, until, this.now());
+    if (until !== undefined) throw usageLimitRefusal(provider, until, this.now(), true);
   }
 
   /** Runs one provider call: a usage-limit failure marks the provider exhausted and becomes the contract 429; a success clears the mark. */
@@ -213,7 +213,7 @@ export class ProviderRouter implements AcpLike {
       const until = exhaustedUntil(error.resetText, now, settings?.cooldownMs ?? DEFAULT_COOLDOWN_MS, settings?.maxMs ?? MAX_RESET_MS);
       this.exhausted.set(provider.id, until);
       this.log.warn(`'${provider.id}' has hit its usage limit; requests are refused until ${new Date(until).toISOString()}.`);
-      throw usageLimitRefusal(provider, until, now);
+      throw usageLimitRefusal(provider, until, now, false);
     }
   }
 

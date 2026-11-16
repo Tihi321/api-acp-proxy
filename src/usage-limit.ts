@@ -15,6 +15,11 @@ export class UsageLimitError extends ApiError {
   }
 }
 
+/** The activity-log mark of a pre-check refusal (`refused: true`), so the usage totals leave it out; empty for any other error. */
+export function refusedMark(error: unknown): { refused?: true } {
+  return error instanceof UsageLimitError && error.refused ? { refused: true } : {};
+}
+
 /** The message of an error plus its JSON-RPC `data`, as one string to match against (the adapter puts the codes in `data`). */
 export function errorText(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -89,12 +94,12 @@ export function localStamp(ms: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** The refusal of the contract: 429 `usage_limit_exceeded` with `Retry-After`, the provider id, `exhausted_until` (UTC ISO) and `retry_after` (whole seconds, at least 1). */
-export function usageLimitRefusal(provider: { id: string; displayName: string }, until: number, now: number): UsageLimitError {
+/** The refusal of the contract: 429 `usage_limit_exceeded` with `Retry-After`, the provider id, `exhausted_until` (UTC ISO) and `retry_after` (whole seconds, at least 1). `refused` is true only for the pre-check (the request never ran the agent); the failure that found the limit passes false. */
+export function usageLimitRefusal(provider: { id: string; displayName: string }, until: number, now: number, refused: boolean): UsageLimitError {
   const retryAfter = Math.max(1, Math.ceil((until - now) / 1000));
   return new UsageLimitError(
     `${provider.displayName} has hit its usage limit; it resets at ${localStamp(until)} (local time). Use another model or wait.`,
     undefined,
-    { refused: true, retryAfterSeconds: retryAfter, details: { provider: provider.id, exhausted_until: new Date(until).toISOString(), retry_after: retryAfter } },
+    { ...(refused ? { refused: true as const } : {}), retryAfterSeconds: retryAfter, details: { provider: provider.id, exhausted_until: new Date(until).toISOString(), retry_after: retryAfter } },
   );
 }

@@ -7,7 +7,7 @@ import type { AcpLike, GenerateOptions, GenerationResult } from "./acp.js";
 import type { GeneratedImage } from "./provider.js";
 import { AcpUnavailableError } from "./acp.js";
 import type { ProxyConfig } from "./config.js";
-import { UsageLimitError } from "./usage-limit.js";
+import { refusedMark } from "./usage-limit.js";
 import { ApiError, errorEnvelope, extractJson, formatInstructions, hasImages, imageFormatName, normalizeChat, normalizeImageGeneration, normalizeResponses, serializePrompt, type ModelCheck, type Message, type OutputFormat, type ToolChoice, type ToolDef } from "./api.js";
 import { beginSse, endSse, writeSse } from "./sse.js";
 import { extractCitations } from "./citations.js";
@@ -24,10 +24,6 @@ const startedAt = Date.now();
 interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; refused?: true; inputTokens?: number; outputTokens?: number; estimated?: boolean; ignoredParams?: string[]; }
 
 /** The proxy's error code of a failure (what the client sees as `error.code`). */
-function refusedMark(error: unknown): { refused?: true } {
-  return error instanceof UsageLimitError && error.refused ? { refused: true } : {};
-}
-
 function errorCode(error: unknown): string {
   if (error instanceof ApiError) return error.code;
   if (error instanceof AcpUnavailableError) return error.code ?? "backend_unavailable";
