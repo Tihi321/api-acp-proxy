@@ -7,6 +7,7 @@ import type { AcpLike, GenerateOptions, GenerationResult } from "./acp.js";
 import type { GeneratedImage } from "./provider.js";
 import { AcpUnavailableError } from "./acp.js";
 import type { ProxyConfig } from "./config.js";
+import { UsageLimitError } from "./usage-limit.js";
 import { ApiError, errorEnvelope, extractJson, formatInstructions, hasImages, imageFormatName, normalizeChat, normalizeImageGeneration, normalizeResponses, serializePrompt, type ModelCheck, type Message, type OutputFormat, type ToolChoice, type ToolDef } from "./api.js";
 import { beginSse, endSse, writeSse } from "./sse.js";
 import { extractCitations } from "./citations.js";
@@ -20,9 +21,13 @@ import type { ActivityEntry, ActivityFeature, ActivityLog } from "./activity.js"
 const startedAt = Date.now();
 
 /** What a request tells the activity log (metadata only: the prompt, the answer and the headers never get here). */
-interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; inputTokens?: number; outputTokens?: number; estimated?: boolean; ignoredParams?: string[]; }
+interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; refused?: true; inputTokens?: number; outputTokens?: number; estimated?: boolean; ignoredParams?: string[]; }
 
 /** The proxy's error code of a failure (what the client sees as `error.code`). */
+function refusedMark(error: unknown): { refused?: true } {
+  return error instanceof UsageLimitError && error.refused ? { refused: true } : {};
+}
+
 function errorCode(error: unknown): string {
   if (error instanceof ApiError) return error.code;
   if (error instanceof AcpUnavailableError) return error.code ?? "backend_unavailable";
@@ -199,7 +204,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
       if (includeUsage) chunk([], { usage: usageFor(result) });
       endSse(response);
     } catch (error) {
-      trace.error = errorCode(error);
+      Object.assign(trace, refusedMark(error), { error: errorCode(error) });
       writeSse(response, errorEnvelope(error instanceof Error ? error : new Error(String(error))));
       endSse(response);
     } finally { clearTimeout(timer); }
@@ -319,7 +324,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
       const terminalEvent = status === "completed" ? "response.completed" : "response.incomplete";
       event(terminalEvent, { response: base(result, status, items, calls) });
       endSse(response);
-    } catch (error) { trace.error = errorCode(error); const mapped = forResponses(error); writeSse(response, errorEnvelope(mapped instanceof Error ? mapped : new Error(String(mapped)))); endSse(response); }
+    } catch (error) { Object.assign(trace, refusedMark(error), { error: errorCode(error) }); const mapped = forResponses(error); writeSse(response, errorEnvelope(mapped instanceof Error ? mapped : new Error(String(mapped)))); endSse(response); }
     finally { clearTimeout(timer); }
     return;
   }
@@ -363,7 +368,7 @@ function track(activity: ActivityLog, bridge: AcpLike, response: ServerResponse,
     const error = trace.error ?? (response.statusCode >= 400 ? undefined : response.writableFinished ? undefined : "client_closed");
     const entry: ActivityEntry = {
       time, endpoint, stream: trace.stream, features: [...trace.features], durationMs: Date.now() - time, status: response.statusCode,
-      ...(trace.model ? { model: trace.model } : {}), ...(error ? { error } : {}),
+      ...(trace.model ? { model: trace.model } : {}), ...(error ? { error } : {}), ...(trace.refused ? { refused: true as const } : {}),
       ...(trace.inputTokens !== undefined ? { inputTokens: trace.inputTokens } : {}), ...(trace.outputTokens !== undefined ? { outputTokens: trace.outputTokens } : {}),
       ...(trace.estimated && (trace.inputTokens !== undefined || trace.outputTokens !== undefined) ? { estimated: true as const } : {}),
       ...(trace.ignoredParams?.length ? { ignoredParams: trace.ignoredParams } : {}),
@@ -413,7 +418,7 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
       trace.error = "not_found";
       json(response, 404, { error: { message: "Not found.", type: "invalid_request_error", code: "not_found", param: null } });
     } catch (error) {
-      trace.error = errorCode(error);
+      Object.assign(trace, refusedMark(error), { error: errorCode(error) });
       if (response.headersSent) { response.end(); return; }
       if (error instanceof ApiError) { if (error.retryAfterSeconds) response.setHeader("Retry-After", String(error.retryAfterSeconds)); json(response, error.status, errorEnvelope(error)); return; }
       if (error instanceof AcpUnavailableError) { if (error.retryAfterSeconds) response.setHeader("Retry-After", String(error.retryAfterSeconds)); json(response, 503, { error: { message: error.message, type: "server_error", code: error.code ?? "backend_unavailable", param: null } }); return; }

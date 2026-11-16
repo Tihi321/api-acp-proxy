@@ -102,12 +102,13 @@ describe("usage limit, over HTTP", () => {
 });
 
 describe("usage limit and the usage totals", () => {
-  it("leaves a usage-limit refusal out of the totals but still counts other errors", () => {
+  it("leaves a refused request out of the totals but counts the first failure and other errors", () => {
     const store = new UsageStore();
     const base = { time: Date.now(), endpoint: "POST /v1/chat/completions", stream: false, features: [], durationMs: 1, provider: "codex" };
+    store.add({ ...base, status: 429, error: "usage_limit_exceeded", refused: true });
     store.add({ ...base, status: 429, error: "usage_limit_exceeded" });
     store.add({ ...base, status: 503, error: "backend_unavailable" });
-    expect(store.summary(["codex"]).providers[0]!.today).toMatchObject({ requests: 1, errors: 1 });
+    expect(store.summary(["codex"]).providers[0]!.today).toMatchObject({ requests: 2, errors: 2 });
   });
 });
 

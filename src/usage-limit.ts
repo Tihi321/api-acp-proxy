@@ -2,12 +2,15 @@ import { ApiError } from "./api.js";
 
 export const USAGE_LIMIT_CODE = "usage_limit_exceeded";
 /** What a refused request carries beyond the common error fields (see the README, "Usage limit"). */
-export interface UsageLimitExtra { retryAfterSeconds?: number; details?: Record<string, unknown>; }
+export interface UsageLimitExtra { retryAfterSeconds?: number; details?: Record<string, unknown>; /** Set by the pre-check refusal: the request never reached the agent. */ refused?: true; }
 
 /** A provider said its subscription usage limit is used up. From a provider it carries the agent's reset text; the router turns it into the contract error (provider, `exhausted_until`, `retry_after`). */
 export class UsageLimitError extends ApiError {
+  /** True for a request refused before it ran (the provider was already exhausted); false for the failure that found the limit. */
+  readonly refused: boolean;
   constructor(message: string, public readonly resetText?: string, extra: UsageLimitExtra = {}) {
     super(429, USAGE_LIMIT_CODE, message, "model", extra);
+    this.refused = extra.refused === true;
     this.name = "UsageLimitError";
   }
 }
@@ -92,6 +95,6 @@ export function usageLimitRefusal(provider: { id: string; displayName: string },
   return new UsageLimitError(
     `${provider.displayName} has hit its usage limit; it resets at ${localStamp(until)} (local time). Use another model or wait.`,
     undefined,
-    { retryAfterSeconds: retryAfter, details: { provider: provider.id, exhausted_until: new Date(until).toISOString(), retry_after: retryAfter } },
+    { refused: true, retryAfterSeconds: retryAfter, details: { provider: provider.id, exhausted_until: new Date(until).toISOString(), retry_after: retryAfter } },
   );
 }

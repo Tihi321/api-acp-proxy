@@ -19,6 +19,8 @@ export interface ActivityEntry {
   durationMs: number;
   status: number;
   error?: string;
+  /** A usage-limit refusal before the agent ran: logged, but not counted in the usage totals. */
+  refused?: true;
   inputTokens?: number;
   outputTokens?: number;
   /** The token counts are the chars/4 estimate (the agent reported none). */
