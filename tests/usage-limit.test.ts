@@ -10,6 +10,7 @@ import { createLogger } from "../src/logger.js";
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
 import type { ProxyConfig } from "../src/config.js";
+import { UsageStore } from "../src/usage-store.js";
 import { exhaustedUntil, matchCodexUsageLimit, matchPattern, parseResetTime } from "../src/usage-limit.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -97,6 +98,16 @@ describe("usage limit, over HTTP", () => {
     const withPattern = make("quota exceeded");
     await expect(ask(withPattern)).rejects.toMatchObject({ status: 429, code: "usage_limit_exceeded" });
     expect(Object.keys(withPattern.exhaustedProviders())).toEqual(["codex"]);
+  });
+});
+
+describe("usage limit and the usage totals", () => {
+  it("leaves a usage-limit refusal out of the totals but still counts other errors", () => {
+    const store = new UsageStore();
+    const base = { time: Date.now(), endpoint: "POST /v1/chat/completions", stream: false, features: [], durationMs: 1, provider: "codex" };
+    store.add({ ...base, status: 429, error: "usage_limit_exceeded" });
+    store.add({ ...base, status: 503, error: "backend_unavailable" });
+    expect(store.summary(["codex"]).providers[0]!.today).toMatchObject({ requests: 1, errors: 1 });
   });
 });
 

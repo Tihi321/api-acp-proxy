@@ -4,7 +4,7 @@ What is open for the proxy as the creative hub (`C:\projects\Personal\creative-h
 
 ## Where it stands (2026-10-22)
 
-- **The hub's use:** an `openai-compat` provider for Scriptorium and Book Translator. The hub runs it on port 7461 (its default 8787 clashed with the old flow-mcp panel) (it no longer needs `PROXY_IGNORE_SAMPLING`: AAP-28); see the hub's `services.json`, id `acp-proxy`.
+- **The hub's use:** an `openai-compat` provider for Scriptorium and Book Translator. The hub runs it on port 8787 (the proxy default) (it no longer needs `PROXY_IGNORE_SAMPLING`: AAP-28); see the hub's `services.json`, id `acp-proxy`.
 - **AAP-05 merged, replaced by AAP-28:** `server.ignoreSampling` / `PROXY_IGNORE_SAMPLING=1` (and a settings checkbox) dropped `stream_options`, `max_tokens` and `temperature`, which both apps send and the proxy answered with 400 `unsupported_parameter`. Not yet tried with a real request (HUB-09).
 - **AAP-07 to AAP-10** (stacked branches `AAP-07_json-output` → `AAP-08_stream-usage` → `AAP-09_token-limit` → `AAP-10_session-reuse`, 147 tests pass, not yet tried with a real request). They changed what the sampling drop covers: chat `stream_options` and the token limits are honoured, so only `temperature`, `top_p`, penalties, `seed` and the Responses `stream_options` are dropped. The apps' `max_tokens` now cuts answers (≈4 characters per token).
 - **HUB-09 on hold** (user, 2026-10-22: "no need for now, later if needed").

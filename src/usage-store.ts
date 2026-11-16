@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { ActivityEntry } from "./activity.js";
 import type { Logger } from "./logger.js";
+import { USAGE_LIMIT_CODE } from "./usage-limit.js";
 import type { UsageCountsView, UsageDayView, UsageProviderView, UsageRangeKey, UsageView } from "./shared/ipc.js";
 
 export type UsageCounts = UsageCountsView;
@@ -68,9 +69,9 @@ export class UsageStore extends EventEmitter {
     this.ready = this.load();
   }
 
-  /** Counts one activity entry; ignores entries without `provider`. Day = localDayKey(entry.time). */
+  /** Counts one activity entry; ignores entries without `provider` and the usage-limit refusals (429 `usage_limit_exceeded`: they stay in the activity log but are not requests the provider served). Day = localDayKey(entry.time). */
   add(entry: ActivityEntry): void {
-    if (!entry.provider) return;
+    if (!entry.provider || entry.error === USAGE_LIMIT_CODE) return;
     const day = localDayKey(entry.time);
     const delta: UsageCounts = {
       requests: 1, errors: entry.status >= 400 || entry.error !== undefined ? 1 : 0,
