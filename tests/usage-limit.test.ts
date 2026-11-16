@@ -155,7 +155,7 @@ describe("usage limit, Antigravity and Claude over HTTP", () => {
     // Overage: a rejected plan window while paid overage carries the turn is no limit; a rejected overage is.
     const hook = claudeDescriptor({ termsAcknowledgedAt: "x" }, {}, fake).usageLimitFromUpdate!;
     const hint = (info: Record<string, unknown>) => hook({ sessionUpdate: "usage_update", used: 1, size: 200000, _meta: { "_claude/rateLimit": { status: "rejected", rateLimitType: "five_hour", resetsAt, ...info } } } as never);
-    expect([hint({ isUsingOverage: true, overageStatus: "allowed" }), hint({ rateLimitType: "overage", overageStatus: "rejected" })]).toEqual([undefined, { resetAt: resetsAt * 1000 }]);
+    expect([hint({ isUsingOverage: true, overageStatus: "allowed" }), hint({ rateLimitType: "overage", overageStatus: "rejected" }), hint({ rateLimitType: "overage", overageStatus: "rejected", overageResetsAt: resetsAt + 3600 })]).toEqual([undefined, { resetAt: resetsAt * 1000 }, { resetAt: (resetsAt + 3600) * 1000 }]);
   });
 });
 

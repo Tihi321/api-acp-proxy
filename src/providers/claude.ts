@@ -186,10 +186,13 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
       if (hint?.status !== "rejected") return undefined;
       // SDKRateLimitInfo's overage fields (readRateLimitHint drops them): a rejected plan window while paid overage carries the turn is not a usage limit;
       // a rejection of the overage itself is.
-      const raw = (meta as Record<string, unknown>)["_claude/rateLimit"] as { rateLimitType?: unknown; overageStatus?: unknown; isUsingOverage?: unknown; overageInUse?: unknown };
+      const raw = (meta as Record<string, unknown>)["_claude/rateLimit"] as { rateLimitType?: unknown; overageStatus?: unknown; overageResetsAt?: unknown; isUsingOverage?: unknown; overageInUse?: unknown };
       const overageRejected = raw.rateLimitType === "overage" || raw.overageStatus === "rejected";
       if (!overageRejected && (raw.isUsingOverage === true || raw.overageInUse === true || raw.overageStatus === "allowed" || raw.overageStatus === "allowed_warning")) return undefined;
-      return hint.resetsAt !== undefined ? { resetAt: hint.resetsAt } : {};
+      // A rejected overage resets at the SDK's overageResetsAt (seconds or ms, as in plan-limits.ts), not at the plan window's resetsAt.
+      const overageReset = overageRejected && typeof raw.overageResetsAt === "number" && Number.isFinite(raw.overageResetsAt) ? (raw.overageResetsAt < 1e12 ? raw.overageResetsAt * 1000 : raw.overageResetsAt) : undefined;
+      const resetAt = overageReset ?? hint.resetsAt;
+      return resetAt !== undefined ? { resetAt } : {};
     },
     externalLogin: (ctx, methodId) => consoleLogin(ctx, settings, env, methodId),
     // The adapter advertises ACP `logout` (it runs `claude auth logout` itself); this is the same command run by hand for an adapter that does not.
