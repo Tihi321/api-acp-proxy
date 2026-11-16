@@ -21,6 +21,8 @@ export interface RouterOptions {
   concurrency?: { maxConcurrent: number; maxQueue?: number; perProvider?: Record<string, number | undefined> };
   /** A provider that reports its usage limit is refused until its reset time; `cooldownMs` (default 60 minutes) is used when the reset time is unknown, past or over `maxMs` (default 31 days). */
   usageLimit?: { cooldownMs: number; maxMs?: number };
+  /** Called when the set of exhausted providers changes (a failure marks one, a success clears one); never from a read. */
+  onExhaustedChange?: () => void;
   /** The clock, in epoch ms (tests). */
   now?: () => number;
 }
@@ -204,7 +206,7 @@ export class ProviderRouter implements AcpLike {
   private async track<T extends GenerationResult>(provider: Provider, run: () => Promise<T>): Promise<T> {
     try {
       const result = await run();
-      if (result.stopReason !== "cancelled") this.exhausted.delete(provider.id);
+      if (result.stopReason !== "cancelled" && this.exhausted.delete(provider.id)) this.options.onExhaustedChange?.();
       return result;
     } catch (error) {
       if (!(error instanceof UsageLimitError)) throw error;
@@ -212,6 +214,7 @@ export class ProviderRouter implements AcpLike {
       const settings = this.options.usageLimit;
       const until = exhaustedUntil(error.resetText, now, settings?.cooldownMs ?? DEFAULT_COOLDOWN_MS, settings?.maxMs ?? MAX_RESET_MS);
       this.exhausted.set(provider.id, until);
+      this.options.onExhaustedChange?.();
       this.log.warn(`'${provider.id}' has hit its usage limit; requests are refused until ${new Date(until).toISOString()}.`);
       throw usageLimitRefusal(provider, until, now, false);
     }

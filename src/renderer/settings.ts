@@ -1,3 +1,4 @@
+import { nextExpiryDelay, usageLimitLine } from "./usage-limit-line.js";
 import { mcpAddCommand, mcpEndpointUrl } from "./mcp-command.js";
 import { initUsageView } from "./usage-view.js";
 import type { ActivityView, InstallProgressView, ProviderStatusView, SaveResult, SettingsPatchView, StateView } from "../shared/ipc.js";
@@ -194,6 +195,9 @@ function renderProvider(provider: string, current: StateView): void {
   setBadge(role(root, "badge"), providerState);
   role(root, "version").textContent = status?.agentVersion ? `v${status.agentVersion}` : "";
   showError(role(root, "error"), providerState === "error" || status?.error ? status?.error : undefined);
+  const limitLine = usageLimitLine(status?.exhaustedUntil, Date.now());
+  const limitNode = role(root, "usage-limit");
+  limitNode.textContent = limitLine ?? ""; limitNode.hidden = !limitLine;
   renderFields(provider as Scope, current);
   renderAuth(provider, status, current);
 
@@ -279,6 +283,8 @@ function renderOverview(current: StateView): void {
     actions.append(login, logout, settingsButton);
     head.append(actions);
     row.append(head, make("p", "ov-line muted", describeSignIn(status, current)));
+    const limitLine = usageLimitLine(status?.exhaustedUntil, Date.now());
+    if (limitLine) row.append(make("p", "ov-line usage-limit", limitLine));
     const chips = make("ul", "chips");
     const count = status?.models.length ?? 0;
     if (status && usable) for (const chip of featureChips) if (chip.on(status)) chips.append(make("li", "", chip.label));
@@ -337,8 +343,14 @@ function renderInstall(current: StateView): void {
   el<HTMLButtonElement>("install-agy").textContent = info ? "Re-download from registry" : "Download from registry";
 }
 
+/** One timer: re-reads the state just after the earliest reset time, so the line goes away with the window left open (the controller forgets the mark on that read). */
+let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+
 function render(current: StateView): void {
   state = current;
+  if (expiryTimer !== undefined) clearTimeout(expiryTimer);
+  const delay = nextExpiryDelay(current.status.providers, Date.now());
+  expiryTimer = delay === undefined ? undefined : setTimeout(() => void refresh(), delay + 1000);
   const server = current.status.server;
   setBadge(el("server-badge"), server.state);
   setBadge(el("top-badge"), server.state);

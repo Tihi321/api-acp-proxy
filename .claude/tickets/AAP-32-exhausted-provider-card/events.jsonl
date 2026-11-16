@@ -1,0 +1,3 @@
+{"ts":"2026-11-16T10:40:00Z","actor":"director-scribe","type":"plan.approved","request":"creative-hub/REQ-0026","ticket":"AAP-32-exhausted-provider-card","detail":"user approved the plan: build all four"}
+{"ts":"2026-11-16T11:30:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0026","ticket":"AAP-32-exhausted-provider-card","detail":"PASS first time"}
+{"ts":"2026-11-16T11:30:00Z","actor":"director-scribe","type":"ticket.done","request":"creative-hub/REQ-0026","ticket":"AAP-32-exhausted-provider-card","detail":"done on PASS; merge and push in progress"}

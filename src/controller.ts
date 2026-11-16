@@ -144,7 +144,10 @@ export class ProxyController extends EventEmitter {
   status(): ControllerStatus {
     const providers: ProviderStatus[] = this.registry.map((entry) => {
       const live = this.running?.providers.find((provider) => provider.id === entry.id);
-      if (live) return { ...live.status(), models: this.running!.router.knownModels(entry.id) as ModelInfo[] };
+      if (live) {
+        const exhaustedUntil = this.running!.router.exhaustedProviders()[entry.id];
+        return { ...live.status(), models: this.running!.router.knownModels(entry.id) as ModelInfo[], ...(exhaustedUntil ? { exhaustedUntil } : {}) };
+      }
       const enabled = this.resolved?.providers[entry.id]?.enabled ?? false;
       return { id: entry.id, name: entry.displayName, state: enabled ? "stopped" : "disabled", authMethods: [], models: [] };
     });
@@ -215,7 +218,7 @@ export class ProxyController extends EventEmitter {
       try { providers.push(entry.create({ settings, providerSettings: providerSettings[entry.id]!, config, ctx, env: this.env, saveSettings: (patch) => this.saveSettings(patch) })); }
       catch (error) { this.logger.error(`Could not create provider '${entry.id}': ${error instanceof Error ? error.message : String(error)}`); }
     }
-    const router = new ProviderRouter({ providers, logger: this.logger, cachePath: path.join(this.dataDir, "models-cache.json"), modelsWaitMs: config.modelsWaitMs, listBareAliases: config.listBareAliases, usageLimit: { cooldownMs: (config.usageLimitCooldownMinutes ?? 60) * 60_000 }, concurrency: { maxConcurrent: config.maxConcurrent ?? 0, maxQueue: config.maxQueue ?? 0, perProvider: Object.fromEntries(Object.entries(providerSettings).map(([id, entry]) => [id, entry.maxConcurrent as number | undefined])) } });
+    const router = new ProviderRouter({ providers, logger: this.logger, cachePath: path.join(this.dataDir, "models-cache.json"), modelsWaitMs: config.modelsWaitMs, onExhaustedChange: () => { this.publish(); }, listBareAliases: config.listBareAliases, usageLimit: { cooldownMs: (config.usageLimitCooldownMinutes ?? 60) * 60_000 }, concurrency: { maxConcurrent: config.maxConcurrent ?? 0, maxQueue: config.maxQueue ?? 0, perProvider: Object.fromEntries(Object.entries(providerSettings).map(([id, entry]) => [id, entry.maxConcurrent as number | undefined])) } });
     const server = createProxyServer(config, router, { fetch: ctx.fetch, toolBridge, activity: this.activity, mcpImageDir: path.join(this.dataDir, "mcp-images") });
     try {
       await new Promise<void>((resolve, reject) => {
