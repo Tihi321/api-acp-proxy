@@ -1,9 +1,9 @@
 ---
-status: approved
+status: done
 request: REQ-0025
 repos: [api-acp-proxy]
 branch: AAP-31_usage-limit
-updated: 2026-11-15
+updated: 2026-11-16
 ---
 # AAP-31: a provider that hit its usage limit is refused fast with a typed 429
 

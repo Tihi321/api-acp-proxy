@@ -1,0 +1,4 @@
+{"ts":"2026-11-15T20:00:00Z","actor":"director-scribe","type":"plan.created","request":"creative-hub/REQ-0025","ticket":"AAP-31-usage-limit","detail":"plan written for bug 7 (proxy side)"}
+{"ts":"2026-11-15T20:08:00Z","actor":"director-scribe","type":"plan.approved","request":"creative-hub/REQ-0025","ticket":"AAP-31-usage-limit","detail":"user approved the plan; implement after REQ-0024"}
+{"ts":"2026-11-16T08:40:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0025","ticket":"AAP-31-usage-limit","detail":"PASS after polish round 3; user approved round 3 after a 2nd re-check FAIL","data":{"verdict":"PASS","polish_round":3}}
+{"ts":"2026-11-16T08:40:00Z","actor":"director-scribe","type":"ticket.done","request":"creative-hub/REQ-0025","ticket":"AAP-31-usage-limit","detail":"ticket done after PASS verdict (polish round 3)"}
