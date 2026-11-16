@@ -23,6 +23,8 @@ export interface ProviderStatusView {
   features?: { imageGeneration: boolean; tools: boolean; mcp: boolean; webSearch: boolean };
   /** Where the agent keeps its login; `shared` means the user's own folder of the tool (~/.codex, ~/.claude, ~/.gemini). */
   loginHome?: { path: string; shared: boolean };
+  /** ISO UTC time the provider's usage limit resets; present only while the router holds it exhausted. */
+  exhaustedUntil?: string;
 }
 export interface StatusView {
   server: { state: ServerState; host: string; port: number; baseUrl?: string; error?: { code?: string; message: string } };

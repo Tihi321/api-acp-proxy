@@ -142,20 +142,24 @@ describe("ProviderRouter usage limit", () => {
   it("refuses without calling the provider until the time passes, clears on a success, never touches another provider", async () => {
     let now = new Date(2026, 10, 26, 12, 0).getTime();
     const calls = { n: 0 }, fail = { on: true };
-    const router = new ProviderRouter({ providers: [limited("a", calls, fail), fake("b", ["m"])], logger: createLogger({ console: false }), now: () => now });
+    let changes = 0;
+    const router = new ProviderRouter({ providers: [limited("a", calls, fail), fake("b", ["m"])], logger: createLogger({ console: false }), now: () => now, onExhaustedChange: () => { changes++; } });
     await expect(router.generate("a/m", msgs)).rejects.toMatchObject({ status: 429, code: "usage_limit_exceeded" });
     expect(calls.n).toBe(1);
+    expect(changes).toBe(1);
     expect(() => router.checkPrompt("a/m", msgs)).toThrow(UsageLimitError);
     await expect(router.generate("a/m", msgs)).rejects.toMatchObject({ code: "usage_limit_exceeded", retryAfterSeconds: expect.any(Number) });
     expect(calls.n).toBe(1);
     await expect(router.generate("b/m", msgs)).resolves.toMatchObject({ text: "b:m" });
     expect(Object.keys(router.exhaustedProviders())).toEqual(["a"]);
+    expect(changes).toBe(1);
 
     now = new Date(2026, 10, 29, 11, 7).getTime();
     fail.on = false;
     expect(router.exhaustedProviders()).toEqual({});
     await expect(router.generate("a/m", msgs)).resolves.toMatchObject({ text: "ok" });
     expect(calls.n).toBe(2);
+    expect(changes).toBe(1);
   });
 
   it("uses the cooldown when the reset time is unknown", async () => {
