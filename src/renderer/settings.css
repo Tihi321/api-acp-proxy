@@ -113,6 +113,7 @@ input:focus-visible, select:focus-visible, button:focus-visible, summary:focus-v
 .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .badge.ok { color: var(--ok); background: var(--ok-soft); }
 .badge.warn { color: var(--warn); background: var(--warn-soft); }
+.usage-limit { color: var(--warn); font-weight: 600; }
 .badge.err { color: var(--err); background: var(--err-soft); }
 .badge.info { color: var(--accent); background: var(--accent-soft); }
 .server-pill .badge { background: var(--surface-2); }
