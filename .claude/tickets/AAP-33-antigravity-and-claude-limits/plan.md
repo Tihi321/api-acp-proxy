@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 request: REQ-0028
 repos: [api-acp-proxy]
 branch: AAP-33_antigravity-and-claude-limits
