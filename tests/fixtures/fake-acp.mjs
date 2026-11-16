@@ -59,6 +59,8 @@ import path from "node:path";
 //                                    _auth/status_update kind "none" like Claude's adapter does). The request shows up in FAKE_ACP_LOG as {method: "logout"}. Without it the agent advertises nothing.
 //   FAKE_ACP_SLASH=<json>            maps a slash command to markdown, e.g. {"/status": "**Model:** x"}: a prompt that is exactly one text block with that text is answered with the markdown
 //                                    as one agent_message_chunk and ends with end_turn at once (no delay, no other switch applies)
+//   FAKE_ACP_ANSWER=<json>          the plain answer as agent_message_chunks, one per string of the array (instead of "fake response")
+//   FAKE_ACP_RATE_LIMIT=<json>      before the plain answer, a usage_update with _meta {"_claude/rateLimit": <json>} like claude-agent-acp
 //   FAKE_ACP_LOG=<file>             append every request as a JSON line {method, params}; permission answers as {method: "permission_response", params: <the response result>}
 const env = process.env;
 const pending = new Map();
@@ -315,6 +317,8 @@ const generateImage = (sessionId, id) => {
   send({ jsonrpc: "2.0", id: requestId, method: "session/request_permission", params: { sessionId, toolCall: { toolCallId, kind: "other", status: "pending", title: "Run generate_image?", rawInput: input }, options: env.FAKE_ACP_IMAGE_GEN_OPTIONS === "always-only" ? options.slice(0, 1) : options } });
 };
 const promptDone = (sessionId, id) => {
+  if (env.FAKE_ACP_RATE_LIMIT) update(sessionId, { sessionUpdate: "usage_update", used: 1, size: 200000, _meta: { "_claude/rateLimit": JSON.parse(env.FAKE_ACP_RATE_LIMIT) } });
+  if (env.FAKE_ACP_ANSWER) { for (const text of JSON.parse(env.FAKE_ACP_ANSWER)) update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } }); finish(id, "end_turn", sessionId); return; }
   const text = (env.FAKE_ACP_ECHO === "1" ? `echo:${models.get(sessionId) ?? ""}:${sessionId}:${authedWith ?? "-"}` : "fake response") + (env.FAKE_ACP_IMAGE === "1" ? ` images:${imageCounts.get(sessionId) ?? 0}` : "");
   send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
   finish(id, "end_turn", sessionId);

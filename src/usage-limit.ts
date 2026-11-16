@@ -2,15 +2,18 @@ import { ApiError } from "./api.js";
 
 export const USAGE_LIMIT_CODE = "usage_limit_exceeded";
 /** What a refused request carries beyond the common error fields (see the README, "Usage limit"). */
-export interface UsageLimitExtra { retryAfterSeconds?: number; details?: Record<string, unknown>; /** Set by the pre-check refusal: the request never reached the agent. */ refused?: true; }
+export interface UsageLimitExtra { retryAfterSeconds?: number; details?: Record<string, unknown>; /** Set by the pre-check refusal: the request never reached the agent. */ refused?: true; /** The reset time (epoch ms) when the agent gave a timestamp (Claude's `resetsAt`); it wins over `resetText`. */ resetAt?: number; }
 
 /** A provider said its subscription usage limit is used up. From a provider it carries the agent's reset text; the router turns it into the contract error (provider, `exhausted_until`, `retry_after`). */
 export class UsageLimitError extends ApiError {
   /** True for a request refused before it ran (the provider was already exhausted); false for the failure that found the limit. */
   readonly refused: boolean;
+  /** The reset time (epoch ms) the agent gave as a timestamp, if any. */
+  readonly resetAt?: number;
   constructor(message: string, public readonly resetText?: string, extra: UsageLimitExtra = {}) {
     super(429, USAGE_LIMIT_CODE, message, "model", extra);
     this.refused = extra.refused === true;
+    if (extra.resetAt !== undefined) this.resetAt = extra.resetAt;
     this.name = "UsageLimitError";
   }
 }
@@ -47,13 +50,17 @@ export function compilePattern(source: string | undefined): RegExp | undefined {
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const DATED = /try again at\s+([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i;
 const TIME_ONLY = /try again at\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i;
+/** Antigravity's relative form: "reset in 6 days, 15 hours" (weeks, days, hours and minutes in any subset, singular or plural, joined by commas and/or "and"). */
+const UNIT = String.raw`\d+\s*(?:weeks?|wks?|days?|hours?|hrs?|minutes?|mins?)\b`;
+const RELATIVE = new RegExp(String.raw`reset in\s+(${UNIT}(?:\s*,?\s*(?:and\s+)?${UNIT})*)`, "i");
+const UNIT_MS: Record<string, number> = { w: 604_800_000, d: 86_400_000, h: 3_600_000, m: 60_000 };
 
 function hour24(hour: number, meridiem: string): number | undefined {
   if (hour < 1 || hour > 12) return undefined;
   return (hour % 12) + (meridiem.toUpperCase() === "PM" ? 12 : 0);
 }
 
-/** The reset time (epoch ms) from "try again at <Mon> <D>[st|nd|rd|th], <YYYY> <h:mm> AM|PM" or "try again at <h:mm> AM|PM" (today, tomorrow when already past). The text has no zone: it is read as the machine's local time. Anything else: undefined. */
+/** The reset time (epoch ms) from "try again at <Mon> <D>[st|nd|rd|th], <YYYY> <h:mm> AM|PM" or "try again at <h:mm> AM|PM" (today, tomorrow when already past), read as the machine's local time (the text has no zone), or from Antigravity's relative "reset in N days, M hours" (`now` plus that). Anything else: undefined. */
 export function parseResetTime(text: string, now: number): number | undefined {
   const dated = DATED.exec(text);
   if (dated) {
@@ -75,15 +82,67 @@ export function parseResetTime(text: string, now: number): number | undefined {
     if (date.getTime() <= now) date.setDate(date.getDate() + 1);
     return date.getTime();
   }
+  const relative = RELATIVE.exec(text);
+  if (relative) {
+    let total = 0;
+    for (const part of relative[1]!.matchAll(/(\d+)\s*([wdhm])/gi)) total += Number(part[1]) * UNIT_MS[part[2]!.toLowerCase()]!;
+    return total > 0 ? now + total : undefined;
+  }
   return undefined;
+}
+
+/** Antigravity's out-of-quota answer is at most this long (the whole answer, never the start of a longer one). */
+export const ANTIGRAVITY_NOTICE_MAX_CHARS = 500;
+const NOTICE_HEADING = "usage limit reached";
+/** Leading whitespace and Markdown marks (`# * _`) of a line. Not `>`: a quoted heading is a quotation, not the agent's notice. */
+const LEAD = /^[\s#*_]+/;
+/** Trailing whitespace, Markdown marks and punctuation of a line. */
+const TRAIL = /[\s#*_>\p{P}]+$/u;
+/** The first non-empty line of the text and whether a line break already ends it; undefined while the text is blank. */
+function firstLine(text: string): { line: string; complete: boolean } | undefined {
+  const start = text.search(/\S/);
+  if (start < 0) return undefined;
+  const end = text.indexOf("\n", start);
+  return end < 0 ? { line: text.slice(start), complete: false } : { line: text.slice(start, end), complete: true };
+}
+/** A line without leading whitespace and Markdown marks and without trailing whitespace, marks and punctuation, in lower case. */
+const cleanLine = (line: string): string => line.replace(LEAD, "").replace(TRAIL, "").toLowerCase();
+/** The heading followed on the same line by a sentence mark (`. ! :`, an en or an em dash): "Usage Limit Reached. Your limit will reset in ...". */
+const HEADING_THEN_SENTENCE = /^usage limit reached[*_]*\s*[.!:\u2013\u2014]/i;
+/** The notice's reset sentence: "Your limit will reset in N ...". */
+const RESET_SENTENCE = /\byour limit will reset in\s+\d/i;
+/** A complete first line is the notice's heading: the heading alone, or the heading, a sentence mark and the reset sentence on one line. */
+const isHeadingLine = (line: string): boolean =>
+  cleanLine(line) === NOTICE_HEADING || (HEADING_THEN_SENTENCE.test(line.replace(LEAD, "")) && RESET_SENTENCE.test(line));
+
+/** True while the text streamed so far can still become Antigravity's out-of-quota notice (blank, a start of the heading line, the heading followed by a sentence mark, or a complete heading line, within the cap): the provider holds such text back. */
+export function couldBeAntigravityNotice(text: string): boolean {
+  if (text.length > ANTIGRAVITY_NOTICE_MAX_CHARS) return false;
+  const first = firstLine(text);
+  if (!first) return true;
+  if (first.complete) return isHeadingLine(first.line);
+  const head = first.line.replace(LEAD, "").toLowerCase();
+  return head.length <= NOTICE_HEADING.length ? NOTICE_HEADING.startsWith(head) : cleanLine(head) === NOTICE_HEADING || HEADING_THEN_SENTENCE.test(head);
+}
+
+/**
+ * Antigravity answers a turn it has no quota for with text like "Usage Limit Reached ... Your limit will reset in 6 days, 15 hours" and ends the turn normally.
+ * Strict, so that a genuine answer about usage limits is never taken for it: the whole answer is at most 500 characters, its first non-empty line is
+ * the heading "Usage Limit Reached" and nothing else (after whitespace, Markdown marks other than `>` and trailing punctuation), or the heading, a sentence mark
+ * (`. ! :`, an en or an em dash) and the reset sentence on that one line, and the answer holds "your limit will reset in N <weeks|days|hours|minutes>".
+ * Wording from REQ-0025 bug 8; no full capture was found.
+ */
+export function matchAntigravityUsageLimit(text: string): boolean {
+  const first = firstLine(text);
+  return text.length <= ANTIGRAVITY_NOTICE_MAX_CHARS && first !== undefined && isHeadingLine(first.line) && RESET_SENTENCE.test(text) && RELATIVE.test(text);
 }
 
 export const DEFAULT_COOLDOWN_MS = 60 * 60 * 1000;
 export const MAX_RESET_MS = 31 * 24 * 60 * 60 * 1000;
 
-/** The time a provider stays refused until: the parsed reset, or `now + cooldown` when there is none, it is in the past or it is over the cap. */
-export function exhaustedUntil(resetText: string | undefined, now: number, cooldownMs: number, maxMs: number): number {
-  const parsed = resetText ? parseResetTime(resetText, now) : undefined;
+/** The time a provider stays refused until: the agent's `resetAt`, else the reset parsed from its text, or `now + cooldown` when there is none, it is in the past or it is over the cap. */
+export function exhaustedUntil(resetText: string | undefined, now: number, cooldownMs: number, maxMs: number, resetAt?: number): number {
+  const parsed = resetAt ?? (resetText ? parseResetTime(resetText, now) : undefined);
   return parsed !== undefined && parsed > now && parsed - now <= maxMs ? parsed : now + cooldownMs;
 }
 

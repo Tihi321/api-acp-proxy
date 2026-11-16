@@ -5,14 +5,16 @@ import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { AcpProvider } from "../src/acp-provider.js";
 import { codexDescriptor } from "../src/providers/codex.js";
-import { defaultRuntimeContext, type Provider } from "../src/provider.js";
+import { antigravityDescriptor } from "../src/providers/antigravity.js";
+import { claudeDescriptor } from "../src/providers/claude.js";
+import { defaultRuntimeContext, type Provider, type ProviderDescriptor } from "../src/provider.js";
 import { createLogger } from "../src/logger.js";
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
 import type { ProxyConfig } from "../src/config.js";
 import { UsageStore } from "../src/usage-store.js";
 import { ActivityLog, type ActivityEntry } from "../src/activity.js";
-import { exhaustedUntil, matchCodexUsageLimit, matchPattern, parseResetTime } from "../src/usage-limit.js";
+import { couldBeAntigravityNotice, exhaustedUntil, matchAntigravityUsageLimit, matchCodexUsageLimit, matchPattern, parseResetTime } from "../src/usage-limit.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -102,6 +104,61 @@ describe("usage limit, over HTTP", () => {
   });
 });
 
+// The brief's wording of bug 8 ("Usage Limit Reached ... Your limit will reset in 6 days, 15 hours"); no real capture was found, so the middle sentence is assumed.
+const agyNotice = "Usage Limit Reached\n\nYou have reached the usage limit for this model. Your limit will reset in 6 days, 15 hours.";
+
+describe("usage limit, Antigravity and Claude over HTTP", () => {
+  const now = new Date(2026, 10, 16, 12, 0).getTime();
+  /** One provider on the fake agent behind a router with a fixed clock and a server; `post` sends one chat request. */
+  async function serve(descriptor: ProviderDescriptor, dir: string) {
+    const provider = new AcpProvider(descriptor, defaultRuntimeContext({ dataDir: dir, resolveUnpacked: (file) => file }), { workRoot: path.join(dir, "work") });
+    providers.push(provider);
+    const router = new ProviderRouter({ providers: [provider], logger: createLogger({ console: false }), now: () => now });
+    const server = createProxyServer(config, router); servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, config.host, resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const post = (model: string) => fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }) });
+    return { provider, base, post };
+  }
+  const fake = { launch: () => ({ command: process.execPath, args: [fixture] }), warmSessions: 0, beforeStart: undefined, afterStop: undefined, preflight: undefined };
+
+  it("answers Antigravity's out-of-quota notice with the 429 contract and /healthz exhausted_until, and never streams the notice as text", async () => {
+    const dir = path.join(root, "agy"); mkdirSync(dir, { recursive: true });
+    // Split across chunks, as a streamed answer is.
+    Object.assign(process.env, { FAKE_ACP_MODELS: JSON.stringify([{ value: "gemini-4-argon" }]), FAKE_ACP_ANSWER: JSON.stringify([agyNotice.slice(0, 8), agyNotice.slice(8, 40), agyNotice.slice(40)]) });
+    const descriptor = antigravityDescriptor(defaultRuntimeContext({ dataDir: dir }), { env: {}, settings: { termsAcknowledgedAt: "x", geminiHome: path.join(dir, "gemini"), purgeSessions: false }, overrides: fake });
+    const { provider, base, post } = await serve(descriptor, dir);
+    const until = new Date(now + (6 * 24 + 15) * 3_600_000).toISOString();
+
+    const first = await post("antigravity/gemini-4-argon");
+    expect(first.status).toBe(429);
+    expect(first.headers.get("retry-after")).toBe(String((6 * 24 + 15) * 3600));
+    expect(((await first.json()) as { error: Record<string, unknown> }).error).toMatchObject({ code: "usage_limit_exceeded", provider: "antigravity", exhausted_until: until });
+    const health = await (await fetch(`${base}/healthz`)).json() as { providers: Record<string, { exhausted_until?: string }> };
+    expect(health.providers.antigravity?.exhausted_until).toBe(until);
+
+    const streamed: string[] = [];
+    await expect(provider.generate("gemini-4-argon", [{ role: "user", parts: [{ type: "text", text: "hi" }] }], { onText: (text) => streamed.push(text) })).rejects.toMatchObject({ code: "usage_limit_exceeded" });
+    expect(streamed).toEqual([]);
+  });
+
+  it("answers a Claude turn whose rate-limit hint says rejected with the 429 contract until resetsAt (synthetic hint: no real rejection captured)", async () => {
+    const dir = path.join(root, "claude"); mkdirSync(dir, { recursive: true });
+    const resetsAt = Math.floor(now / 1000) + 5 * 3600;
+    Object.assign(process.env, { FAKE_ACP_CLAUDE: "1", FAKE_ACP_MODELS: JSON.stringify([{ value: "default" }]), FAKE_ACP_RATE_LIMIT: JSON.stringify({ status: "rejected", rateLimitType: "five_hour", resetsAt }) });
+    const { post } = await serve(claudeDescriptor({ termsAcknowledgedAt: "x" }, {}, fake), dir);
+
+    const first = await post("claude/default");
+    expect(first.status).toBe(429);
+    expect(((await first.json()) as { error: Record<string, unknown> }).error).toMatchObject({ code: "usage_limit_exceeded", provider: "claude", exhausted_until: new Date(resetsAt * 1000).toISOString() });
+
+    // Overage: a rejected plan window while paid overage carries the turn is no limit; a rejected overage is.
+    const hook = claudeDescriptor({ termsAcknowledgedAt: "x" }, {}, fake).usageLimitFromUpdate!;
+    const hint = (info: Record<string, unknown>) => hook({ sessionUpdate: "usage_update", used: 1, size: 200000, _meta: { "_claude/rateLimit": { status: "rejected", rateLimitType: "five_hour", resetsAt, ...info } } } as never);
+    expect([hint({ isUsingOverage: true, overageStatus: "allowed" }), hint({ rateLimitType: "overage", overageStatus: "rejected" })]).toEqual([undefined, { resetAt: resetsAt * 1000 }]);
+  });
+});
+
 describe("usage limit and the usage totals", () => {
   it("counts the first failure (it ran the agent) as 1 request and 1 error, and leaves the refusals (HTTP and MCP) out", async () => {
     const dir = path.join(root, "totals"); mkdirSync(dir, { recursive: true });
@@ -144,6 +201,34 @@ describe("usage limit parsing", () => {
     expect(parseResetTime("try again at 3:15 PM.", now)).toBe(local(2026, 10, 26, 15, 15));
     expect(parseResetTime("try again at 9:05 AM.", now)).toBe(local(2026, 10, 27, 9, 5));
     for (const text of ["try again later", "try again at Foo 29th, 2026 11:07 AM", "try again at Feb 31st, 2026 1:00 PM", "try again at Nov 29th, 2026 13:00 AM"]) expect(parseResetTime(text, now)).toBeUndefined();
+  });
+
+  it("tells Antigravity's out-of-quota notice from a genuine answer and reads its relative reset time", () => {
+    const minute = 60_000, hour = 60 * minute, day = 24 * hour;
+    const cases: Array<[string, number | undefined]> = [
+      [agyNotice, 6 * day + 15 * hour],
+      ["**Usage Limit Reached**\n\nYour limit will reset in 3 hours.", 3 * hour],
+      ["# Usage limit reached\nYour limit will reset in 1 day and 2 hours, 5 minutes.", day + 2 * hour + 5 * minute],
+      ["Usage Limit Reached. Your limit will reset in 45 minutes.", 45 * minute],
+      ["Usage Limit Reached: You have reached the usage limit for this model. Your limit will reset in 2 hours.", 2 * hour],
+      ["Usage Limit Reached — Your limit will reset in 6 days, 15 hours.", 6 * day + 15 * hour],
+      ["Usage Limit Reached\nYour limit will reset in 1 week.", 7 * day],
+      // Near misses: genuine answers that mention it.
+      ["Usage Limit Reached: this means your quota is spent. It will reset in 5 hours.", undefined],
+      ["> Usage Limit Reached\n> Your limit will reset in 2 days\n\nThat is the message you saw; wait it out.", undefined],
+      ["## Usage Limit Reached\n\nThat message means the quota is spent; it will reset in 5 hours. Wait it out.", undefined],
+      ["When Antigravity says \"Usage Limit Reached ... reset in 6 days, 15 hours\", wait for the reset.", undefined],
+      [`Usage Limit Reached is shown when a quota is used up. ${"It explains the quota. ".repeat(30)}It may reset in 6 days, 15 hours.`, undefined],
+      ["Usage limit reached errors mean the account's quota is used up for now.", undefined],
+      ["Usage Limit Reached is what Antigravity shows; it says your limit will reset in 5 hours.", undefined],
+    ];
+    for (const [text, offset] of cases) {
+      expect(matchAntigravityUsageLimit(text), text).toBe(offset !== undefined);
+      if (offset !== undefined) expect(parseResetTime(text, now), text).toBe(now + offset);
+    }
+    expect([couldBeAntigravityNotice("  **Usage Li"), couldBeAntigravityNotice("Sure, here"), couldBeAntigravityNotice("Usage Limit Reached is what"), couldBeAntigravityNotice(agyNotice)]).toEqual([true, false, false, true]);
+    const oneLine = "Usage Limit Reached. Your limit will reset in 6 days, 15 hours.";
+    expect(Array.from(oneLine, (_, i) => oneLine.slice(0, i + 1)).filter((prefix) => !couldBeAntigravityNotice(prefix))).toEqual([]);
   });
 
   it("falls back to the cooldown for no, past or over-31-day reset times", () => {
