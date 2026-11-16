@@ -145,6 +145,8 @@ export interface ProviderDescriptor {
   promptPreamble?: string;
   /** Translates a backend error into a proxy error (e.g. an ApiError 403). */
   mapError?(error: unknown, model: string): Error | undefined;
+  /** The agent answers a turn it has no quota for with a notice as normal text (Antigravity). `couldBe` is true while the text streamed so far may still become the notice (it is held back from the client); `is` is true when the whole answer is the notice: the turn becomes a `UsageLimitError` with that text as its reset text. */
+  usageLimitNotice?: { couldBe(textSoFar: string): boolean; is(text: string): boolean };
   /** The agent can generate images. Absent: a request for images is a 400 `model_not_capable`. */
   imageGeneration?: ImageGeneration;
   /** True for the agent's permission request for a tool of one of the session's MCP servers (`mcp.labels`: the `client` bridge and/or the request's remote servers) when `mcp.allows(server, tool)` (then answered with `allow_once`, only in a request that has tools). `tracked` holds the `tool_call` fields seen so far for the request's `toolCallId`. Absent: the agent cannot be given tools (400 `model_not_capable`). */

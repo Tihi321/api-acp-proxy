@@ -9,6 +9,7 @@ import { silentLogger, type Logger } from "../logger.js";
 import { sweepOrphans } from "../process-tree.js";
 import type { AuthMethodInfo, ProviderDescriptor, RuntimeContext } from "../provider.js";
 import type { SettingsPatch } from "../settings.js";
+import { couldBeAntigravityNotice, matchAntigravityUsageLimit } from "../usage-limit.js";
 import { agentsDir, readInstallInfo } from "./antigravity-installer.js";
 
 export interface AntigravityOptions {
@@ -220,6 +221,8 @@ export function antigravityDescriptor(ctxForHooks: RuntimeContext, options: Anti
     },
     mcpTarget: agyTarget,
     toolCallLimitMs: 180_000,
+    // Out of quota, it answers "Usage Limit Reached ... Your limit will reset in 6 days, 15 hours" as a normal turn (REQ-0025 bug 8): that answer becomes the 429.
+    usageLimitNotice: { couldBe: couldBeAntigravityNotice, is: matchAntigravityUsageLimit },
     mapError(error, model) {
       const text = [error instanceof Error ? error.message : String(error), JSON.stringify((error as { data?: unknown } | null)?.data ?? "")].join(" ");
       if (/requested entity was not found/i.test(text)) {

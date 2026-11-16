@@ -73,11 +73,23 @@ interface KeptSession { agent: ClientContext; session: PreparedSession; model: s
 /** The outcome of a prompt that ran on its own while its HTTP response was already over (a suspended turn). It never rejects. */
 type PromptOutcome = { result?: PromptResponse; error?: unknown };
 /** A prompt in flight on a session that has the client's tools. `sink` is the request being served; its callbacks change when a later request resumes the turn. */
+/** One request's watch for a usage limit the agent reports inside a turn that does not fail (see `AcpProvider.watchUsageLimit`). */
+interface UsageLimitWatch {
+  /** The request's callbacks, with the opening of the text held back while it may be the agent's out-of-quota notice. */
+  callbacks: GenerationCallbacks;
+  /** Sends the held-back text on: it is not the notice. */
+  release(): void;
+  /** The turn's usage limit: `text` (the whole answer of a turn that ended normally) being the notice. */
+  error(text?: string): UsageLimitError | undefined;
+}
+
 interface ToolTurn {
   agent: ClientContext; session: PreparedSession; model: string; bridge: BridgeSession; toolsKey: string;
   /** The request's remote MCP servers (their calls are reported as `mcpCalls`); `reported` holds the tool call ids already reported by an earlier response of the turn. */
   mcp?: McpServerSpec[]; reported: Set<string>;
   sink: GenerationCallbacks;
+  /** The usage-limit watch of the current request (its `callbacks` are the sink). */
+  watch?: UsageLimitWatch;
   /** All the agent text of the prompt so far; `segment` is where the text of the current HTTP response starts. */
   text: string; segment: number;
   tracked: Map<string, TrackedToolCall>;
@@ -765,6 +777,30 @@ export class AcpProvider implements Provider {
     return this.descriptor.mapError?.(error, model) ?? (matchPattern(error, this.usageLimitPattern) ? new UsageLimitError(`${this.displayName} has hit its usage limit.`, errorText(error)) : undefined);
   }
 
+  /**
+   * A usage limit reported inside a turn that does not fail: when `fromStart` (the request's text is the start of the answer), the descriptor's
+   * `usageLimitNotice` (Antigravity's out-of-quota answer). The notice is held back from `onText` while it may still be one, so a stream never sends it as content.
+   */
+  private watchUsageLimit(sink: GenerationCallbacks, fromStart = true): UsageLimitWatch {
+    const notice = fromStart ? this.descriptor.usageLimitNotice : undefined;
+    let holding = notice !== undefined && sink.onText !== undefined;
+    let held = "";
+    const release = () => {
+      if (!holding) return;
+      holding = false;
+      const text = held; held = "";
+      if (text) sink.onText?.(text);
+    };
+    return {
+      callbacks: { ...sink, ...(sink.onText ? { onText: (text: string) => { if (!holding) { sink.onText!(text); return; } held += text; if (!notice!.couldBe(held)) release(); } } : {}) },
+      release,
+      error: (text) => {
+        if (notice && text !== undefined && notice.is(text)) return new UsageLimitError(`${this.displayName} has hit its usage limit.`, text);
+        return undefined;
+      },
+    };
+  }
+
   checkPrompt(messages: Message[], options?: GenerateOptions): void {
     const limit = this.maxPromptChars;
     if (!limit) return;
@@ -799,6 +835,7 @@ export class AcpProvider implements Provider {
     // Web search: also a fresh session of its own (it may need session options), never kept; the agent searches inside its turn.
     const search = options?.webSearch;
     const mcpTracked = new Map<string, TrackedToolCall>();
+    const watch = this.watchUsageLimit(callbacks);
     try {
       if (wantImages && !imageSupport) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot generate images.`, "model");
       if (search && !this.descriptor.webSearch) throw new ApiError(400, "model_not_capable", `${this.displayName} cannot search the web.`, "model");
@@ -817,7 +854,7 @@ export class AcpProvider implements Provider {
       this.handlers.set(sid, (update) => {
         if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
           text += update.content.text;
-          callbacks.onText?.(update.content.text);
+          watch.callbacks.onText?.(update.content.text);
         } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
           if (mcp || search) trackToolCall(mcpTracked, update);
           if (!mcp && imageSupport && update.sessionUpdate === "tool_call_update" && update.status === "completed") this.takeImages(update, wantImages ? generated : undefined, reportedFiles);
@@ -830,6 +867,10 @@ export class AcpProvider implements Provider {
       promptSent = true;
       const prompt: ContentBlock[] = this.promptBlocks(fresh, options);
       const result = await this.authGuard(() => agent!.request(methods.agent.session.prompt, { sessionId: sid, prompt }));
+      // Before the session is kept: a turn that reported its usage limit is not an answer.
+      const limit = watch.error(result.stopReason === "cancelled" || aborted ? undefined : text);
+      if (limit) throw limit;
+      watch.release();
       let usage = result.usage ?? null;
       let cumulative = reused?.usage;
       if (usage && this.descriptor.usageScope === "session") { cumulative = usage; usage = usageDelta(usage, reused?.usage); }
@@ -840,6 +881,7 @@ export class AcpProvider implements Provider {
     } catch (error) {
       if (aborted && !promptSent) return cancelled();
       if (aborted) throw new AcpUnavailableError("The request was cancelled.", error);
+      if (error instanceof UsageLimitError) throw error;
       const mapped = this.mapBackendError(error, model);
       if (mapped) throw mapped;
       if (error instanceof AcpUnavailableError || error instanceof ApiError) throw error;
@@ -1040,7 +1082,9 @@ export class AcpProvider implements Provider {
       const resumed = this.takeSuspended(agent, model, messages, toolsKey);
       if (resumed) {
         turn = resumed.entry.turn; session = turn.session; promptSent = true;
-        turn.sink = callbacks;
+        // This request's text is not the start of the answer: no notice to hold back.
+        turn.watch = this.watchUsageLimit(callbacks, false);
+        turn.sink = turn.watch.callbacks;
         for (const call of resumed.entry.calls) call.settle(resumed.results.get(call.id) ?? "");
       } else {
         const hit = this.options.reuseSessions ? this.takeKept(agent, model, messages, toolsKey) : undefined;
@@ -1054,6 +1098,8 @@ export class AcpProvider implements Provider {
           turn = this.newTurn(agent, session, model, bridge, toolsKey, callbacks, undefined, mcp, search !== undefined);
           if (!await this.configureSession(agent, session, model, () => aborted)) return cancelled();
         }
+        turn.watch = this.watchUsageLimit(callbacks);
+        turn.sink = turn.watch.callbacks;
         if (aborted) return cancelled();
         const prompt: ContentBlock[] = this.promptBlocks(fresh, options);
         promptSent = true;
@@ -1070,6 +1116,8 @@ export class AcpProvider implements Provider {
             for (const extra of calls.slice(1)) extra.settle("Call one tool at a time. This call was not run: call it again after the result of the previous tool call.", true);
             calls = calls.slice(0, 1);
           }
+          // Text before a tool call is not the notice.
+          turn.watch?.release();
           const result = this.suspend(turn, calls, messages.map(toKept));
           suspended = true;
           const mcpCalls = this.collectMcpCalls(turn.tracked, mcpLabels, turn.reported, false);
@@ -1083,6 +1131,10 @@ export class AcpProvider implements Provider {
         let cumulative = turn.baseUsage;
         if (usage && this.descriptor.usageScope === "session") { cumulative = usage; usage = usageDelta(usage, turn.baseUsage); }
         const text = turn.text.slice(turn.segment);
+        // Before the session is kept: a turn that reported its usage limit is not an answer.
+        const limit = turn.watch?.error(result.stopReason === "cancelled" || aborted || turn.cancelled ? undefined : text);
+        if (limit) throw limit;
+        turn.watch?.release();
         if (this.options.reuseSessions && result.stopReason === "end_turn" && !aborted && !turn.cancelled) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
         const mcpCalls = this.collectMcpCalls(turn.tracked, mcpLabels, turn.reported, true);
         const searches = search ? this.collectSearches(turn.tracked, turn.reported, true) : [];
@@ -1091,6 +1143,7 @@ export class AcpProvider implements Provider {
     } catch (error) {
       if (aborted && !promptSent) return cancelled();
       if (aborted) throw new AcpUnavailableError("The request was cancelled.", error);
+      if (error instanceof UsageLimitError) throw error;
       const mapped = this.mapBackendError(error, model);
       if (mapped) throw mapped;
       if (error instanceof AcpUnavailableError || error instanceof ApiError) throw error;
