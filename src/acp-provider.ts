@@ -80,6 +80,8 @@ interface UsageLimitWatch {
   update(update: SessionUpdate): void;
   /** Sends the held-back text on: it is not the notice. */
   release(): void;
+  /** For a turn that failed for another reason: the usage limit when the held-back text is the notice (then it is never sent), else the held text is sent on and the result is undefined. */
+  releaseOrNotice(): UsageLimitError | undefined;
   /** The turn's usage limit: a rejecting update, or `text` (the whole answer of a turn that ended normally) being the notice. */
   error(text?: string): UsageLimitError | undefined;
   /** The rejecting update seen so far, if any (a suspended turn carries it to the request that resumes it). */
@@ -802,6 +804,11 @@ export class AcpProvider implements Provider {
       callbacks: { ...sink, ...(sink.onText ? { onText: (text: string) => { if (!holding) { sink.onText!(text); return; } held += text; if (!notice!.couldBe(held)) release(); } } : {}) },
       update: (update) => { if (fromUpdate && !rejected) rejected = fromUpdate(update); },
       release,
+      releaseOrNotice: () => {
+        if (holding && held && notice!.is(held)) return new UsageLimitError(`${this.displayName} has hit its usage limit.`, held);
+        release();
+        return undefined;
+      },
       error: (text) => {
         if (rejected) return new UsageLimitError(`${this.displayName} has hit its usage limit.`, undefined, rejected.resetAt !== undefined ? { resetAt: rejected.resetAt } : {});
         if (notice && text !== undefined && notice.is(text)) return new UsageLimitError(`${this.displayName} has hit its usage limit.`, text);
@@ -896,8 +903,8 @@ export class AcpProvider implements Provider {
       const limit = error instanceof UsageLimitError ? error : watch.error();
       if (limit) throw limit;
       const mapped = this.mapBackendError(error, model);
-      // Not a usage limit: the held-back text was an answer, so it streams ahead of the error.
-      if (!(mapped instanceof UsageLimitError)) watch.release();
+      // Not a usage limit: held-back text that is the notice still is one; any other held text was an answer, so it streams ahead of the error.
+      if (!(mapped instanceof UsageLimitError)) { const notice = watch.releaseOrNotice(); if (notice) throw notice; }
       if (mapped) throw mapped;
       if (error instanceof AcpUnavailableError || error instanceof ApiError) throw error;
       throw new AcpUnavailableError(`The ${this.displayName} ACP backend failed to process the request.`, error);
@@ -1163,8 +1170,8 @@ export class AcpProvider implements Provider {
       const limit = error instanceof UsageLimitError ? error : turn?.watch?.error();
       if (limit) throw limit;
       const mapped = this.mapBackendError(error, model);
-      // Not a usage limit: the held-back text was an answer, so it streams ahead of the error.
-      if (!(mapped instanceof UsageLimitError)) turn?.watch?.release();
+      // Not a usage limit: held-back text that is the notice still is one; any other held text was an answer, so it streams ahead of the error.
+      if (!(mapped instanceof UsageLimitError)) { const notice = turn?.watch?.releaseOrNotice(); if (notice) throw notice; }
       if (mapped) throw mapped;
       if (error instanceof AcpUnavailableError || error instanceof ApiError) throw error;
       throw new AcpUnavailableError(`The ${this.displayName} ACP backend failed to process the request.`, error);

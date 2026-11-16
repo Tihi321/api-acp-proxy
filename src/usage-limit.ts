@@ -94,8 +94,8 @@ export function parseResetTime(text: string, now: number): number | undefined {
 /** Antigravity's out-of-quota answer is at most this long (the whole answer, never the start of a longer one). */
 export const ANTIGRAVITY_NOTICE_MAX_CHARS = 500;
 const NOTICE_HEADING = "usage limit reached";
-/** Leading whitespace and Markdown marks (`# * _ >`) of a line. */
-const LEAD = /^[\s#*_>]+/;
+/** Leading whitespace and Markdown marks (`# * _`) of a line. Not `>`: a quoted heading is a quotation, not the agent's notice. */
+const LEAD = /^[\s#*_]+/;
 /** Trailing whitespace, Markdown marks and punctuation of a line. */
 const TRAIL = /[\s#*_>\p{P}]+$/u;
 /** The first non-empty line of the text and whether a line break already ends it; undefined while the text is blank. */
@@ -107,26 +107,34 @@ function firstLine(text: string): { line: string; complete: boolean } | undefine
 }
 /** A line without leading whitespace and Markdown marks and without trailing whitespace, marks and punctuation, in lower case. */
 const cleanLine = (line: string): string => line.replace(LEAD, "").replace(TRAIL, "").toLowerCase();
+/** The heading followed on the same line by a sentence mark (`. ! :`, an en or an em dash): "Usage Limit Reached. Your limit will reset in ...". */
+const HEADING_THEN_SENTENCE = /^usage limit reached[*_]*\s*[.!:\u2013\u2014]/i;
+/** The notice's reset sentence: "Your limit will reset in N ...". */
+const RESET_SENTENCE = /\byour limit will reset in\s+\d/i;
+/** A complete first line is the notice's heading: the heading alone, or the heading, a sentence mark and the reset sentence on one line. */
+const isHeadingLine = (line: string): boolean =>
+  cleanLine(line) === NOTICE_HEADING || (HEADING_THEN_SENTENCE.test(line.replace(LEAD, "")) && RESET_SENTENCE.test(line));
 
-/** True while the text streamed so far can still become Antigravity's out-of-quota notice (blank, a start of the heading line, or the whole heading line, within the cap): the provider holds such text back. */
+/** True while the text streamed so far can still become Antigravity's out-of-quota notice (blank, a start of the heading line, the heading followed by a sentence mark, or a complete heading line, within the cap): the provider holds such text back. */
 export function couldBeAntigravityNotice(text: string): boolean {
   if (text.length > ANTIGRAVITY_NOTICE_MAX_CHARS) return false;
   const first = firstLine(text);
   if (!first) return true;
-  if (first.complete) return cleanLine(first.line) === NOTICE_HEADING;
+  if (first.complete) return isHeadingLine(first.line);
   const head = first.line.replace(LEAD, "").toLowerCase();
-  return head.length <= NOTICE_HEADING.length ? NOTICE_HEADING.startsWith(head) : cleanLine(head) === NOTICE_HEADING;
+  return head.length <= NOTICE_HEADING.length ? NOTICE_HEADING.startsWith(head) : cleanLine(head) === NOTICE_HEADING || HEADING_THEN_SENTENCE.test(head);
 }
 
 /**
  * Antigravity answers a turn it has no quota for with text like "Usage Limit Reached ... Your limit will reset in 6 days, 15 hours" and ends the turn normally.
  * Strict, so that a genuine answer about usage limits is never taken for it: the whole answer is at most 500 characters, its first non-empty line is
- * the heading "Usage Limit Reached" and nothing else (after whitespace, Markdown marks and trailing punctuation) and it holds a relative "reset in N <unit>".
+ * the heading "Usage Limit Reached" and nothing else (after whitespace, Markdown marks other than `>` and trailing punctuation), or the heading, a sentence mark
+ * (`. ! :`, an en or an em dash) and the reset sentence on that one line, and the answer holds "your limit will reset in N".
  * Wording from REQ-0025 bug 8; no full capture was found.
  */
 export function matchAntigravityUsageLimit(text: string): boolean {
   const first = firstLine(text);
-  return text.length <= ANTIGRAVITY_NOTICE_MAX_CHARS && first !== undefined && cleanLine(first.line) === NOTICE_HEADING && RELATIVE.test(text);
+  return text.length <= ANTIGRAVITY_NOTICE_MAX_CHARS && first !== undefined && isHeadingLine(first.line) && RESET_SENTENCE.test(text);
 }
 
 export const DEFAULT_COOLDOWN_MS = 60 * 60 * 1000;

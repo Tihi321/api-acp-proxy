@@ -48,3 +48,16 @@ Fail before, pass after (new tests against 631c3ca's src): the Claude test fails
 Verification: `npm run typecheck` clean. `npm test` run twice: 466 passed, 1 skipped (467), both runs.
 
 Remaining gaps: the carried hint has no test of its own (UNTESTED). Live checks as above stay UNTESTED.
+
+## 2026-11-16 AAP-33 polish round 2: the one-line notice matches again, quotes do not, the reset sentence is required
+
+- src/usage-limit.ts: a first line counts as the heading when it is "Usage Limit Reached" alone (as in round 1), or when it starts with the heading followed by `.`, `!`, `:`, an en dash or an em dash (`HEADING_THEN_SENTENCE`) and holds "your limit will reset in N" (`RESET_SENTENCE`). This undoes the round-1 regression that refused "Usage Limit Reached. Your limit will reset in 6 days, 15 hours." on one line. `LEAD` no longer strips `>`, so a quoted heading is not the notice. The whole answer must hold `RESET_SENTENCE` ("your limit will reset in N"), not just "reset in N"; the reset time is still parsed with `RELATIVE`. `couldBeAntigravityNotice` follows: a complete first line is held when the same two-way test passes; an incomplete line longer than the heading is held when it is the heading or `HEADING_THEN_SENTENCE` matches, so every prefix of the one-line notice stays held.
+- src/acp-provider.ts: `UsageLimitWatch.releaseOrNotice()`. In both catch blocks, a failure that is not a usage limit now throws the notice's UsageLimitError when the held-back text is the notice; only held text that is not the notice is released before the error.
+- README.md Usage limit: the final rule (one-line form, no quoted heading, "Your limit will reset in N" required, the notice on a failed turn).
+- tests/usage-limit.test.ts (table rows only): the original one-line row "Usage Limit Reached. Your limit will reset in 45 minutes." is back in place of the round-1 line-break variant; `:` and em-dash one-line matches; near misses "Usage Limit Reached: this means your quota is spent. It will reset in 5 hours.", the `> ` blockquote and the `## ...` explainer with "it will reset in 5 hours"; every prefix of the one-line notice is held.
+
+Fail before, pass after: with f3a8029's src/usage-limit.ts and the new tests, the table test fails on `Usage Limit Reached. Your limit will reset in 45 minutes.: expected false to be true`. It passes on the branch.
+
+Verification: `npm run typecheck` clean. `npm test` run twice: 466 passed, 1 skipped (467), both runs.
+
+UNTESTED: the failed-turn notice (`releaseOrNotice`) has no test of its own (the brief allowed table rows only). Live checks as above stay UNTESTED.

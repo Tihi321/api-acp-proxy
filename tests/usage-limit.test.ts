@@ -209,9 +209,14 @@ describe("usage limit parsing", () => {
       [agyNotice, 6 * day + 15 * hour],
       ["**Usage Limit Reached**\n\nYour limit will reset in 3 hours.", 3 * hour],
       ["# Usage limit reached\nYour limit will reset in 1 day and 2 hours, 5 minutes.", day + 2 * hour + 5 * minute],
-      ["Usage Limit Reached.\nYour limit will reset in 45 minutes.", 45 * minute],
+      ["Usage Limit Reached. Your limit will reset in 45 minutes.", 45 * minute],
+      ["Usage Limit Reached: You have reached the usage limit for this model. Your limit will reset in 2 hours.", 2 * hour],
+      ["Usage Limit Reached — Your limit will reset in 6 days, 15 hours.", 6 * day + 15 * hour],
       ["Usage Limit Reached\nYour limit will reset in 1 week.", 7 * day],
       // Near misses: genuine answers that mention it.
+      ["Usage Limit Reached: this means your quota is spent. It will reset in 5 hours.", undefined],
+      ["> Usage Limit Reached\n> Your limit will reset in 2 days\n\nThat is the message you saw; wait it out.", undefined],
+      ["## Usage Limit Reached\n\nThat message means the quota is spent; it will reset in 5 hours. Wait it out.", undefined],
       ["When Antigravity says \"Usage Limit Reached ... reset in 6 days, 15 hours\", wait for the reset.", undefined],
       [`Usage Limit Reached is shown when a quota is used up. ${"It explains the quota. ".repeat(30)}It may reset in 6 days, 15 hours.`, undefined],
       ["Usage limit reached errors mean the account's quota is used up for now.", undefined],
@@ -222,6 +227,8 @@ describe("usage limit parsing", () => {
       if (offset !== undefined) expect(parseResetTime(text, now), text).toBe(now + offset);
     }
     expect([couldBeAntigravityNotice("  **Usage Li"), couldBeAntigravityNotice("Sure, here"), couldBeAntigravityNotice("Usage Limit Reached is what"), couldBeAntigravityNotice(agyNotice)]).toEqual([true, false, false, true]);
+    const oneLine = "Usage Limit Reached. Your limit will reset in 6 days, 15 hours.";
+    expect(Array.from(oneLine, (_, i) => oneLine.slice(0, i + 1)).filter((prefix) => !couldBeAntigravityNotice(prefix))).toEqual([]);
   });
 
   it("falls back to the cooldown for no, past or over-31-day reset times", () => {
