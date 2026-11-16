@@ -151,6 +151,11 @@ describe("usage limit, Antigravity and Claude over HTTP", () => {
     const first = await post("claude/default");
     expect(first.status).toBe(429);
     expect(((await first.json()) as { error: Record<string, unknown> }).error).toMatchObject({ code: "usage_limit_exceeded", provider: "claude", exhausted_until: new Date(resetsAt * 1000).toISOString() });
+
+    // Overage: a rejected plan window while paid overage carries the turn is no limit; a rejected overage is.
+    const hook = claudeDescriptor({ termsAcknowledgedAt: "x" }, {}, fake).usageLimitFromUpdate!;
+    const hint = (info: Record<string, unknown>) => hook({ sessionUpdate: "usage_update", used: 1, size: 200000, _meta: { "_claude/rateLimit": { status: "rejected", rateLimitType: "five_hour", resetsAt, ...info } } } as never);
+    expect([hint({ isUsingOverage: true, overageStatus: "allowed" }), hint({ rateLimitType: "overage", overageStatus: "rejected" })]).toEqual([undefined, { resetAt: resetsAt * 1000 }]);
   });
 });
 
@@ -204,17 +209,19 @@ describe("usage limit parsing", () => {
       [agyNotice, 6 * day + 15 * hour],
       ["**Usage Limit Reached**\n\nYour limit will reset in 3 hours.", 3 * hour],
       ["# Usage limit reached\nYour limit will reset in 1 day and 2 hours, 5 minutes.", day + 2 * hour + 5 * minute],
-      ["Usage Limit Reached. Your limit will reset in 45 minutes.", 45 * minute],
+      ["Usage Limit Reached.\nYour limit will reset in 45 minutes.", 45 * minute],
+      ["Usage Limit Reached\nYour limit will reset in 1 week.", 7 * day],
       // Near misses: genuine answers that mention it.
       ["When Antigravity says \"Usage Limit Reached ... reset in 6 days, 15 hours\", wait for the reset.", undefined],
       [`Usage Limit Reached is shown when a quota is used up. ${"It explains the quota. ".repeat(30)}It may reset in 6 days, 15 hours.`, undefined],
       ["Usage limit reached errors mean the account's quota is used up for now.", undefined],
+      ["Usage Limit Reached is what Antigravity shows; it says your limit will reset in 5 hours.", undefined],
     ];
     for (const [text, offset] of cases) {
       expect(matchAntigravityUsageLimit(text), text).toBe(offset !== undefined);
       if (offset !== undefined) expect(parseResetTime(text, now), text).toBe(now + offset);
     }
-    expect([couldBeAntigravityNotice("  **Usage Li"), couldBeAntigravityNotice("Sure, here"), couldBeAntigravityNotice(agyNotice)]).toEqual([true, false, true]);
+    expect([couldBeAntigravityNotice("  **Usage Li"), couldBeAntigravityNotice("Sure, here"), couldBeAntigravityNotice("Usage Limit Reached is what"), couldBeAntigravityNotice(agyNotice)]).toEqual([true, false, false, true]);
   });
 
   it("falls back to the cooldown for no, past or over-31-day reset times", () => {

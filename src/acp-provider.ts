@@ -72,7 +72,6 @@ function toolOutput(call: TrackedToolCall): { output: string | null; error: stri
 interface KeptSession { agent: ClientContext; session: PreparedSession; model: string; transcript: KeptMessage[]; usage?: Usage; timer: NodeJS.Timeout; bridge?: BridgeSession; toolsKey?: string; }
 /** The outcome of a prompt that ran on its own while its HTTP response was already over (a suspended turn). It never rejects. */
 type PromptOutcome = { result?: PromptResponse; error?: unknown };
-/** A prompt in flight on a session that has the client's tools. `sink` is the request being served; its callbacks change when a later request resumes the turn. */
 /** One request's watch for a usage limit the agent reports inside a turn that does not fail (see `AcpProvider.watchUsageLimit`). */
 interface UsageLimitWatch {
   /** The request's callbacks, with the opening of the text held back while it may be the agent's out-of-quota notice. */
@@ -83,8 +82,11 @@ interface UsageLimitWatch {
   release(): void;
   /** The turn's usage limit: a rejecting update, or `text` (the whole answer of a turn that ended normally) being the notice. */
   error(text?: string): UsageLimitError | undefined;
+  /** The rejecting update seen so far, if any (a suspended turn carries it to the request that resumes it). */
+  rejected(): { resetAt?: number } | undefined;
 }
 
+/** A prompt in flight on a session that has the client's tools. `sink` is the request being served; its callbacks change when a later request resumes the turn. */
 interface ToolTurn {
   agent: ClientContext; session: PreparedSession; model: string; bridge: BridgeSession; toolsKey: string;
   /** The request's remote MCP servers (their calls are reported as `mcpCalls`); `reported` holds the tool call ids already reported by an earlier response of the turn. */
@@ -784,10 +786,10 @@ export class AcpProvider implements Provider {
    * (the request's text is the start of the answer), its `usageLimitNotice` (Antigravity's out-of-quota answer). The notice is held back from `onText`
    * while it may still be one, so a stream never sends it as content.
    */
-  private watchUsageLimit(sink: GenerationCallbacks, fromStart = true): UsageLimitWatch {
+  private watchUsageLimit(sink: GenerationCallbacks, fromStart = true, carried?: { resetAt?: number }): UsageLimitWatch {
     const notice = fromStart ? this.descriptor.usageLimitNotice : undefined;
     const fromUpdate = this.descriptor.usageLimitFromUpdate;
-    let rejected: { resetAt?: number } | undefined;
+    let rejected: { resetAt?: number } | undefined = carried;
     let holding = notice !== undefined && sink.onText !== undefined;
     let held = "";
     const release = () => {
@@ -805,6 +807,7 @@ export class AcpProvider implements Provider {
         if (notice && text !== undefined && notice.is(text)) return new UsageLimitError(`${this.displayName} has hit its usage limit.`, text);
         return undefined;
       },
+      rejected: () => rejected,
     };
   }
 
@@ -893,6 +896,8 @@ export class AcpProvider implements Provider {
       const limit = error instanceof UsageLimitError ? error : watch.error();
       if (limit) throw limit;
       const mapped = this.mapBackendError(error, model);
+      // Not a usage limit: the held-back text was an answer, so it streams ahead of the error.
+      if (!(mapped instanceof UsageLimitError)) watch.release();
       if (mapped) throw mapped;
       if (error instanceof AcpUnavailableError || error instanceof ApiError) throw error;
       throw new AcpUnavailableError(`The ${this.displayName} ACP backend failed to process the request.`, error);
@@ -1093,8 +1098,8 @@ export class AcpProvider implements Provider {
       const resumed = this.takeSuspended(agent, model, messages, toolsKey);
       if (resumed) {
         turn = resumed.entry.turn; session = turn.session; promptSent = true;
-        // This request's text is not the start of the answer, so only a rejecting update is watched for.
-        turn.watch = this.watchUsageLimit(callbacks, false);
+        // This request's text is not the start of the answer, so only a rejecting update is watched for; one seen before the suspend still counts.
+        turn.watch = this.watchUsageLimit(callbacks, false, turn.watch?.rejected());
         turn.sink = turn.watch.callbacks;
         for (const call of resumed.entry.calls) call.settle(resumed.results.get(call.id) ?? "");
       } else {
@@ -1158,6 +1163,8 @@ export class AcpProvider implements Provider {
       const limit = error instanceof UsageLimitError ? error : turn?.watch?.error();
       if (limit) throw limit;
       const mapped = this.mapBackendError(error, model);
+      // Not a usage limit: the held-back text was an answer, so it streams ahead of the error.
+      if (!(mapped instanceof UsageLimitError)) turn?.watch?.release();
       if (mapped) throw mapped;
       if (error instanceof AcpUnavailableError || error instanceof ApiError) throw error;
       throw new AcpUnavailableError(`The ${this.displayName} ACP backend failed to process the request.`, error);

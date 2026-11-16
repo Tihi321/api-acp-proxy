@@ -50,10 +50,10 @@ export function compilePattern(source: string | undefined): RegExp | undefined {
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const DATED = /try again at\s+([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i;
 const TIME_ONLY = /try again at\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i;
-/** Antigravity's relative form: "reset in 6 days, 15 hours" (days, hours and minutes in any subset, singular or plural, joined by commas and/or "and"). */
-const UNIT = String.raw`\d+\s*(?:days?|hours?|hrs?|minutes?|mins?)\b`;
+/** Antigravity's relative form: "reset in 6 days, 15 hours" (weeks, days, hours and minutes in any subset, singular or plural, joined by commas and/or "and"). */
+const UNIT = String.raw`\d+\s*(?:weeks?|wks?|days?|hours?|hrs?|minutes?|mins?)\b`;
 const RELATIVE = new RegExp(String.raw`reset in\s+(${UNIT}(?:\s*,?\s*(?:and\s+)?${UNIT})*)`, "i");
-const UNIT_MS: Record<string, number> = { d: 86_400_000, h: 3_600_000, m: 60_000 };
+const UNIT_MS: Record<string, number> = { w: 604_800_000, d: 86_400_000, h: 3_600_000, m: 60_000 };
 
 function hour24(hour: number, meridiem: string): number | undefined {
   if (hour < 1 || hour > 12) return undefined;
@@ -85,7 +85,7 @@ export function parseResetTime(text: string, now: number): number | undefined {
   const relative = RELATIVE.exec(text);
   if (relative) {
     let total = 0;
-    for (const part of relative[1]!.matchAll(/(\d+)\s*([dhm])/gi)) total += Number(part[1]) * UNIT_MS[part[2]!.toLowerCase()]!;
+    for (const part of relative[1]!.matchAll(/(\d+)\s*([wdhm])/gi)) total += Number(part[1]) * UNIT_MS[part[2]!.toLowerCase()]!;
     return total > 0 ? now + total : undefined;
   }
   return undefined;
@@ -94,23 +94,39 @@ export function parseResetTime(text: string, now: number): number | undefined {
 /** Antigravity's out-of-quota answer is at most this long (the whole answer, never the start of a longer one). */
 export const ANTIGRAVITY_NOTICE_MAX_CHARS = 500;
 const NOTICE_HEADING = "usage limit reached";
-/** The answer without its leading whitespace and Markdown marks (`# * _ >`), in lower case. */
-const noticeHead = (text: string): string => text.replace(/^[\s#*_>]+/, "").toLowerCase();
+/** Leading whitespace and Markdown marks (`# * _ >`) of a line. */
+const LEAD = /^[\s#*_>]+/;
+/** Trailing whitespace, Markdown marks and punctuation of a line. */
+const TRAIL = /[\s#*_>\p{P}]+$/u;
+/** The first non-empty line of the text and whether a line break already ends it; undefined while the text is blank. */
+function firstLine(text: string): { line: string; complete: boolean } | undefined {
+  const start = text.search(/\S/);
+  if (start < 0) return undefined;
+  const end = text.indexOf("\n", start);
+  return end < 0 ? { line: text.slice(start), complete: false } : { line: text.slice(start, end), complete: true };
+}
+/** A line without leading whitespace and Markdown marks and without trailing whitespace, marks and punctuation, in lower case. */
+const cleanLine = (line: string): string => line.replace(LEAD, "").replace(TRAIL, "").toLowerCase();
 
-/** True while the text streamed so far can still become Antigravity's out-of-quota notice (a start of the heading, or the heading and more, within the cap): the provider holds such text back. */
+/** True while the text streamed so far can still become Antigravity's out-of-quota notice (blank, a start of the heading line, or the whole heading line, within the cap): the provider holds such text back. */
 export function couldBeAntigravityNotice(text: string): boolean {
   if (text.length > ANTIGRAVITY_NOTICE_MAX_CHARS) return false;
-  const head = noticeHead(text);
-  return head.length < NOTICE_HEADING.length ? NOTICE_HEADING.startsWith(head) : head.startsWith(NOTICE_HEADING);
+  const first = firstLine(text);
+  if (!first) return true;
+  if (first.complete) return cleanLine(first.line) === NOTICE_HEADING;
+  const head = first.line.replace(LEAD, "").toLowerCase();
+  return head.length <= NOTICE_HEADING.length ? NOTICE_HEADING.startsWith(head) : cleanLine(head) === NOTICE_HEADING;
 }
 
 /**
  * Antigravity answers a turn it has no quota for with text like "Usage Limit Reached ... Your limit will reset in 6 days, 15 hours" and ends the turn normally.
- * Strict, so that a genuine answer about usage limits is never taken for it: the whole answer is at most 500 characters, starts with the heading
- * "Usage Limit Reached" (after whitespace and Markdown marks) and holds a relative "reset in N <unit>". Wording from REQ-0025 bug 8; no full capture was found.
+ * Strict, so that a genuine answer about usage limits is never taken for it: the whole answer is at most 500 characters, its first non-empty line is
+ * the heading "Usage Limit Reached" and nothing else (after whitespace, Markdown marks and trailing punctuation) and it holds a relative "reset in N <unit>".
+ * Wording from REQ-0025 bug 8; no full capture was found.
  */
 export function matchAntigravityUsageLimit(text: string): boolean {
-  return text.length <= ANTIGRAVITY_NOTICE_MAX_CHARS && noticeHead(text).startsWith(NOTICE_HEADING) && RELATIVE.test(text);
+  const first = firstLine(text);
+  return text.length <= ANTIGRAVITY_NOTICE_MAX_CHARS && first !== undefined && cleanLine(first.line) === NOTICE_HEADING && RELATIVE.test(text);
 }
 
 export const DEFAULT_COOLDOWN_MS = 60 * 60 * 1000;

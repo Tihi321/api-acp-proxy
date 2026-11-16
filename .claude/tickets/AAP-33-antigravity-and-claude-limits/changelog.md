@@ -30,7 +30,21 @@ Decisions:
 
 UNTESTED:
 - Live check on a real exhausted Antigravity: the wording comes from one sighting, with no full capture, and the proxy on 8787 was not started or restarted.
-- Live check on a real Claude rejection: the matcher is built against a synthetic hint (`{status: "rejected", rateLimitType, resetsAt}` in seconds), and no real rejection has been captured. It is not known which turn carries the hint or whether the prompt also fails. The adapter (claude-agent-acp, `acp-agent.js` around line 5782) forwards `rate_limit_event` only when `lastAssistantTotalUsage !== null`, so a rejection on a session's first turn may never reach the proxy as a hint.
+- Live check on a real Claude rejection: the matcher is built against a synthetic hint (`{status: "rejected", rateLimitType, resetsAt}` in seconds), and no real rejection has been captured. It is not known which turn carries the hint or whether the prompt also fails. The adapter (claude-agent-acp 0.91.0, `acp-agent.js` around line 5782) forwards `rate_limit_event` only when `lastAssistantTotalUsage !== null`, and that value is per turn: it is reset whenever a turn becomes active (`runConsumer` :2536-2542, `resetTurnScratch` :2779-2781). So a rejection with no real model frame earlier in the same turn likely never reaches the proxy; the matcher probably fires only for a rejection after a turn's first model call. (Corrected in polish round 1; it said "a session's first turn" before.)
 - The settings-window card (AAP-32) for these two providers: it reads the same router state, but has not been seen in the real window.
 
 Commit status: committed on AAP-33_antigravity-and-claude-limits; not merged, not pushed.
+
+## 2026-11-16 AAP-33 polish round 1: Claude overage, a stricter Antigravity heading, the per-turn gate
+
+- src/providers/claude.ts `usageLimitFromUpdate`: reads the raw `_meta["_claude/rateLimit"]` for the SDK's overage fields (`SDKRateLimitInfo`, which `readRateLimitHint` drops). A `rejected` hint is no limit when `isUsingOverage` or `overageInUse` is true or `overageStatus` is `allowed` / `allowed_warning`; a rejection with `rateLimitType: "overage"` or `overageStatus: "rejected"` stays a 429.
+- src/usage-limit.ts: the heading "Usage Limit Reached" must be the whole first non-empty line (after stripping `# * _ >`, whitespace and trailing punctuation); the 500-character cap and the "reset in" requirement stay. `couldBeAntigravityNotice` follows the same rule, so a first line that goes on past the heading is released at once. The relative parser reads weeks ("reset in 1 week").
+- src/acp-provider.ts: on a failure that is not a usage limit, both catch blocks release the held text before the error, so partial text streams ahead of the SSE error as before AAP-33. A rejecting hint seen before a tool-call suspend is carried to the resumed request's watch (`UsageLimitWatch.rejected()`, third argument of `watchUsageLimit`). The ToolTurn doc comment is back above `ToolTurn`.
+- README.md Usage limit: the stricter heading, weeks, the held text on failure, resumed tool-call requests not checked for the Antigravity notice, the overage rule, the carried hint, and the per-turn gate (above). ROADMAP.md: the stale "Blocked until ..." sentence on the done Claude item is reworded.
+- tests/usage-limit.test.ts: in the Claude HTTP test, the hook on an overage-carried rejection (no limit) and on a rejected overage (limit). In the table: the near-miss "Usage Limit Reached is what Antigravity shows; it says your limit will reset in 5 hours.", "reset in 1 week", and the one-line "Usage Limit Reached. Your limit ..." row now has a line break after the heading. The hold check also covers "Usage Limit Reached is what".
+
+Fail before, pass after (new tests against 631c3ca's src): the Claude test fails with `expected [ { resetAt: 1794844800000 }, …(1) ] to deeply equal [ undefined, …(1) ]` (the overage row); the table test fails. The near-miss sentence on its own: 631c3ca's `matchAntigravityUsageLimit` returns true, the branch false ("1 week": false / undefined before, true / 7 days after). Both pass on the branch.
+
+Verification: `npm run typecheck` clean. `npm test` run twice: 466 passed, 1 skipped (467), both runs.
+
+Remaining gaps: the carried hint has no test of its own (UNTESTED). Live checks as above stay UNTESTED.

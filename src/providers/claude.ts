@@ -181,8 +181,15 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
     // UNTESTED live: built against a synthetic hint of the shape readRateLimitHint reads; no real rejection was captured (which turn carries it, whether the prompt also fails).
     usageLimitFromUpdate(update) {
       if (update.sessionUpdate !== "usage_update") return undefined;
-      const hint = readRateLimitHint((update as { _meta?: unknown })._meta, Date.now());
-      return hint?.status === "rejected" ? (hint.resetsAt !== undefined ? { resetAt: hint.resetsAt } : {}) : undefined;
+      const meta = (update as { _meta?: unknown })._meta;
+      const hint = readRateLimitHint(meta, Date.now());
+      if (hint?.status !== "rejected") return undefined;
+      // SDKRateLimitInfo's overage fields (readRateLimitHint drops them): a rejected plan window while paid overage carries the turn is not a usage limit;
+      // a rejection of the overage itself is.
+      const raw = (meta as Record<string, unknown>)["_claude/rateLimit"] as { rateLimitType?: unknown; overageStatus?: unknown; isUsingOverage?: unknown; overageInUse?: unknown };
+      const overageRejected = raw.rateLimitType === "overage" || raw.overageStatus === "rejected";
+      if (!overageRejected && (raw.isUsingOverage === true || raw.overageInUse === true || raw.overageStatus === "allowed" || raw.overageStatus === "allowed_warning")) return undefined;
+      return hint.resetsAt !== undefined ? { resetAt: hint.resetsAt } : {};
     },
     externalLogin: (ctx, methodId) => consoleLogin(ctx, settings, env, methodId),
     // The adapter advertises ACP `logout` (it runs `claude auth logout` itself); this is the same command run by hand for an adapter that does not.
