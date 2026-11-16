@@ -1,0 +1,2 @@
+{"ts":"2026-11-16T12:40:00Z","actor":"builder","type":"plan.created","request":"creative-hub/REQ-0028","ticket":"AAP-33-antigravity-and-claude-limits","detail":"plan written from the director brief (pieces 1 and 3)"}
+{"ts":"2026-11-16T13:30:00Z","actor":"builder","type":"build.done","request":"creative-hub/REQ-0028","ticket":"AAP-33-antigravity-and-claude-limits","detail":"both items built and committed; typecheck clean; npm test 466 passed, 1 skipped (twice); live checks UNTESTED"}
