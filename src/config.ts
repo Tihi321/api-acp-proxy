@@ -23,6 +23,8 @@ export interface ProxyConfig {
   maxConcurrent?: number;
   /** Requests that may wait per provider before a 429 (0 = unlimited). */
   maxQueue?: number;
+  /** Minutes a provider stays refused after a usage-limit failure whose reset time is unknown, past or over 31 days away (default 60). */
+  usageLimitCooldownMinutes?: number;
   /** `settings.mcpServers`: the MCP servers a Responses request may name by label. */
   mcpServers?: Record<string, McpServerSetting>;
 }

@@ -9,6 +9,7 @@ import type { ActivityEntry, ActivityFeature, ActivityLog } from "./activity.js"
 import { ApiError, imageGenerationText, serializePrompt, textMessage, type Message, type Part } from "./api.js";
 import type { ProxyConfig } from "./config.js";
 import { checkAbsolutePath, decodeDataUrl, IMAGE_MIME_TYPES, ImageError, loadImage, loadImageFile, sniffImage, type LoadedImage } from "./images.js";
+import { refusedMark } from "./usage-limit.js";
 import { openAiUsage, usageEstimated } from "./usage.js";
 
 /** The MCP endpoint `POST /v1/mcp` (Streamable HTTP, stateless): tools to ask another model, with images, and to generate images. Hand-written JSON-RPC, like the tool bridge. */
@@ -51,7 +52,7 @@ interface ToolOutput { content: ContentBlock[]; structuredContent?: Record<strin
 interface Failure { code: string; status: number; message: string; }
 /** A listed model: the router also says which provider it belongs to. */
 interface Listed { id: string; provider?: string; ownedBy?: string; }
-interface Trace { model?: string; features: Set<ActivityFeature>; inputTokens?: number; outputTokens?: number; estimated?: boolean; }
+interface Trace { model?: string; features: Set<ActivityFeature>; refused?: true; inputTokens?: number; outputTokens?: number; estimated?: boolean; }
 
 /** A bad argument shape: a JSON-RPC `-32602` error (never a tool result). The message names fields only, never values. */
 class InvalidParams extends Error {}
@@ -586,7 +587,7 @@ export class McpEndpoint {
     } catch (error) {
       if (timedOut) failure = { code: "request_timeout", status: 504, message: "The request exceeded the configured timeout." };
       else if (controller.signal.aborted) cancelled = true;
-      else failure = toFailure(error);
+      else { Object.assign(trace, refusedMark(error)); failure = toFailure(error); }
     } finally {
       clearTimeout(timer);
       if (this.inflight.get(key) === controller) this.inflight.delete(key);
@@ -604,7 +605,7 @@ export class McpEndpoint {
     const provider = trace.model ? this.options.bridge.providerOf?.(trace.model) : undefined;
     const entry: ActivityEntry = {
       time: started, endpoint: `MCP ${tool}`, stream: false, features: [...trace.features], durationMs: Date.now() - started, status,
-      ...(trace.model ? { model: trace.model } : {}), ...(provider ? { provider } : {}), ...(error ? { error } : {}),
+      ...(trace.model ? { model: trace.model } : {}), ...(provider ? { provider } : {}), ...(error ? { error } : {}), ...(trace.refused ? { refused: true as const } : {}),
       ...(trace.inputTokens !== undefined ? { inputTokens: trace.inputTokens } : {}), ...(trace.outputTokens !== undefined ? { outputTokens: trace.outputTokens } : {}),
       ...(trace.estimated && (trace.inputTokens !== undefined || trace.outputTokens !== undefined) ? { estimated: true as const } : {}),
     };

@@ -68,9 +68,9 @@ export class UsageStore extends EventEmitter {
     this.ready = this.load();
   }
 
-  /** Counts one activity entry; ignores entries without `provider`. Day = localDayKey(entry.time). */
+  /** Counts one activity entry; ignores entries without `provider` and the refused requests (`refused`: a usage-limit 429 from the pre-check that never reached the agent; they stay in the activity log). The first real failure counts like any error. Day = localDayKey(entry.time). */
   add(entry: ActivityEntry): void {
-    if (!entry.provider) return;
+    if (!entry.provider || entry.refused) return;
     const day = localDayKey(entry.time);
     const delta: UsageCounts = {
       requests: 1, errors: entry.status >= 400 || entry.error !== undefined ? 1 : 0,

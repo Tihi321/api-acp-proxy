@@ -57,6 +57,8 @@ export const settingsSchema = z.object({
     maxConcurrent: nonNegative(4),
     /** Requests that may wait per provider; a full queue answers 429. 0 = unlimited. */
     maxQueue: nonNegative(0),
+    /** How long a provider that hit its usage limit stays refused when its reset time is unknown, in the past or over 31 days away. */
+    usageLimitCooldownMinutes: positive(60),
   }).default({}),
   providers: z.object({
     codex: z.object({
@@ -70,6 +72,8 @@ export const settingsSchema = z.object({
       maxConcurrent: z.number().int().min(0).optional(),
       /** Limit on the prompt text in characters; longer prompts are refused with a 400 (0 = unlimited; absent = the provider default: 180000 for Antigravity, none for Codex and Claude). */
       maxPromptChars: z.number().int().min(0).optional(),
+      /** Opt-in: a regular expression (case-insensitive) matched against the error of a failed turn; a match marks the provider as having hit its usage limit. Absent: off. */
+      usageLimitPattern: z.string().refine((value) => { try { new RegExp(value); return true; } catch { return false; } }, "must be a valid regular expression").optional(),
     }).default({}),
     antigravity: z.object({
       enabled: z.boolean().default(false),
@@ -85,6 +89,8 @@ export const settingsSchema = z.object({
       maxConcurrent: z.number().int().min(0).optional(),
       /** Limit on the prompt text in characters; longer prompts are refused with a 400 (0 = unlimited; absent = the provider default: 180000 for Antigravity, none for Codex and Claude). */
       maxPromptChars: z.number().int().min(0).optional(),
+      /** Opt-in: a regular expression (case-insensitive) matched against the error of a failed turn; a match marks the provider as having hit its usage limit. Absent: off. */
+      usageLimitPattern: z.string().refine((value) => { try { new RegExp(value); return true; } catch { return false; } }, "must be a valid regular expression").optional(),
     }).default({}),
     claude: z.object({
       enabled: z.boolean().default(false),
@@ -99,6 +105,8 @@ export const settingsSchema = z.object({
       maxConcurrent: z.number().int().min(0).optional(),
       /** Limit on the prompt text in characters; longer prompts are refused with a 400 (0 = unlimited; absent = the provider default: 180000 for Antigravity, none for Codex and Claude). */
       maxPromptChars: z.number().int().min(0).optional(),
+      /** Opt-in: a regular expression (case-insensitive) matched against the error of a failed turn; a match marks the provider as having hit its usage limit. Absent: off. */
+      usageLimitPattern: z.string().refine((value) => { try { new RegExp(value); return true; } catch { return false; } }, "must be a valid regular expression").optional(),
     }).default({}),
   }).default({}),
   /** MCP servers a Responses request may name by `server_label` (JSON only, no settings-window editor). Headers and env are stored as written. */
@@ -252,6 +260,7 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
   apply("server.toolResultTimeoutMs", parseInt(env.PROXY_TOOL_RESULT_TIMEOUT_MS), (v) => { server.toolResultTimeoutMs = v; });
   apply("server.maxConcurrent", parseNonNegative(env.PROXY_MAX_CONCURRENT), (v) => { server.maxConcurrent = v; });
   apply("server.maxQueue", parseNonNegative(env.PROXY_MAX_QUEUE), (v) => { server.maxQueue = v; });
+  apply("server.usageLimitCooldownMinutes", parseInt(env.PROXY_USAGE_LIMIT_COOLDOWN_MINUTES), (v) => { server.usageLimitCooldownMinutes = v; });
   apply("providers.codex.maxConcurrent", parseNonNegative(env.PROXY_CODEX_MAX_CONCURRENT), (v) => { providers.codex.maxConcurrent = v; });
   apply("providers.codex.maxPromptChars", parseNonNegative(env.PROXY_CODEX_MAX_PROMPT_CHARS), (v) => { providers.codex.maxPromptChars = v; });
   apply("providers.antigravity.maxConcurrent", parseNonNegative(env.PROXY_ANTIGRAVITY_MAX_CONCURRENT), (v) => { providers.antigravity.maxConcurrent = v; });
@@ -280,6 +289,7 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
     toolResultTimeoutMs: server.toolResultTimeoutMs,
     maxConcurrent: server.maxConcurrent,
     maxQueue: server.maxQueue,
+    usageLimitCooldownMinutes: server.usageLimitCooldownMinutes,
     mcpServers: effective.mcpServers,
     workRoot: server.workRoot || path.join(os.tmpdir(), "codex-subscription-proxy"),
     acpCommand: providers.codex.acpCommand || undefined,

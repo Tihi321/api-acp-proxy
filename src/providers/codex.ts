@@ -8,6 +8,7 @@ import { AcpProvider } from "../acp-provider.js";
 import type { ProviderRegistration } from "../controller.js";
 import { parseCodexStatus } from "../plan-limits.js";
 import type { ProviderDescriptor, RuntimeContext } from "../provider.js";
+import { UsageLimitError, errorText, matchCodexUsageLimit } from "../usage-limit.js";
 
 export interface CodexOptions { authMethodId?: string; /** Run Codex with its own `<dataDir>/codex-home` instead of the user's ~/.codex (default true). */ isolatedHome?: boolean; }
 
@@ -73,6 +74,8 @@ export function codexDescriptor(config: Pick<ProxyConfig, "acpCommand" | "acpArg
       return (permission._meta as { is_mcp_tool_approval?: unknown } | null | undefined)?.is_mcp_tool_approval === true && target !== undefined && mcp.allows(target.server, target.tool);
     },
     mcpTarget: codexTarget,
+    // A used-up subscription arrives as a JSON-RPC error whose `data.codexErrorInfo` is `usageLimitExceeded` and whose text says when it resets; the router turns this into the 429.
+    mapError: (error) => matchCodexUsageLimit(error) ? new UsageLimitError("Codex has hit its usage limit.", errorText(error)) : undefined,
     toolCallLimitMs: 300_000,
     // Plan limits come from the bundled adapter's `/status` answer; a custom adapter (PROXY_ACP_COMMAND) is not asked.
     ...(config.acpCommand ? { planLimitsUnavailable: "Plan limits need the bundled Codex adapter; PROXY_ACP_COMMAND is set." } : { planLimits: { command: "/status", parse: parseCodexStatus } }),
@@ -100,5 +103,5 @@ export const codexRegistration: ProviderRegistration = {
   id: "codex",
   displayName: "Codex",
   planLimits: true,
-  create: ({ config, providerSettings, ctx }) => new AcpProvider(codexDescriptor(config, { authMethodId: providerSettings.authMethodId as string | undefined, isolatedHome: providerSettings.isolatedHome !== false }), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions, toolResultTimeoutMs: config.toolResultTimeoutMs, maxPromptChars: providerSettings.maxPromptChars as number | undefined }),
+  create: ({ config, providerSettings, ctx }) => new AcpProvider(codexDescriptor(config, { authMethodId: providerSettings.authMethodId as string | undefined, isolatedHome: providerSettings.isolatedHome !== false }), ctx, { workRoot: config.workRoot, reuseSessions: config.reuseSessions, toolResultTimeoutMs: config.toolResultTimeoutMs, maxPromptChars: providerSettings.maxPromptChars as number | undefined, usageLimitPattern: providerSettings.usageLimitPattern as string | undefined }),
 };

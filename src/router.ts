@@ -3,6 +3,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AcpLike, ModelEntry } from "./acp.js";
 import { ApiError, type Message } from "./api.js";
+import { DEFAULT_COOLDOWN_MS, MAX_RESET_MS, UsageLimitError, exhaustedUntil, usageLimitRefusal } from "./usage-limit.js";
 import { silentLogger, type Logger } from "./logger.js";
 import { ConcurrencyLimiter, QueueAbortedError, type LimiterStats } from "./limiter.js";
 import type { PlanLimitsView } from "./shared/ipc.js";
@@ -18,8 +19,12 @@ export interface RouterOptions {
   listBareAliases?: boolean;
   /** Cap on simultaneous generations per provider; extra requests wait in a FIFO queue. `perProvider` overrides `maxConcurrent` for a provider id. 0 = unlimited. Without this option nothing is limited. */
   concurrency?: { maxConcurrent: number; maxQueue?: number; perProvider?: Record<string, number | undefined> };
+  /** A provider that reports its usage limit is refused until its reset time; `cooldownMs` (default 60 minutes) is used when the reset time is unknown, past or over `maxMs` (default 31 days). */
+  usageLimit?: { cooldownMs: number; maxMs?: number };
+  /** The clock, in epoch ms (tests). */
+  now?: () => number;
 }
-export interface ListedModel extends ModelEntry { ownedBy: string; provider: string; maxPromptChars?: number; }
+export interface ListedModel extends ModelEntry { ownedBy: string; provider: string; maxPromptChars?: number; /** ISO time the provider's usage limit resets; present only while it is exhausted. */ exhaustedUntil?: string; }
 
 /**
  * Routes model ids to providers. Every model is listed as `<provider>/<raw>`; providers with `exposeUnprefixed`
@@ -35,6 +40,8 @@ export class ProviderRouter implements AcpLike {
   private unprefixed?: Map<string, Provider>;
   private readonly limiters = new Map<string, ConcurrencyLimiter>();
   private writeQueue: Promise<void> = Promise.resolve();
+  /** Providers that said their usage limit is used up: id -> epoch ms they are refused until (memory only). */
+  private readonly exhausted = new Map<string, number>();
 
   constructor(private readonly options: RouterOptions) {
     this.providers = options.providers;
@@ -139,7 +146,8 @@ export class ProviderRouter implements AcpLike {
     const owners = this.unprefixedOwners();
     const out: ListedModel[] = [];
     for (const provider of this.providers) {
-      const limit = provider.maxPromptChars ? { maxPromptChars: provider.maxPromptChars } : {};
+      const until = this.exhaustedUntilMs(provider.id);
+      const limit = { ...(provider.maxPromptChars ? { maxPromptChars: provider.maxPromptChars } : {}), ...(until !== undefined ? { exhaustedUntil: new Date(until).toISOString() } : {}) };
       for (const model of this.known.get(provider.id) ?? []) {
         if (this.options.listBareAliases !== false && owners.get(model.id) === provider) out.push({ id: model.id, ownedBy: provider.ownedBy, provider: provider.id, ...limit });
         out.push({ id: `${provider.id}/${model.id}`, ownedBy: provider.ownedBy, provider: provider.id, ...limit });
@@ -170,15 +178,59 @@ export class ProviderRouter implements AcpLike {
 
   /** Throws the provider's 400 when the prompt is over its limit; an unknown model passes (`generate` answers the 404). */
   checkPrompt(model: string, messages: Message[], options?: GenerateOptions): void {
-    this.resolve(model)?.provider.checkPrompt?.(messages, options);
+    const provider = this.resolve(model)?.provider;
+    if (!provider) return;
+    this.refuseIfExhausted(provider);
+    provider.checkPrompt?.(messages, options);
+  }
+
+  private now(): number { return this.options.now?.() ?? Date.now(); }
+
+  /** When the provider is refused until; a passed time is forgotten here. */
+  private exhaustedUntilMs(providerId: string): number | undefined {
+    const until = this.exhausted.get(providerId);
+    if (until === undefined) return undefined;
+    if (this.now() >= until) { this.exhausted.delete(providerId); return undefined; }
+    return until;
+  }
+
+  /** Throws the 429 `usage_limit_exceeded` while the provider's usage limit is used up (before the limiter: nothing queues). */
+  private refuseIfExhausted(provider: Provider): void {
+    const until = this.exhaustedUntilMs(provider.id);
+    if (until !== undefined) throw usageLimitRefusal(provider, until, this.now(), true);
+  }
+
+  /** Runs one provider call: a usage-limit failure marks the provider exhausted and becomes the contract 429; a success clears the mark. */
+  private async track<T extends GenerationResult>(provider: Provider, run: () => Promise<T>): Promise<T> {
+    try {
+      const result = await run();
+      if (result.stopReason !== "cancelled") this.exhausted.delete(provider.id);
+      return result;
+    } catch (error) {
+      if (!(error instanceof UsageLimitError)) throw error;
+      const now = this.now();
+      const settings = this.options.usageLimit;
+      const until = exhaustedUntil(error.resetText, now, settings?.cooldownMs ?? DEFAULT_COOLDOWN_MS, settings?.maxMs ?? MAX_RESET_MS);
+      this.exhausted.set(provider.id, until);
+      this.log.warn(`'${provider.id}' has hit its usage limit; requests are refused until ${new Date(until).toISOString()}.`);
+      throw usageLimitRefusal(provider, until, now, false);
+    }
+  }
+
+  /** Providers whose usage limit is used up, with the ISO time they are refused until (live entries only). */
+  exhaustedProviders(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const id of [...this.exhausted.keys()]) { const until = this.exhaustedUntilMs(id); if (until !== undefined) out[id] = new Date(until).toISOString(); }
+    return out;
   }
 
   async generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
     const target = this.resolve(model);
     if (!target) throw new ApiError(404, "model_not_found", `The model '${model}' does not exist.`, "model");
+    this.refuseIfExhausted(target.provider);
     target.provider.checkPrompt?.(messages, options);
     const limiter = this.limiters.get(target.provider.id);
-    if (!limiter) return target.provider.generate(target.model, messages, callbacks, signal, options);
+    if (!limiter) return this.track(target.provider, () => target.provider.generate(target.model, messages, callbacks, signal, options));
     let release: () => void;
     try { release = await limiter.acquire(signal); }
     catch (error) {
@@ -186,8 +238,11 @@ export class ProviderRouter implements AcpLike {
       if (error instanceof QueueAbortedError) return { text: "", stopReason: "cancelled", usage: null };
       throw error;
     }
-    try { return await target.provider.generate(target.model, messages, callbacks, signal, options); }
-    finally { release(); }
+    try {
+      // A request that waited may have been overtaken by one that found the limit used up.
+      this.refuseIfExhausted(target.provider);
+      return await this.track(target.provider, () => target.provider.generate(target.model, messages, callbacks, signal, options));
+    } finally { release(); }
   }
 
   /** Reads one provider's account plan limits; the probe takes a slot of the provider's cap like a request does, but it is not a request (never logged or counted). */
