@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import type { RequestPermissionRequest, Usage, StopReason } from "@agentclientprotocol/sdk";
+import type { RequestPermissionRequest, SessionUpdate, Usage, StopReason } from "@agentclientprotocol/sdk";
 import type { Message, ToolCall, ToolChoice, ToolDef, WebSearchRequest } from "./api.js";
 import type { McpServerSpec } from "./mcp-config.js";
 import { silentLogger, type Logger } from "./logger.js";
@@ -147,6 +147,8 @@ export interface ProviderDescriptor {
   mapError?(error: unknown, model: string): Error | undefined;
   /** The agent answers a turn it has no quota for with a notice as normal text (Antigravity). `couldBe` is true while the text streamed so far may still become the notice (it is held back from the client); `is` is true when the whole answer is the notice: the turn becomes a `UsageLimitError` with that text as its reset text. */
   usageLimitNotice?: { couldBe(textSoFar: string): boolean; is(text: string): boolean };
+  /** The reset of a usage limit that a session update of the turn reports (Claude's `_claude/rateLimit` hint with `status: "rejected"`); the turn then becomes a `UsageLimitError`, whether its prompt ended or failed. */
+  usageLimitFromUpdate?(update: SessionUpdate): { resetAt?: number } | undefined;
   /** The agent can generate images. Absent: a request for images is a 400 `model_not_capable`. */
   imageGeneration?: ImageGeneration;
   /** True for the agent's permission request for a tool of one of the session's MCP servers (`mcp.labels`: the `client` bridge and/or the request's remote servers) when `mcp.allows(server, tool)` (then answered with `allow_once`, only in a request that has tools). `tracked` holds the `tool_call` fields seen so far for the request's `toolCallId`. Absent: the agent cannot be given tools (400 `model_not_capable`). */

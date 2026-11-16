@@ -212,7 +212,7 @@ export class ProviderRouter implements AcpLike {
       if (!(error instanceof UsageLimitError)) throw error;
       const now = this.now();
       const settings = this.options.usageLimit;
-      const until = exhaustedUntil(error.resetText, now, settings?.cooldownMs ?? DEFAULT_COOLDOWN_MS, settings?.maxMs ?? MAX_RESET_MS);
+      const until = exhaustedUntil(error.resetText, now, settings?.cooldownMs ?? DEFAULT_COOLDOWN_MS, settings?.maxMs ?? MAX_RESET_MS, error.resetAt);
       this.exhausted.set(provider.id, until);
       this.options.onExhaustedChange?.();
       this.log.warn(`'${provider.id}' has hit its usage limit; requests are refused until ${new Date(until).toISOString()}.`);

@@ -2,15 +2,18 @@ import { ApiError } from "./api.js";
 
 export const USAGE_LIMIT_CODE = "usage_limit_exceeded";
 /** What a refused request carries beyond the common error fields (see the README, "Usage limit"). */
-export interface UsageLimitExtra { retryAfterSeconds?: number; details?: Record<string, unknown>; /** Set by the pre-check refusal: the request never reached the agent. */ refused?: true; }
+export interface UsageLimitExtra { retryAfterSeconds?: number; details?: Record<string, unknown>; /** Set by the pre-check refusal: the request never reached the agent. */ refused?: true; /** The reset time (epoch ms) when the agent gave a timestamp (Claude's `resetsAt`); it wins over `resetText`. */ resetAt?: number; }
 
 /** A provider said its subscription usage limit is used up. From a provider it carries the agent's reset text; the router turns it into the contract error (provider, `exhausted_until`, `retry_after`). */
 export class UsageLimitError extends ApiError {
   /** True for a request refused before it ran (the provider was already exhausted); false for the failure that found the limit. */
   readonly refused: boolean;
+  /** The reset time (epoch ms) the agent gave as a timestamp, if any. */
+  readonly resetAt?: number;
   constructor(message: string, public readonly resetText?: string, extra: UsageLimitExtra = {}) {
     super(429, USAGE_LIMIT_CODE, message, "model", extra);
     this.refused = extra.refused === true;
+    if (extra.resetAt !== undefined) this.resetAt = extra.resetAt;
     this.name = "UsageLimitError";
   }
 }
@@ -113,9 +116,9 @@ export function matchAntigravityUsageLimit(text: string): boolean {
 export const DEFAULT_COOLDOWN_MS = 60 * 60 * 1000;
 export const MAX_RESET_MS = 31 * 24 * 60 * 60 * 1000;
 
-/** The time a provider stays refused until: the parsed reset, or `now + cooldown` when there is none, it is in the past or it is over the cap. */
-export function exhaustedUntil(resetText: string | undefined, now: number, cooldownMs: number, maxMs: number): number {
-  const parsed = resetText ? parseResetTime(resetText, now) : undefined;
+/** The time a provider stays refused until: the agent's `resetAt`, else the reset parsed from its text, or `now + cooldown` when there is none, it is in the past or it is over the cap. */
+export function exhaustedUntil(resetText: string | undefined, now: number, cooldownMs: number, maxMs: number, resetAt?: number): number {
+  const parsed = resetAt ?? (resetText ? parseResetTime(resetText, now) : undefined);
   return parsed !== undefined && parsed > now && parsed - now <= maxMs ? parsed : now + cooldownMs;
 }
 

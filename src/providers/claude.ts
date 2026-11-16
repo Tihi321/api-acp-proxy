@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { AcpProvider } from "../acp-provider.js";
 import type { ProviderRegistration } from "../controller.js";
-import { parseClaudeUsage } from "../plan-limits.js";
+import { parseClaudeUsage, readRateLimitHint } from "../plan-limits.js";
 import { AcpUnavailableError } from "../provider.js";
 import type { AuthMethodInfo, ProviderAuthMethod, ProviderDescriptor, RuntimeContext } from "../provider.js";
 
@@ -176,6 +176,13 @@ export function claudeDescriptor(settings: ClaudeSettings, env: NodeJS.ProcessEn
       const text = [error instanceof Error ? error.message : String(error), JSON.stringify((error as { data?: unknown } | null)?.data ?? "")].join(" ");
       if (/Failed to refresh OAuth token/i.test(text) && /another Claude Code process is refreshing/i.test(text)) return new AcpUnavailableError("Claude is refreshing its login in another process. Retry in a few seconds.", error, "provider_busy", BUSY_RETRY_SECONDS);
       return undefined;
+    },
+    // The adapter forwards the SDK's rate_limit_event as a usage_update with `_meta["_claude/rateLimit"]`; `status: "rejected"` marks the provider exhausted until `resetsAt`.
+    // UNTESTED live: built against a synthetic hint of the shape readRateLimitHint reads; no real rejection was captured (which turn carries it, whether the prompt also fails).
+    usageLimitFromUpdate(update) {
+      if (update.sessionUpdate !== "usage_update") return undefined;
+      const hint = readRateLimitHint((update as { _meta?: unknown })._meta, Date.now());
+      return hint?.status === "rejected" ? (hint.resetsAt !== undefined ? { resetAt: hint.resetsAt } : {}) : undefined;
     },
     externalLogin: (ctx, methodId) => consoleLogin(ctx, settings, env, methodId),
     // The adapter advertises ACP `logout` (it runs `claude auth logout` itself); this is the same command run by hand for an adapter that does not.

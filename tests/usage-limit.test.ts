@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { AcpProvider } from "../src/acp-provider.js";
 import { codexDescriptor } from "../src/providers/codex.js";
 import { antigravityDescriptor } from "../src/providers/antigravity.js";
+import { claudeDescriptor } from "../src/providers/claude.js";
 import { defaultRuntimeContext, type Provider, type ProviderDescriptor } from "../src/provider.js";
 import { createLogger } from "../src/logger.js";
 import { ProviderRouter } from "../src/router.js";
@@ -106,7 +107,7 @@ describe("usage limit, over HTTP", () => {
 // The brief's wording of bug 8 ("Usage Limit Reached ... Your limit will reset in 6 days, 15 hours"); no real capture was found, so the middle sentence is assumed.
 const agyNotice = "Usage Limit Reached\n\nYou have reached the usage limit for this model. Your limit will reset in 6 days, 15 hours.";
 
-describe("usage limit, Antigravity over HTTP", () => {
+describe("usage limit, Antigravity and Claude over HTTP", () => {
   const now = new Date(2026, 10, 16, 12, 0).getTime();
   /** One provider on the fake agent behind a router with a fixed clock and a server; `post` sends one chat request. */
   async function serve(descriptor: ProviderDescriptor, dir: string) {
@@ -139,6 +140,17 @@ describe("usage limit, Antigravity over HTTP", () => {
     const streamed: string[] = [];
     await expect(provider.generate("gemini-4-argon", [{ role: "user", parts: [{ type: "text", text: "hi" }] }], { onText: (text) => streamed.push(text) })).rejects.toMatchObject({ code: "usage_limit_exceeded" });
     expect(streamed).toEqual([]);
+  });
+
+  it("answers a Claude turn whose rate-limit hint says rejected with the 429 contract until resetsAt (synthetic hint: no real rejection captured)", async () => {
+    const dir = path.join(root, "claude"); mkdirSync(dir, { recursive: true });
+    const resetsAt = Math.floor(now / 1000) + 5 * 3600;
+    Object.assign(process.env, { FAKE_ACP_CLAUDE: "1", FAKE_ACP_MODELS: JSON.stringify([{ value: "default" }]), FAKE_ACP_RATE_LIMIT: JSON.stringify({ status: "rejected", rateLimitType: "five_hour", resetsAt }) });
+    const { post } = await serve(claudeDescriptor({ termsAcknowledgedAt: "x" }, {}, fake), dir);
+
+    const first = await post("claude/default");
+    expect(first.status).toBe(429);
+    expect(((await first.json()) as { error: Record<string, unknown> }).error).toMatchObject({ code: "usage_limit_exceeded", provider: "claude", exhausted_until: new Date(resetsAt * 1000).toISOString() });
   });
 });
 

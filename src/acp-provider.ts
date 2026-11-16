@@ -77,9 +77,11 @@ type PromptOutcome = { result?: PromptResponse; error?: unknown };
 interface UsageLimitWatch {
   /** The request's callbacks, with the opening of the text held back while it may be the agent's out-of-quota notice. */
   callbacks: GenerationCallbacks;
+  /** Sees every session update of the turn. */
+  update(update: SessionUpdate): void;
   /** Sends the held-back text on: it is not the notice. */
   release(): void;
-  /** The turn's usage limit: `text` (the whole answer of a turn that ended normally) being the notice. */
+  /** The turn's usage limit: a rejecting update, or `text` (the whole answer of a turn that ended normally) being the notice. */
   error(text?: string): UsageLimitError | undefined;
 }
 
@@ -778,11 +780,14 @@ export class AcpProvider implements Provider {
   }
 
   /**
-   * A usage limit reported inside a turn that does not fail: when `fromStart` (the request's text is the start of the answer), the descriptor's
-   * `usageLimitNotice` (Antigravity's out-of-quota answer). The notice is held back from `onText` while it may still be one, so a stream never sends it as content.
+   * A usage limit reported inside a turn that does not fail: the descriptor's `usageLimitFromUpdate` (Claude's rejected rate-limit hint) and, when `fromStart`
+   * (the request's text is the start of the answer), its `usageLimitNotice` (Antigravity's out-of-quota answer). The notice is held back from `onText`
+   * while it may still be one, so a stream never sends it as content.
    */
   private watchUsageLimit(sink: GenerationCallbacks, fromStart = true): UsageLimitWatch {
     const notice = fromStart ? this.descriptor.usageLimitNotice : undefined;
+    const fromUpdate = this.descriptor.usageLimitFromUpdate;
+    let rejected: { resetAt?: number } | undefined;
     let holding = notice !== undefined && sink.onText !== undefined;
     let held = "";
     const release = () => {
@@ -793,8 +798,10 @@ export class AcpProvider implements Provider {
     };
     return {
       callbacks: { ...sink, ...(sink.onText ? { onText: (text: string) => { if (!holding) { sink.onText!(text); return; } held += text; if (!notice!.couldBe(held)) release(); } } : {}) },
+      update: (update) => { if (fromUpdate && !rejected) rejected = fromUpdate(update); },
       release,
       error: (text) => {
+        if (rejected) return new UsageLimitError(`${this.displayName} has hit its usage limit.`, undefined, rejected.resetAt !== undefined ? { resetAt: rejected.resetAt } : {});
         if (notice && text !== undefined && notice.is(text)) return new UsageLimitError(`${this.displayName} has hit its usage limit.`, text);
         return undefined;
       },
@@ -852,6 +859,7 @@ export class AcpProvider implements Provider {
       if (aborted) return cancelled();
       const sid = session.sessionId;
       this.handlers.set(sid, (update) => {
+        watch.update(update);
         if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
           text += update.content.text;
           watch.callbacks.onText?.(update.content.text);
@@ -881,7 +889,9 @@ export class AcpProvider implements Provider {
     } catch (error) {
       if (aborted && !promptSent) return cancelled();
       if (aborted) throw new AcpUnavailableError("The request was cancelled.", error);
-      if (error instanceof UsageLimitError) throw error;
+      // A rejecting update wins over the prompt's own failure.
+      const limit = error instanceof UsageLimitError ? error : watch.error();
+      if (limit) throw limit;
       const mapped = this.mapBackendError(error, model);
       if (mapped) throw mapped;
       if (error instanceof AcpUnavailableError || error instanceof ApiError) throw error;
@@ -970,6 +980,7 @@ export class AcpProvider implements Provider {
   private newTurn(agent: ClientContext, session: PreparedSession, model: string, bridge: BridgeSession, toolsKey: string, sink: GenerationCallbacks, baseUsage: Usage | undefined, mcp?: McpServerSpec[], search = false): ToolTurn {
     const turn: ToolTurn = { agent, session, model, bridge, toolsKey, ...(mcp ? { mcp } : {}), reported: new Set(), sink, text: "", segment: 0, tracked: new Map(), pending: [], cancelled: false, baseUsage };
     this.handlers.set(session.sessionId, (update) => {
+      turn.watch?.update(update);
       if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") { turn.text += update.content.text; turn.sink.onText?.(update.content.text); }
       else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") trackToolCall(turn.tracked, update);
     });
@@ -1082,7 +1093,7 @@ export class AcpProvider implements Provider {
       const resumed = this.takeSuspended(agent, model, messages, toolsKey);
       if (resumed) {
         turn = resumed.entry.turn; session = turn.session; promptSent = true;
-        // This request's text is not the start of the answer: no notice to hold back.
+        // This request's text is not the start of the answer, so only a rejecting update is watched for.
         turn.watch = this.watchUsageLimit(callbacks, false);
         turn.sink = turn.watch.callbacks;
         for (const call of resumed.entry.calls) call.settle(resumed.results.get(call.id) ?? "");
@@ -1143,7 +1154,9 @@ export class AcpProvider implements Provider {
     } catch (error) {
       if (aborted && !promptSent) return cancelled();
       if (aborted) throw new AcpUnavailableError("The request was cancelled.", error);
-      if (error instanceof UsageLimitError) throw error;
+      // A rejecting update wins over the prompt's own failure.
+      const limit = error instanceof UsageLimitError ? error : turn?.watch?.error();
+      if (limit) throw limit;
       const mapped = this.mapBackendError(error, model);
       if (mapped) throw mapped;
       if (error instanceof AcpUnavailableError || error instanceof ApiError) throw error;
