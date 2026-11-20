@@ -28,7 +28,7 @@ function make(patch: SettingsPatch = {}, extra: { registry?: ProviderRegistratio
   mkdirSync(dir, { recursive: true });
   if (extra.signedIn) { mkdirSync(path.join(dir, "codex-home"), { recursive: true }); writeFileSync(path.join(dir, "codex-home", "auth.json"), "{}"); }
   const file = path.join(dir, "settings.json");
-  const base = mergeSettings(defaultSettings(), { server: { port: 0, workRoot: path.join(dir, "work") }, providers: { codex: { acpCommand: process.execPath, acpArgs: [fixture] } } });
+  const base = mergeSettings(defaultSettings(), { server: { port: 0, workRoot: path.join(dir, "work") }, providers: { codex: { acpCommand: process.execPath, acpArgs: [fixture] }, gufo: { enabled: false }, strata: { enabled: false } } });
   writeFileSync(file, JSON.stringify(mergeSettings(base, patch)));
   const controller = new ProxyController({ settingsPath: file, env: {}, logger: createLogger({ console: false }), ...extra });
   controllers.push(controller);
@@ -57,7 +57,7 @@ describe("ProxyController", () => {
     const status = await controller.start();
     expect(status.server.state).toBe("running");
     expect(status.server.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
-    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", expect.stringMatching(/^(starting|ready)$/)], ["antigravity", "disabled"], ["claude", "disabled"]]); // Codex lists its models through the agent, which starts with the proxy.
+    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", expect.stringMatching(/^(starting|ready)$/)], ["antigravity", "disabled"], ["claude", "disabled"], ["gufo", "disabled"], ["strata", "disabled"]]); // Codex lists its models through the agent, which starts with the proxy.
     expect(((await get(`${status.server.baseUrl}/models`)).data ?? []).map((model) => model.id)).toContain("gpt-6-luna");
     const chat = await fetch(`${status.server.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-6-luna", messages: [{ role: "user", content: "hi" }] }) });
     expect(((await chat.json()) as { choices: Array<{ message: { content: string } }> }).choices[0]?.message.content).toBe("fake response");
