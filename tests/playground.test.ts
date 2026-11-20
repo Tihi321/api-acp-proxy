@@ -6,8 +6,8 @@ import path from "node:path";
 import { ActivityLog } from "../src/activity.js";
 import type { AcpLike } from "../src/acp.js";
 import type { ProxyConfig } from "../src/config.js";
-import { PLAYGROUND_CSP, servePlayground } from "../src/playground-files.js";
-import { chatTitle, curlFor, formatMs, groupModels, isHttpUrl, parseSseLines } from "../src/playground/lib.js";
+import { PLAYGROUND_CSP, PREVIEW_CSP, servePlayground } from "../src/playground-files.js";
+import { chatTitle, curlFor, decodeRate, estimateTokens, formatMs, groupModels, isHttpUrl, parseSseLines, previewDocument, splitBlocks, tokensPerSecond } from "../src/playground/lib.js";
 import { createProxyServer } from "../src/server.js";
 
 describe("playground helpers", () => {
@@ -49,6 +49,31 @@ describe("playground helpers", () => {
     expect(isHttpUrl("javascript:alert(1)")).toBe(false);
     expect(isHttpUrl("not a url")).toBe(false);
   });
+
+  it("splits fenced blocks and combines html, css and js into one preview document", () => {
+    const blocks = splitBlocks("Intro\n```html\n<button id=b>Go</button>\n```\nMiddle\n~~~css\nbutton { color: red }\n~~~\n```js title\nconsole.log('</script>')");
+    expect(blocks).toEqual([
+      { type: "text", text: "Intro" },
+      { type: "code", lang: "html", code: "<button id=b>Go</button>", closed: true },
+      { type: "text", text: "Middle" },
+      { type: "code", lang: "css", code: "button { color: red }", closed: true },
+      { type: "code", lang: "js", code: "console.log('</script>')", closed: false },
+    ]);
+    const closed = splitBlocks("```html\n<p>hi</p>\n```\n```css\np { color: red }\n```\n```js\nalert('</script>')\n```");
+    const doc = previewDocument(closed) ?? "";
+    expect(doc).toContain("<p>hi</p>");
+    expect(doc).toContain("<style>");
+    expect(doc).toContain("<script>");
+    expect(doc).toContain("<\\/script>')");
+    expect(previewDocument(splitBlocks("```python\nprint(1)\n```"))).toBeUndefined();
+  });
+
+  it("computes live and decode tokens per second", () => {
+    expect(decodeRate({ outputTokens: 100, firstMs: 1000, totalMs: 3000 })).toBe(50);
+    expect(decodeRate({ outputTokens: 100, totalMs: 2000 })).toBe(50);
+    expect(decodeRate({ totalMs: 2000 })).toBeUndefined();
+    expect(tokensPerSecond(estimateTokens("x".repeat(400)), 2000)).toBe(50);
+  });
 });
 
 const root = path.resolve(".claude/temp/playground-tests", String(process.pid));
@@ -77,7 +102,7 @@ describe("serving the playground", () => {
   it("serves the page and its fixed files with a strict CSP, and nothing else", async () => {
     const dir = path.join(root, "built");
     mkdirSync(dir, { recursive: true });
-    for (const [name, body] of [["playground.html", "<!doctype html>page"], ["playground.js", "js"], ["lib.js", "lib"], ["playground.css", "css"], ["secret.txt", "no"]]) writeFileSync(path.join(dir, name), body);
+    for (const [name, body] of [["playground.html", "<!doctype html>page"], ["playground.js", "js"], ["lib.js", "lib"], ["playground.css", "css"], ["preview.html", "<!doctype html>preview"], ["secret.txt", "no"]]) writeFileSync(path.join(dir, name), body);
     const port = await listen(createServer((req, res) => { void servePlayground(req.method ?? "GET", new URL(req.url ?? "/", "http://x").pathname, res, dir).then((handled) => { if (!handled) { res.writeHead(418); res.end(); } }); }));
     const page = await get(port, "/playground");
     expect(page).toMatchObject({ status: 200, text: "<!doctype html>page" });
@@ -87,6 +112,13 @@ describe("serving the playground", () => {
     expect(page.headers["cache-control"]).toBe("no-store");
     expect(await get(port, "/playground/playground.js")).toMatchObject({ status: 200, text: "js" });
     expect((await get(port, "/playground/playground.css")).headers["content-type"]).toBe("text/css; charset=utf-8");
+    const preview = await get(port, "/playground/preview");
+    expect(preview).toMatchObject({ status: 200, text: "<!doctype html>preview" });
+    expect(preview.headers["content-security-policy"]).toBe(PREVIEW_CSP);
+    expect(PLAYGROUND_CSP).toContain("frame-src 'self'");
+    expect(PLAYGROUND_CSP).toContain("frame-ancestors 'none'");
+    expect(PREVIEW_CSP.startsWith("sandbox allow-scripts")).toBe(true);
+    expect(PREVIEW_CSP).toContain("connect-src 'none'");
     expect((await get(port, "/playground/secret.txt")).status).toBe(404);
     expect((await get(port, "/playground/../package.json")).status).not.toBe(200);
     expect((await get(port, "/playground", "POST")).status).toBe(405);
