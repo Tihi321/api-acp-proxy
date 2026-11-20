@@ -9,6 +9,9 @@ import type { ControllerStatus } from "../controller.js";
 import { createLogger } from "../logger.js";
 import { claudeRegistration } from "../providers/claude.js";
 import { codexRegistration } from "../providers/codex.js";
+import { gufoRegistration, strataRegistration } from "../providers/local-openai.js";
+import { LocalServerManager } from "../local-servers.js";
+import type { LocalServerSpec } from "../local-servers.js";
 import { listMcpServers } from "../mcp-servers.js";
 import { defaultSettingsPath } from "../settings.js";
 import type { SecretCodec, SettingsPatch } from "../settings.js";
@@ -47,6 +50,7 @@ function toInstallView(info: Awaited<ReturnType<typeof readInstallInfo>> & objec
 
 async function main(): Promise<void> {
   let controller: ProxyController | undefined;
+  let localServers: LocalServerManager | undefined;
   let settingsWindow: SettingsWindow | undefined;
   let tray: TrayController | undefined;
   let quitting = false;
@@ -67,7 +71,8 @@ async function main(): Promise<void> {
     settingsWindow?.markQuitting();
     void (async () => {
       const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5000));
-      try { await Promise.race([controller?.stop().then(() => undefined), timeout]); } catch (error) { logger.error(`Error while stopping: ${String(error)}`); }
+      // The model servers stop in parallel with the controller, inside the same budget, so one never outlives the app.
+      try { await Promise.all([Promise.race([controller?.stop().then(() => undefined), timeout]), Promise.race([localServers?.stopAll(), timeout])]); } catch (error) { logger.error(`Error while stopping: ${String(error)}`); }
       // The flush has its own budget: a slow drain above must not starve the usage write.
       try { await Promise.race([controller?.flushUsage(), new Promise<void>((resolve) => setTimeout(resolve, 2000))]); } catch (error) { logger.error(`Error while saving usage: ${String(error)}`); }
       tray?.destroy();
@@ -90,7 +95,7 @@ async function main(): Promise<void> {
     settingsPath,
     logger,
     ...(secretCodec ? { secretCodec } : {}),
-    registry: [codexRegistration, antigravityRegistration, claudeRegistration],
+    registry: [codexRegistration, antigravityRegistration, claudeRegistration, gufoRegistration, strataRegistration],
     ctx: {
       dataDir,
       nodeRuntime: { command: process.execPath, argsPrefix: ["--require", hideWindows], env: { ELECTRON_RUN_AS_NODE: "1", NODE_OPTIONS: nodeOptions } },
@@ -158,6 +163,24 @@ async function main(): Promise<void> {
     usageTimer = setTimeout(() => { usageTimer = undefined; if (win.webContents) win.send("proxy:usage", usageView()); }, 500);
   };
 
+  const servers = new LocalServerManager({ logger: logger.child("local") });
+  localServers = servers;
+  let localTimer: NodeJS.Timeout | undefined;
+  const pushLocalServers = (): void => {
+    if (localTimer) return;
+    localTimer = setTimeout(() => { localTimer = undefined; if (win.webContents) win.send("proxy:localServers", servers.list()); }, 250);
+  };
+  const lastLocalState = new Map<string, string>();
+  servers.on("change", (list: ReturnType<LocalServerManager["list"]>) => {
+    pushLocalServers();
+    for (const entry of list) {
+      const before = lastLocalState.get(entry.id);
+      lastLocalState.set(entry.id, entry.state);
+      // Once per transition to ready, so the models of the freshly started server appear.
+      if (entry.state === "ready" && before !== "ready") void proxy.refreshModels(entry.id).catch(() => undefined);
+    }
+  });
+
   /** `<server>/playground` in the default browser. The address comes from the server status, never from the window. */
   const openPlayground = async (): Promise<void> => {
     const baseUrl = proxy.status().server.baseUrl;
@@ -216,6 +239,19 @@ async function main(): Promise<void> {
   handle("proxy:logout", (providerId: string): Promise<ActionResult> | ActionResult => {
     if (typeof providerId !== "string") return { ok: false, message: "Invalid provider" };
     return action(() => proxy.logout(providerId));
+  });
+  handle("proxy:localServers", () => servers.list());
+  handle("proxy:startLocalServer", async (id: unknown): Promise<ActionResult> => {
+    if (id !== "gufo" && id !== "strata") return { ok: false, message: "Invalid server" };
+    return action(async () => {
+      const settings = (await proxy.getSettings()).effective.providers[id];
+      const spec: LocalServerSpec = { id, command: settings.command, args: settings.args, cwd: settings.cwd, port: settings.port };
+      await servers.start(spec);
+    });
+  });
+  handle("proxy:stopLocalServer", (id: unknown): Promise<ActionResult> | ActionResult => {
+    if (id !== "gufo" && id !== "strata") return { ok: false, message: "Invalid server" };
+    return action(() => servers.stop(id));
   });
   handle("proxy:activity", () => activityViews());
   handle("proxy:clearActivity", () => { proxy.activity.clear(); });
