@@ -63,7 +63,7 @@ interface Run {
   partial: Record<"stdout" | "stderr", string>;
 }
 
-interface Entry { view: LocalServerStatusView; run?: Run; logTimer?: NodeJS.Timeout }
+interface Entry { view: LocalServerStatusView; run?: Run; logTimer?: NodeJS.Timeout; startGen: number }
 
 export class LocalServerManager extends EventEmitter {
   private readonly entries = new Map<LocalServerId, Entry>();
@@ -84,7 +84,7 @@ export class LocalServerManager extends EventEmitter {
     this.startTimeoutMs = deps.startTimeoutMs ?? 600_000;
     this.maxLogLines = deps.maxLogLines ?? 200;
     this.logger = deps.logger;
-    for (const id of LOCAL_SERVER_IDS) this.entries.set(id, { view: { id, name: LOCAL_SERVER_NAMES[id], state: "stopped", log: [] } });
+    for (const id of LOCAL_SERVER_IDS) this.entries.set(id, { view: { id, name: LOCAL_SERVER_NAMES[id], state: "stopped", log: [] }, startGen: 0 });
   }
 
   list(): LocalServerStatusView[] {
@@ -99,15 +99,19 @@ export class LocalServerManager extends EventEmitter {
     if (entry.run || entry.view.state === "starting" || entry.view.state === "ready") return;
     // Claim the slot synchronously so a concurrent start of the same id is a no-op.
     entry.view = { ...entry.view, state: "starting", port: spec.port, error: undefined, pid: undefined, readyAt: undefined, startedAt: undefined, commandLine: commandLine(spec), log: [] };
+    const gen = ++entry.startGen;
     this.emitChange();
     try {
       await Promise.all(LOCAL_SERVER_IDS.filter((id) => id !== spec.id && this.entries.get(id)!.run).map((id) => this.stop(id)));
       if (await this.probeOnce(spec.port)) throw new Error(`Port ${spec.port} already answers (a server started outside the app?). Stop it first.`);
+      // stop()/stopAll() during this pre-spawn phase bumped startGen: do not spawn, the state is already stopped.
+      if (entry.startGen !== gen) return;
       const line = commandLine(spec);
       let child: ChildProcess;
       try { child = this.spawnFn(spec, line); } catch (error) { throw new Error(error instanceof Error ? error.message : String(error)); }
       this.attach(entry, spec, child);
     } catch (error) {
+      if (entry.startGen !== gen) return;
       if (!entry.run) entry.view = { ...entry.view, state: "stopped", error: undefined };
       this.emitChange();
       throw error;
@@ -117,7 +121,16 @@ export class LocalServerManager extends EventEmitter {
   async stop(id: LocalServerId): Promise<void> {
     const entry = this.entries.get(id);
     const run = entry?.run;
-    if (!entry || !run) return;
+    if (!entry) return;
+    if (!run) {
+      // A start still in its pre-spawn phase (stopping the other server, port probe): cancel it.
+      if (entry.view.state === "starting") {
+        entry.startGen++;
+        entry.view = { ...entry.view, state: "stopped", error: undefined };
+        this.emitChange();
+      }
+      return;
+    }
     run.stopRequested = true;
     this.clearTimers(run);
     run.abort.abort();

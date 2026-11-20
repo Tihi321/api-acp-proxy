@@ -178,6 +178,8 @@ async function main(): Promise<void> {
       lastLocalState.set(entry.id, entry.state);
       // Once per transition to ready, so the models of the freshly started server appear.
       if (entry.state === "ready" && before !== "ready") void proxy.refreshModels(entry.id).catch(() => undefined);
+      // Also when a ready or starting server stops or fails, so the provider badge, nav dot and tray stop saying ready.
+      else if ((entry.state === "stopped" || entry.state === "error") && (before === "ready" || before === "starting")) void proxy.refreshModels(entry.id).catch(() => undefined);
     }
   });
 

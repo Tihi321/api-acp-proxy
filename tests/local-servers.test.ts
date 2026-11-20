@@ -54,4 +54,18 @@ describe("LocalServerManager", () => {
     expect(manager.list().map((s) => s.state)).toEqual(["stopped", "stopped"]);
     expect(children.every((child) => child.exitCode !== null || child.signalCode !== null)).toBe(true);
   });
+
+  it("does not spawn when stopped or shut down during the pre-spawn probe", async () => {
+    let spawned = 0;
+    const manager = new LocalServerManager({ spawn: () => { spawned++; throw new Error("must not spawn"); }, probe: () => new Promise((resolve) => setTimeout(() => resolve(false), 100)) });
+    const spec: LocalServerSpec = { id: "gufo", command: process.execPath, args: "", cwd: path.resolve("."), port: 18082 };
+    for (const cancel of [() => manager.stop("gufo"), () => manager.stopAll()]) {
+      const pending = manager.start(spec);
+      expect(manager.list()[0].state).toBe("starting");
+      await cancel();
+      await pending;
+      expect(manager.list()[0].state).toBe("stopped");
+    }
+    expect(spawned).toBe(0);
+  });
 });

@@ -118,7 +118,7 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 
 ## Local model servers (Gufo, Strata)
 
-Gufo and Strata are local model servers that run on this PC and speak the OpenAI API. The proxy forwards `gufo/*` and `strata/*` requests to `http://127.0.0.1:<port>/v1`; the desktop app can also start and stop them (pages **Gufo** and **Strata** under "Local models" in the settings window, with Start/Stop, the state and the last 200 log lines).
+Gufo and Strata are local model servers that run on this PC and speak the OpenAI API. The proxy forwards `gufo/*` and `strata/*` requests to `http://127.0.0.1:<port>/v1`; the desktop app can also start and stop them (pages **Gufo** and **Strata** under "Local models" in the settings window, with Start/Stop, the state and the last 50 log lines; the app keeps the last 200).
 
 Settings (`providers.gufo`, `providers.strata`; no environment variables):
 
