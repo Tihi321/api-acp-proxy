@@ -306,3 +306,14 @@ T1 ─┬─ T2 ─┐                      ├─ T7
 5. The provider uses Node's fetch, not Electron's `net.fetch` (Strata's Origin check).
 6. Ready = `GET /v1/models` 200 for both; Strata may answer while its model shows `unloaded`, and the first request then waits for the load (proxy `timeoutMs` 5 min).
 7. Code blocks are rendered only after an answer finishes; streaming stays plain text.
+
+## Implementation status (2026-11-20, implement)
+
+- [x] T1 settings schema and IPC types (+ preload entries) - settings test green
+- [x] T2 LocalOpenAiProvider and registrations - 2 tests green. Deviation: tests/controller.test.ts `make()` now disables gufo/strata and its provider-list assertion includes them as disabled (the new default registrations broke it; disabling keeps the test from probing ports 8080/8081 on this machine)
+- [x] T3 LocalServerManager - 1 test green (3 runs). Details left open by C4: `start` claims `starting` synchronously and reverts to `stopped` if a pre-spawn check throws; signal exit reads "exited with signal X"; `commandLine` has no trailing space for empty args
+- [x] T4 Electron main wiring - typecheck/build green; runtime UNTESTED (M1-M5)
+- [x] T5 settings pages and usage colours - typecheck, desktop-views green; DOM UNTESTED. Additions: apiKey Show/Hide button, `server-info` line (pid, port, ready time, command line), `.log` style, Enabled switch in the header
+- [x] T6 playground tok/s, code blocks, preview - 3 test changes green; browser behaviour UNTESTED (M2, M6, M7). Addition: `send` helper takes an optional csp argument
+- [x] T7 README and ROADMAP
+- Verification: `npm test` 35 files / 472 passed / 1 skipped; `npm run typecheck` clean; `npm run build` clean. M1-M7 not run.

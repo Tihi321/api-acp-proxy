@@ -1,0 +1,3 @@
+- 2026-11-20 implementer: `fnm exec --using default npm ...` fails with "program not found" in this shell; `npm.cmd` works (package.json) - suggested: use `npm.cmd` (or call node directly) in briefs for this machine
+- 2026-11-20 implementer: `ProviderSettings` is `Record<string, unknown>`, so the local registrations cast `port`; a bypassed parse would give NaN in the URL (src/settings.ts:135) - suggested: leave unless settings parsing can be bypassed
+- 2026-11-20 implementer: before T4 the renderer's `api.getLocalServers()` promise had no catch; now handled by main, but a rejection still goes unhandled (src/renderer/settings.ts:726) - suggested: add a `.catch` if it ever matters
