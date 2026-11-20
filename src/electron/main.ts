@@ -72,7 +72,7 @@ async function main(): Promise<void> {
     void (async () => {
       const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5000));
       // The model servers stop in parallel with the controller, inside the same budget, so one never outlives the app.
-      try { await Promise.all([Promise.race([controller?.stop().then(() => undefined), timeout]), Promise.race([localServers?.stopAll(), timeout])]); } catch (error) { logger.error(`Error while stopping: ${String(error)}`); }
+      try { await Promise.all([Promise.race([controller?.stop().then(() => undefined), timeout]), Promise.race([localServers?.close(), timeout])]); } catch (error) { logger.error(`Error while stopping: ${String(error)}`); }
       // The flush has its own budget: a slow drain above must not starve the usage write.
       try { await Promise.race([controller?.flushUsage(), new Promise<void>((resolve) => setTimeout(resolve, 2000))]); } catch (error) { logger.error(`Error while saving usage: ${String(error)}`); }
       tray?.destroy();

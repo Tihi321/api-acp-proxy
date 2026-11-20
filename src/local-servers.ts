@@ -74,6 +74,7 @@ export class LocalServerManager extends EventEmitter {
   private readonly startTimeoutMs: number;
   private readonly maxLogLines: number;
   private readonly logger?: Logger;
+  private closed = false;
 
   constructor(deps: LocalServerDeps = {}) {
     super();
@@ -96,16 +97,17 @@ export class LocalServerManager extends EventEmitter {
     if (!entry) throw new Error(`Unknown local server "${String(spec.id)}".`);
     if (!spec.command.trim()) throw new Error(`${LOCAL_SERVER_NAMES[spec.id]} has no command configured.`);
     if (!spec.cwd || !existsSync(spec.cwd)) throw new Error(`Working directory does not exist: ${spec.cwd || "(empty)"}`);
+    if (this.closed) return;
     if (entry.run || entry.view.state === "starting" || entry.view.state === "ready") return;
     // Claim the slot synchronously so a concurrent start of the same id is a no-op.
     entry.view = { ...entry.view, state: "starting", port: spec.port, error: undefined, pid: undefined, readyAt: undefined, startedAt: undefined, commandLine: commandLine(spec), log: [] };
     const gen = ++entry.startGen;
     this.emitChange();
     try {
-      await Promise.all(LOCAL_SERVER_IDS.filter((id) => id !== spec.id && this.entries.get(id)!.run).map((id) => this.stop(id)));
+      await Promise.all(LOCAL_SERVER_IDS.filter((id) => { const other = this.entries.get(id)!; return id !== spec.id && (other.run || other.view.state === "starting"); }).map((id) => this.stop(id)));
       if (await this.probeOnce(spec.port)) throw new Error(`Port ${spec.port} already answers (a server started outside the app?). Stop it first.`);
       // stop()/stopAll() during this pre-spawn phase bumped startGen: do not spawn, the state is already stopped.
-      if (entry.startGen !== gen) return;
+      if (entry.startGen !== gen || this.closed) return;
       const line = commandLine(spec);
       let child: ChildProcess;
       try { child = this.spawnFn(spec, line); } catch (error) { throw new Error(error instanceof Error ? error.message : String(error)); }
@@ -143,6 +145,12 @@ export class LocalServerManager extends EventEmitter {
 
   async stopAll(): Promise<void> {
     await Promise.all(LOCAL_SERVER_IDS.map((id) => this.stop(id)));
+  }
+
+  /** Terminal: stops everything and refuses any later start (used on quit so a late Start cannot orphan a process). */
+  async close(): Promise<void> {
+    this.closed = true;
+    await this.stopAll();
   }
 
   private async probeOnce(port: number): Promise<boolean> {

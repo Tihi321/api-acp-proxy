@@ -68,4 +68,23 @@ describe("LocalServerManager", () => {
     }
     expect(spawned).toBe(0);
   });
+
+  it("keeps starts one at a time (newer wins) and refuses to start after close", async () => {
+    const spawned: string[] = [];
+    const manager = new LocalServerManager({ spawn: (spec) => { spawned.push(spec.id); throw new Error("stop here"); }, probe: () => new Promise((resolve) => setTimeout(() => resolve(false), 100)) });
+    const spec = (id: LocalServerId, port: number): LocalServerSpec => ({ id, command: process.execPath, args: "", cwd: path.resolve("."), port });
+    const strata = manager.start(spec("strata", 18083));
+    const gufo = manager.start(spec("gufo", 18082));
+    expect(manager.list().find((s) => s.id === "strata")!.state).toBe("stopped");
+    await strata;
+    await expect(gufo).rejects.toThrow("stop here");
+    expect(spawned).toEqual(["gufo"]);
+
+    const pending = manager.start(spec("gufo", 18082));
+    await manager.close();
+    await pending;
+    await manager.start(spec("strata", 18083));
+    expect(spawned).toEqual(["gufo"]);
+    expect(manager.list().every((s) => s.state === "stopped")).toBe(true);
+  });
 });
