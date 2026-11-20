@@ -1,9 +1,9 @@
 import { nextExpiryDelay, usageLimitLine } from "./usage-limit-line.js";
 import { mcpAddCommand, mcpEndpointUrl } from "./mcp-command.js";
 import { initUsageView } from "./usage-view.js";
-import type { ActivityView, InstallProgressView, ProviderStatusView, SaveResult, SettingsPatchView, StateView } from "../shared/ipc.js";
+import type { ActivityView, InstallProgressView, LocalServerId, LocalServerStatusView, ProviderStatusView, SaveResult, SettingsPatchView, StateView } from "../shared/ipc.js";
 
-type Scope = "server" | "codex" | "antigravity" | "claude";
+type Scope = "server" | "codex" | "antigravity" | "claude" | "gufo" | "strata";
 interface FieldSpec { path: string; kind: "text" | "number" | "bool" | "select"; scope: Scope; optional?: boolean }
 
 const api = window.proxyApi;
@@ -65,6 +65,20 @@ const fields: FieldSpec[] = [
   { path: "providers.claude.oauthToken", kind: "text", scope: "claude", optional: true },
   { path: "providers.claude.configDir", kind: "text", scope: "claude", optional: true },
   { path: "providers.claude.executablePath", kind: "text", scope: "claude", optional: true },
+  { path: "providers.gufo.enabled", kind: "bool", scope: "gufo" },
+  { path: "providers.gufo.port", kind: "number", scope: "gufo" },
+  { path: "providers.gufo.command", kind: "text", scope: "gufo" },
+  { path: "providers.gufo.args", kind: "text", scope: "gufo" },
+  { path: "providers.gufo.cwd", kind: "text", scope: "gufo" },
+  { path: "providers.gufo.apiKey", kind: "text", scope: "gufo", optional: true },
+  { path: "providers.gufo.maxConcurrent", kind: "number", scope: "gufo", optional: true },
+  { path: "providers.strata.enabled", kind: "bool", scope: "strata" },
+  { path: "providers.strata.port", kind: "number", scope: "strata" },
+  { path: "providers.strata.command", kind: "text", scope: "strata" },
+  { path: "providers.strata.args", kind: "text", scope: "strata" },
+  { path: "providers.strata.cwd", kind: "text", scope: "strata" },
+  { path: "providers.strata.apiKey", kind: "text", scope: "strata", optional: true },
+  { path: "providers.strata.maxConcurrent", kind: "number", scope: "strata", optional: true },
 ];
 
 /** Shown before the provider has reported its methods (it is not running yet). */
@@ -84,7 +98,8 @@ const badgeText: Record<string, string> = { needs_login: "needs login", not_inst
 /** The tool a provider's shared login folder belongs to (named in the log-out confirmation). */
 const toolName: Record<string, string> = { codex: "Codex (the Codex app and CLI)", antigravity: "Google Antigravity and the Gemini tools", claude: "Claude Code" };
 const providerOrder = ["codex", "claude", "antigravity"] as const;
-const views = ["overview", "usage", "requests", "server", "codex", "claude", "antigravity"] as const;
+const localOrder: readonly LocalServerId[] = ["gufo", "strata"];
+const views = ["overview", "usage", "requests", "server", "codex", "claude", "antigravity", "gufo", "strata"] as const;
 type ViewName = (typeof views)[number];
 const VIEW_KEY = "acp-proxy.view";
 const featureChips: Array<{ label: string; on: (status: ProviderStatusView) => boolean }> = [
@@ -97,7 +112,9 @@ const featureChips: Array<{ label: string; on: (status: ProviderStatusView) => b
 
 let state: StateView | undefined;
 let activity: ActivityView[] = [];
-const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, claude: false };
+const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, claude: false, gufo: false, strata: false };
+/** Launcher state of the local model servers, in the order gufo, strata. */
+let localServers: LocalServerStatusView[] = [];
 const usage = initUsageView({ api, showView: (name) => showView(name) });
 const loggingIn = new Set<string>();
 const loggingOut = new Set<string>();
@@ -222,6 +239,69 @@ function renderProvider(provider: string, current: StateView): void {
   role(root, "model-count").textContent = models.length ? `(${models.length})` : "";
   const list = role<HTMLElement>(root, "models");
   list.replaceChildren(...(models.length ? models.map((model) => Object.assign(document.createElement("li"), { textContent: model.id, title: model.name ?? "" })) : [Object.assign(document.createElement("li"), { className: "empty", textContent: providerState === "ready" || providerState === "needs_login" ? "No models discovered yet." : "No models (provider not running)." })]));
+}
+
+/** Fields, provider badge and models of a local model server page (no login or terms parts). */
+function renderLocal(id: LocalServerId, current: StateView): void {
+  const root = card(id);
+  const status = current.status.providers.find((entry) => entry.id === id);
+  const providerState = status?.state ?? "disabled";
+  setBadge(role(root, "badge"), providerState);
+  renderFields(id, current);
+  const models = status?.models ?? [];
+  role(root, "model-count").textContent = models.length ? `(${models.length})` : "";
+  const list = role<HTMLElement>(root, "models");
+  list.replaceChildren(...(models.length ? models.map((model) => Object.assign(document.createElement("li"), { textContent: model.id, title: model.name ?? "" })) : [Object.assign(document.createElement("li"), { className: "empty", textContent: providerState === "ready" ? "No models discovered yet." : "No models (server not running)." })]));
+}
+
+const LOG_LINES_SHOWN = 50;
+const timeOfDay = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+/** Launcher badge, Start/Stop, error, process info and log of both local model servers. */
+function renderLocalServers(list: LocalServerStatusView[]): void {
+  localServers = list;
+  for (const server of list) {
+    const root = card(server.id);
+    setBadge(role(root, "server-badge"), server.state);
+    role<HTMLButtonElement>(root, "start").disabled = server.state === "starting" || server.state === "ready";
+    role<HTMLButtonElement>(root, "stop").disabled = server.state === "stopped";
+    showError(role(root, "error"), server.state === "error" ? server.error : undefined);
+    const info = [
+      server.pid !== undefined ? `pid ${server.pid}` : "",
+      server.port !== undefined ? `port ${server.port}` : "",
+      server.readyAt !== undefined ? `ready ${timeOfDay.format(server.readyAt)}` : "",
+    ].filter(Boolean).join(" · ");
+    role(root, "server-info").textContent = server.commandLine ? `${info ? `${info} · ` : ""}${server.commandLine}` : info;
+    const log = role<HTMLElement>(root, "log");
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+    log.textContent = server.log.slice(-LOG_LINES_SHOWN).join("\n");
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  }
+  for (const id of localOrder) setNavDot(id, localDotState(id));
+}
+
+/** The provider state of a local server, overridden by the launcher while it starts or failed. */
+function localDotState(id: LocalServerId): string {
+  const launcher = localServers.find((entry) => entry.id === id)?.state;
+  if (launcher === "starting" || launcher === "error") return launcher;
+  return state?.status.providers.find((entry) => entry.id === id)?.state ?? "disabled";
+}
+
+/** Starts a local server; unsaved edits of its page are saved first so the launcher reads them. */
+async function startLocal(id: LocalServerId): Promise<void> {
+  const msg = role<HTMLElement>(card(id), "msg");
+  flash(msg, "");
+  if (dirty[id]) {
+    await saveScope(id);
+    if (dirty[id]) return; // the save failed; its message is shown
+  }
+  const result = await api.startLocalServer(id);
+  if (!result.ok) flash(msg, result.message, true);
+}
+
+async function stopLocal(id: LocalServerId): Promise<void> {
+  const result = await api.stopLocalServer(id);
+  if (!result.ok) flash(role<HTMLElement>(card(id), "msg"), result.message, true);
 }
 
 const make = <K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text = ""): HTMLElementTagNameMap[K] => { const node = document.createElement(tag); if (className) node.className = className; if (text) node.textContent = text; return node; };
@@ -365,6 +445,7 @@ function render(current: StateView): void {
   renderProvider("codex", current);
   renderProvider("claude", current);
   renderProvider("antigravity", current);
+  for (const id of localOrder) renderLocal(id, current);
   renderOverview(current);
   renderInstall(current);
   el("settings-path").textContent = current.settingsPath;
@@ -372,6 +453,7 @@ function render(current: StateView): void {
   el("settings-path").title = current.settingsPath;
   setNavDot("server", server.state);
   for (const id of providerOrder) setNavDot(id, current.status.providers.find((entry) => entry.id === id)?.state ?? "disabled");
+  for (const id of localOrder) setNavDot(id, localDotState(id));
   usage.setState(current);
 }
 
@@ -593,6 +675,23 @@ function wire(): void {
     });
   }
 
+  for (const id of localOrder) {
+    const root = card(id);
+    const msg = role<HTMLElement>(root, "msg");
+    role(root, "save").onclick = () => void saveScope(id);
+    role(root, "refresh").onclick = async () => {
+      const result = await api.refreshModels(id);
+      if (!result.ok) flash(msg, result.message, true);
+    };
+    role(root, "start").onclick = () => void startLocal(id);
+    role(root, "stop").onclick = () => void stopLocal(id);
+    el(`${id}-key-show`).onclick = () => {
+      const input = field(`providers.${id}.apiKey`) as HTMLInputElement;
+      input.type = input.type === "password" ? "text" : "password";
+      el(`${id}-key-show`).textContent = input.type === "password" ? "Show" : "Hide";
+    };
+  }
+
   el("browse-exe").onclick = async () => {
     const result = await api.pickExecutable();
     if (result.path) { (field("providers.antigravity.executablePath") as HTMLInputElement).value = result.path; markDirty("antigravity", true); }
@@ -623,6 +722,8 @@ function wire(): void {
 wire();
 showView(storedView());
 api.onState((next) => render(next));
+api.onLocalServers(renderLocalServers);
+void api.getLocalServers().then(renderLocalServers);
 api.onActivity((next) => { activity = next; renderActivity(); });
 void api.getActivity().then((entries) => { activity = entries; renderActivity(); });
 void refresh();

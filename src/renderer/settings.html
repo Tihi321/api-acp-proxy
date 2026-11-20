@@ -30,6 +30,9 @@
         <button type="button" class="nav-item" data-view="codex"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Codex</span></button>
         <button type="button" class="nav-item" data-view="claude"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Claude</span></button>
         <button type="button" class="nav-item" data-view="antigravity"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Antigravity</span></button>
+        <p class="nav-group">Local models</p>
+        <button type="button" class="nav-item" data-view="gufo"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Gufo</span></button>
+        <button type="button" class="nav-item" data-view="strata"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Strata</span></button>
       </nav>
 
       <div class="sidebar-foot">
@@ -355,6 +358,107 @@
           <div class="save-bar">
             <button type="button" class="primary" data-role="save">Save and restart</button>
             <span class="muted hint">Saving restarts the server; in-flight requests will be dropped after 5 s.</span>
+            <p class="msg" data-role="msg" role="status"></p>
+            <p class="error" data-role="general-error" hidden></p>
+          </div>
+        </div>
+      </section>
+      <!-- Gufo -->
+      <section class="view" id="view-gufo" data-view="gufo" aria-labelledby="gufo-title" hidden>
+        <div class="view-body provider local" data-provider="gufo" id="card-gufo">
+          <div class="view-head">
+            <div><h1 id="gufo-title">Gufo</h1><p class="view-sub">A local model server on this PC, started by this app.</p></div>
+            <div class="view-actions">
+              <span class="badge" data-role="badge" title="The proxy's view of the provider">-</span>
+              <span class="badge" data-role="server-badge" title="The server process started by this app">stopped</span>
+              <button type="button" class="primary" data-role="start">Start</button>
+              <button type="button" data-role="stop">Stop</button>
+              <label class="switch"><input id="providers.gufo.enabled" type="checkbox"><span>Enabled</span></label>
+            </div>
+          </div>
+          <small data-note-for="providers.gufo.enabled"></small>
+          <p class="note">Only one local server runs at a time: starting one stops the other.</p>
+
+          <section class="card">
+            <div class="card-head"><h2>Server</h2></div>
+            <p class="error" data-role="error" hidden></p>
+            <p class="muted small-text" data-role="server-info"></p>
+            <div class="grid">
+              <label class="field"><span>Port</span><input id="providers.gufo.port" type="number" min="1" max="65535"><small>The proxy sends requests to 127.0.0.1 on this port and checks it for readiness. <code>{port}</code> in the arguments is replaced with it.</small><small data-note-for="providers.gufo.port"></small><small class="error" data-error-for="providers.gufo.port"></small></label>
+              <label class="field"><span>Max concurrent requests <em class="muted">(empty = the server value)</em></span><input id="providers.gufo.maxConcurrent" type="number" min="0"><small data-note-for="providers.gufo.maxConcurrent"></small><small class="error" data-error-for="providers.gufo.maxConcurrent"></small></label>
+            </div>
+            <label class="field wide"><span>Command</span><input id="providers.gufo.command" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.gufo.command"></small><small class="error" data-error-for="providers.gufo.command"></small></label>
+            <label class="field wide"><span>Arguments</span><input id="providers.gufo.args" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.gufo.args"></small><small class="error" data-error-for="providers.gufo.args"></small></label>
+            <label class="field wide"><span>Working folder</span><input id="providers.gufo.cwd" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.gufo.cwd"></small><small class="error" data-error-for="providers.gufo.cwd"></small></label>
+            <label class="field wide"><span>API key <em class="muted">(optional; sent to the server as a Bearer token, never put on the command line)</em></span>
+              <div class="row"><input id="providers.gufo.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="gufo-key-show">Show</button></div>
+              <small data-note-for="providers.gufo.apiKey"></small><small class="error" data-error-for="providers.gufo.apiKey"></small></label>
+          </section>
+
+          <section class="card models">
+            <div class="card-head"><h2>Models <span class="muted" data-role="model-count"></span></h2><button type="button" class="small push" data-role="refresh">Refresh models</button></div>
+            <ul class="chips" data-role="models"></ul>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Log</h2></div>
+            <pre class="log mono" data-role="log"></pre>
+          </section>
+
+          <div class="save-bar">
+            <button type="button" class="primary" data-role="save">Save and restart</button>
+            <span class="muted hint">Saving restarts the proxy server; in-flight requests will be dropped after 5 s. A running local server is not restarted.</span>
+            <p class="msg" data-role="msg" role="status"></p>
+            <p class="error" data-role="general-error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Strata -->
+      <section class="view" id="view-strata" data-view="strata" aria-labelledby="strata-title" hidden>
+        <div class="view-body provider local" data-provider="strata" id="card-strata">
+          <div class="view-head">
+            <div><h1 id="strata-title">Strata</h1><p class="view-sub">A local model server on this PC, started by this app.</p></div>
+            <div class="view-actions">
+              <span class="badge" data-role="badge" title="The proxy's view of the provider">-</span>
+              <span class="badge" data-role="server-badge" title="The server process started by this app">stopped</span>
+              <button type="button" class="primary" data-role="start">Start</button>
+              <button type="button" data-role="stop">Stop</button>
+              <label class="switch"><input id="providers.strata.enabled" type="checkbox"><span>Enabled</span></label>
+            </div>
+          </div>
+          <small data-note-for="providers.strata.enabled"></small>
+          <p class="note">Only one local server runs at a time: starting one stops the other.</p>
+
+          <section class="card">
+            <div class="card-head"><h2>Server</h2></div>
+            <p class="error" data-role="error" hidden></p>
+            <p class="muted small-text" data-role="server-info"></p>
+            <div class="grid">
+              <label class="field"><span>Port</span><input id="providers.strata.port" type="number" min="1" max="65535"><small>The proxy sends requests to 127.0.0.1 on this port and checks it for readiness. <code>{port}</code> in the arguments is replaced with it.</small><small data-note-for="providers.strata.port"></small><small class="error" data-error-for="providers.strata.port"></small></label>
+              <label class="field"><span>Max concurrent requests <em class="muted">(empty = the server value)</em></span><input id="providers.strata.maxConcurrent" type="number" min="0"><small data-note-for="providers.strata.maxConcurrent"></small><small class="error" data-error-for="providers.strata.maxConcurrent"></small></label>
+            </div>
+            <label class="field wide"><span>Command</span><input id="providers.strata.command" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.strata.command"></small><small class="error" data-error-for="providers.strata.command"></small></label>
+            <label class="field wide"><span>Arguments</span><input id="providers.strata.args" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.strata.args"></small><small class="error" data-error-for="providers.strata.args"></small></label>
+            <label class="field wide"><span>Working folder</span><input id="providers.strata.cwd" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.strata.cwd"></small><small class="error" data-error-for="providers.strata.cwd"></small></label>
+            <label class="field wide"><span>API key <em class="muted">(optional; sent to the server as a Bearer token, never put on the command line)</em></span>
+              <div class="row"><input id="providers.strata.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="strata-key-show">Show</button></div>
+              <small data-note-for="providers.strata.apiKey"></small><small class="error" data-error-for="providers.strata.apiKey"></small></label>
+          </section>
+
+          <section class="card models">
+            <div class="card-head"><h2>Models <span class="muted" data-role="model-count"></span></h2><button type="button" class="small push" data-role="refresh">Refresh models</button></div>
+            <ul class="chips" data-role="models"></ul>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Log</h2></div>
+            <pre class="log mono" data-role="log"></pre>
+          </section>
+
+          <div class="save-bar">
+            <button type="button" class="primary" data-role="save">Save and restart</button>
+            <span class="muted hint">Saving restarts the proxy server; in-flight requests will be dropped after 5 s. A running local server is not restarted.</span>
             <p class="msg" data-role="msg" role="status"></p>
             <p class="error" data-role="general-error" hidden></p>
           </div>
