@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { ProxyApi, StateView, InstallProgressView, ActivityView, UsageView } from "../shared/ipc.js";
+import type { ProxyApi, StateView, InstallProgressView, ActivityView, UsageView, LocalServerStatusView } from "../shared/ipc.js";
 
 // Sandboxed preload: only `electron` may be required at runtime, so this file has no other runtime imports.
 const invoke = <T,>(channel: string, ...args: unknown[]): Promise<T> => ipcRenderer.invoke(channel, ...args) as Promise<T>;
@@ -25,6 +25,10 @@ const api: ProxyApi = {
   onUsage: (callback) => subscribe<UsageView>("proxy:usage", callback),
   getPlanLimits: () => invoke("proxy:planLimits"),
   refreshPlanLimits: (providerId, force) => invoke("proxy:refreshPlanLimits", providerId, force),
+  getLocalServers: () => invoke("proxy:localServers"),
+  startLocalServer: (id) => invoke("proxy:startLocalServer", id),
+  stopLocalServer: (id) => invoke("proxy:stopLocalServer", id),
+  onLocalServers: (callback) => subscribe<LocalServerStatusView[]>("proxy:localServers", callback),
   openPath: (target) => invoke("proxy:openPath", target),
   pickExecutable: () => invoke("proxy:pickExecutable"),
   installAntigravity: () => invoke("proxy:installAntigravity"),

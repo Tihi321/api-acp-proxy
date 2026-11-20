@@ -1,0 +1,7 @@
+{"ts":"2026-11-20T00:00:00Z","actor":"director-scribe","type":"plan.created","request":"REQ-0004","ticket":"AAP-35-gufo-strata-speed-preview","detail":"planner returned the plan (T1-T7)"}
+{"ts":"2026-11-20T00:00:00Z","actor":"user","type":"plan.approved","request":"REQ-0004","ticket":"AAP-35-gufo-strata-speed-preview","detail":"user approved the plan in chat"}
+{"ts":"2026-11-20T22:29:28Z","actor":"implement","type":"implement.started","request":"REQ-0004","ticket":"AAP-35-gufo-strata-speed-preview","detail":"branch AAP-35_gufo-strata-speed-preview from origin/master"}
+{"ts":"2026-11-20T22:29:38Z","actor":"implement","type":"slice.started","request":"REQ-0004","ticket":"AAP-35-gufo-strata-speed-preview","detail":"T1 settings schema and IPC types","data":{"tasks":["T1"]}}
+{"ts":"2026-11-20T22:29:38Z","actor":"implement","type":"slice.started","request":"REQ-0004","ticket":"AAP-35-gufo-strata-speed-preview","detail":"T6 playground tok/s, code blocks, preview","data":{"tasks":["T6"]}}
+{"ts":"2026-11-20T22:32:29Z","actor":"implement","type":"slice.done","request":"REQ-0004","ticket":"AAP-35-gufo-strata-speed-preview","detail":"T1 done, settings test and typecheck green","data":{"tasks":["T1"]}}
+{"ts":"2026-11-20T22:32:29Z","actor":"implement","type":"slice.done","request":"REQ-0004","ticket":"AAP-35-gufo-strata-speed-preview","detail":"T6 done, playground tests, typecheck, build green","data":{"tasks":["T6"]}}

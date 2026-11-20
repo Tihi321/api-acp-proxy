@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import path from "node:path";
 import { loadConfig } from "../src/config.js";
 import { createLogger } from "../src/logger.js";
-import { defaultSettings, defaultSettingsPath, mergeSettings, resolveConfig, SettingsStore, type SecretCodec } from "../src/settings.js";
+import { defaultSettings, defaultSettingsPath, mergeSettings, resolveConfig, SettingsStore, settingsSchema, type SecretCodec } from "../src/settings.js";
 
 const dir = path.resolve(".claude/temp/settings-tests", String(process.pid));
 mkdirSync(dir, { recursive: true });
@@ -11,6 +11,18 @@ afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
 let counter = 0;
 const fresh = () => path.join(dir, `case-${counter++}`, "settings.json");
 const logger = createLogger({ console: false });
+
+describe("local provider settings", () => {
+  it("keeps and defaults the gufo and strata keys", () => {
+    const parsed = settingsSchema.parse({ providers: { gufo: { port: 9000 } } });
+    expect(parsed.providers.gufo.port).toBe(9000);
+    expect(parsed.providers.gufo.command).toBe("D:\\Gufo\\gufo.cmd");
+    expect(parsed.providers.gufo.args).toContain("--port {port}");
+    expect(parsed.providers.strata.port).toBe(8080);
+    expect(parsed.providers.strata.command).toBe("D:\\Strata\\terminal\\run-unsloth-ud-iq4_xs.bat");
+    expect(mergeSettings(defaultSettings(), { providers: { strata: { args: "--x" } } }).providers.strata.args).toBe("--x");
+  });
+});
 
 describe("SettingsStore", () => {
   it("writes defaults when the file is missing", async () => {
