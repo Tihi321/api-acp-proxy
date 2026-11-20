@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Preview</title>
+<style>body { font: 14px system-ui, sans-serif; color: #667085; margin: 12px; }</style>
+</head>
+<body>
+<p>Waiting for code…</p>
+<script>
+(function () {
+  // The playground (parent frame) or the tab that opened this one sends the document once; nothing else is accepted.
+  var host = window.parent !== window ? window.parent : window.opener;
+  if (!host) return;
+  window.addEventListener("message", function onMessage(event) {
+    var data = event.data;
+    if (event.source !== host || !data || data.type !== "acp-preview-run" || typeof data.html !== "string") return;
+    window.removeEventListener("message", onMessage);
+    window.opener = null;
+    document.open();
+    document.write(data.html);
+    document.close();
+  });
+  host.postMessage({ type: "acp-preview-ready" }, "*");
+})();
+</script>
+</body>
+</html>

@@ -44,7 +44,7 @@ After a log-out the provider shows needs login, kept and warm agent sessions are
 
 **Plan limits.** The Usage page also shows how much of each account plan is used. Codex is asked through its `/status` command and Claude through `/usage`, sent in a throwaway agent session, only when you press **Refresh** (or open the Usage page, for a provider that is ready and whose value is older than a minute); never on a timer. The probe takes a slot of the provider's [concurrency cap](#concurrency-cap), is not listed in Recent requests, is not counted in the totals, and does not run while the provider needs login. Codex reports "% left", shown here as used. Claude also pushes rate-limit hints after requests, shown under its card. Antigravity: not available. A custom `PROXY_ACP_COMMAND` Codex adapter: not available. API key logins have no plan limits. The account email and the session cost in these answers are never logged or shown; when an answer cannot be read, it is shown as sent with those parts removed. The wording of the answers is not a stable contract of the adapters (codex-acp 2.3.0, claude-agent-acp 0.91.0), so a new adapter version may need a parser update.
 
-**Settings window:** a sidebar with the pages Overview, Usage, Requests, Server, Codex, Claude and Antigravity; the logs folder button, the settings path and the secrets note are at the bottom of the sidebar. A dot next to a page means it has unsaved changes. The window follows Windows light or dark mode. The Server page has the host, port, API key with a generator, timeouts, max body size, models wait, the tool result wait and launch at login; each provider page has the enable switch, state, discovered models, auth method and Login. The Antigravity page also has the executable path (Browse), a "Download from registry" button with progress, and the optional `GEMINI_API_KEY` / `GEMINI_HOME`. Fields forced by an environment variable are shown disabled. Saving restarts the server (in-flight requests get up to 5 s to finish). API keys are stored encrypted with Electron `safeStorage` (the file value starts with `enc:`).
+**Settings window:** a sidebar with the pages Overview, Usage, Requests, Server, Codex, Claude, Antigravity and, under Local models, Gufo and Strata; the logs folder button, the settings path and the secrets note are at the bottom of the sidebar. A dot next to a page means it has unsaved changes. The window follows Windows light or dark mode. The Server page has the host, port, API key with a generator, timeouts, max body size, models wait, the tool result wait and launch at login; each provider page has the enable switch, state, discovered models, auth method and Login. The Antigravity page also has the executable path (Browse), a "Download from registry" button with progress, and the optional `GEMINI_API_KEY` / `GEMINI_HOME`. Fields forced by an environment variable are shown disabled. Saving restarts the server (in-flight requests get up to 5 s to finish). API keys are stored encrypted with Electron `safeStorage` (the file value starts with `enc:`).
 
 **Files** (`%APPDATA%\api-acp-proxy\`, or the folder of `PROXY_SETTINGS_FILE`):
 
@@ -78,6 +78,7 @@ Model ids are namespaced as `<provider>/<id>`, for example `codex/gpt-6-luna`, `
 - Codex models are discovered at runtime from the agent, like the others, and are also exposed **unprefixed** (`gpt-6-luna` and `codex/gpt-6-luna` both work), so existing clients keep working. The list depends on your ChatGPT plan and on the bundled codex-acp version (with codex-acp 2.3.0 a ChatGPT Go account gets `gpt-6-luna`, `gpt-5.6-terra` and `gpt-5.6-luna`; `gpt-5.6-sol` is gone), so check `GET /v1/models` instead of assuming ids. Until the first discovery has finished (a first start, with no models cache yet) an unprefixed id is passed to Codex as it is.
 - Claude models are only available prefixed (`claude/<id>`), and are discovered at runtime from the agent.
 - Antigravity models are only available prefixed, and are discovered at runtime from the agent (the list depends on your plan and on the server version).
+- Gufo and Strata (local model servers on this PC) are only available prefixed (`gufo/<id>`, `strata/<id>`), and are enabled by default. They are plain OpenAI-compatible upstreams, **text only**: a request with tools, MCP servers, web search or images is answered 400 `model_not_capable`. While the server is not running, a request answers 503 `local_server_not_running` ("Gufo is not running — start it from the app."). See [Local model servers (Gufo, Strata)](#local-model-servers-gufo-strata).
 - **Collision rule:** if an unprefixed id would be claimed by two providers, the first provider keeps it and the later one is listed only with its prefix; a warning is logged.
 - Only enabled providers are listed. An unknown id returns 404 `model_not_found`.
 - `/v1/models` waits up to `PROXY_MODELS_WAIT_MS` for providers that have not finished discovery; a slow provider is omitted from that response. `owned_by` reflects the provider.
@@ -114,6 +115,28 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 | `PROXY_ANTIGRAVITY_COMMAND` | unset | Path to `agy_acp_server.exe` (overrides the `executablePath` setting) |
 | `PROXY_ANTIGRAVITY_ACCEPT_TERMS` | unset | Set to `1` to acknowledge the Antigravity terms headlessly |
 | `GEMINI_API_KEY`, `GEMINI_HOME` | unset | Passed through to the Antigravity server |
+
+## Local model servers (Gufo, Strata)
+
+Gufo and Strata are local model servers that run on this PC and speak the OpenAI API. The proxy forwards `gufo/*` and `strata/*` requests to `http://127.0.0.1:<port>/v1`; the desktop app can also start and stop them (pages **Gufo** and **Strata** under "Local models" in the settings window, with Start/Stop, the state and the last 50 log lines; the app keeps the last 200).
+
+Settings (`providers.gufo`, `providers.strata`; no environment variables):
+
+| Key | Gufo default | Strata default |
+| --- | --- | --- |
+| `enabled` | `true` | `true` |
+| `port` | `8081` | `8080` |
+| `command` | `D:\Gufo\gufo.cmd` | `D:\Strata\terminal\run-unsloth-ud-iq4_xs.bat` |
+| `args` | `serve llm --model qwen27-q4 --speculative dflash2 ... --port {port} --context 32768` | empty |
+| `cwd` | `D:\Gufo` | `D:\Strata` |
+| `apiKey` | unset (sent as a bearer token when set; stored encrypted by the app) | unset |
+| `maxConcurrent` | `1` | `1` |
+
+- **`{port}`** in `args` is replaced with `port`. Strata's bat has port 8080 baked in, so keep `port` at 8080 (or whatever the bat uses): it is only where the proxy connects and probes.
+- **One at a time.** Starting one server stops the other. A server is **not** started automatically: not at app start, not by a request.
+- **How it runs.** Hidden, through `cmd.exe` (no console window), in `cwd`. It is ready when `GET /v1/models` on its port answers 200; it fails if that does not happen in 10 minutes. If something already answers on the port, Start is refused (the app never adopts a server it did not start). Stop kills the whole process tree, and so does quitting the app.
+- **Strata's `--open`.** The bat opens a browser tab. Point `command` at the venv python without `--open` to avoid it.
+- **Upstream.** The provider uses Node's `fetch`, not Electron's `net.fetch`, because Strata refuses a request that carries a browser `Origin` header.
 
 ## Concurrency cap
 
@@ -319,14 +342,16 @@ Open `http://127.0.0.1:8787/playground` in a browser, or use **Open playground**
 - **Pick a model:** every model the proxy lists, grouped by provider.
 - **Chat:** multi-turn chats with an optional system prompt, and toggles for streaming, web search and image generation.
 - **See how each answer was made:**
-  - time to first token and total time;
-  - input and output tokens;
+  - time to first token (TTFT) and total time;
+  - input and output tokens, and the decode speed in tok/s: output tokens / ((total - TTFT) / 1000). While streaming, the page shows a live `~N tok/s` estimate from the text so far (about 4 characters per token). Output tokens of the ACP providers may themselves be an estimate;
   - finish reason;
   - citations and any generated images;
   - the exact JSON request, with a **Copy as curl** button.
+- **Read code:** fenced code blocks in an answer are shown as code once the answer has finished.
+- **Preview html/css/js:** a finished answer with `html`, `css` or `js` blocks gets **Run** (in a frame under the message) and **Open in new tab** buttons. Nothing runs automatically. The frame is sandboxed (`allow-scripts`, no `allow-same-origin`) and loads `/playground/preview`, which has its own CSP: inline script and style only, no network, an opaque origin. The page then cannot read the playground's key or chats.
 - **Keep a history:** chats are saved in this browser's `localStorage`, never on the proxy. The optional API key field is kept for the tab only.
 
-The page itself needs no API key; its API calls send the key you enter. It talks only to the proxy that served it, under a strict Content-Security-Policy. Answers are shown as plain text, never as HTML.
+The page itself needs no API key; its API calls send the key you enter. It talks only to the proxy that served it, under a strict Content-Security-Policy (`frame-src 'self'` for the preview, `frame-ancestors 'none'` kept). Answers are shown as text, never injected as HTML; model code runs only in the sandboxed preview.
 
 ## curl
 

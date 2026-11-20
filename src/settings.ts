@@ -10,6 +10,19 @@ import { BRIDGE_SERVER_NAME } from "./tool-bridge.js";
 const nonNegative = (fallback: number) => z.number().int().min(0).default(fallback);
 const positive = (fallback: number) => z.number().int().positive().default(fallback);
 
+/** A local OpenAI-compatible model server (Gufo, Strata) that the desktop app can start itself. */
+const localProviderSchema = (defaults: { port: number; command: string; args: string; cwd: string }) => z.object({
+  enabled: z.boolean().default(true),
+  /** 127.0.0.1:<port> is where the proxy sends requests and where the launcher probes /v1/models. `{port}` in `args` is replaced with it. */
+  port: z.number().int().min(1).max(65535).default(defaults.port),
+  command: z.string().default(defaults.command),
+  /** One command-line string, passed to cmd.exe as written after the quoted command. */
+  args: z.string().default(defaults.args),
+  cwd: z.string().default(defaults.cwd),
+  apiKey: z.string().optional(),
+  maxConcurrent: z.number().int().min(0).default(1),
+}).default({});
+
 const mcpLabel = z.string().regex(MCP_LABEL, "An MCP server label is 1 to 64 letters, digits, '_' or '-'.").refine((label) => label !== BRIDGE_SERVER_NAME, `The MCP server label '${BRIDGE_SERVER_NAME}' is reserved for the proxy's own tool bridge.`);
 const mcpHttpUrl = z.string().url().refine((value) => /^https?:\/\//i.test(value), "An MCP server url must be http or https.");
 const mcpHeaders = z.record(z.string().regex(HEADER_NAME, "Not a valid header name."), z.string().refine(plainValue, "A header value cannot contain line breaks."));
@@ -108,6 +121,8 @@ export const settingsSchema = z.object({
       /** Opt-in: a regular expression (case-insensitive) matched against the error of a failed turn; a match marks the provider as having hit its usage limit. Absent: off. */
       usageLimitPattern: z.string().refine((value) => { try { new RegExp(value); return true; } catch { return false; } }, "must be a valid regular expression").optional(),
     }).default({}),
+    gufo: localProviderSchema({ port: 8081, command: "D:\\Gufo\\gufo.cmd", args: "serve llm --model qwen27-q4 --speculative dflash2 --dflash-model D:\\Gufo\\models\\qwen27-q4\\Qwen3.8-27B-DFlash2-Q4_K_M.gguf --port {port} --context 32768", cwd: "D:\\Gufo" }),
+    strata: localProviderSchema({ port: 8080, command: "D:\\Strata\\terminal\\run-unsloth-ud-iq4_xs.bat", args: "", cwd: "D:\\Strata" }),
   }).default({}),
   /** MCP servers a Responses request may name by `server_label` (JSON only, no settings-window editor). Headers and env are stored as written. */
   mcpServers: z.record(mcpLabel, mcpServerSchema).default({}),
@@ -150,7 +165,7 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
 
 function mapSecrets(settings: Settings, map: (value: string) => string | undefined): Settings {
   const copy = structuredClone(settings);
-  const holders: Array<[Record<string, unknown>, string]> = [[copy.server, "apiKey"], [copy.providers.antigravity, "apiKey"], [copy.providers.claude, "apiKey"], [copy.providers.claude, "oauthToken"]];
+  const holders: Array<[Record<string, unknown>, string]> = [[copy.server, "apiKey"], [copy.providers.antigravity, "apiKey"], [copy.providers.claude, "apiKey"], [copy.providers.claude, "oauthToken"], [copy.providers.gufo, "apiKey"], [copy.providers.strata, "apiKey"]];
   for (const [holder, key] of holders) {
     const value = holder[key];
     if (typeof value !== "string") continue;

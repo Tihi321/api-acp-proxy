@@ -48,7 +48,24 @@ export interface SettingsView {
       enabled: boolean; apiKey?: string; oauthToken?: string; configDir?: string; executablePath?: string; authMethodId?: string;
       termsAcknowledgedAt?: string; maxConcurrent?: number; maxPromptChars?: number;
     };
+    gufo: LocalProviderSettingsView;
+    strata: LocalProviderSettingsView;
   };
+}
+export interface LocalProviderSettingsView { enabled: boolean; port: number; command: string; args: string; cwd: string; apiKey?: string; maxConcurrent?: number }
+export type LocalServerId = "gufo" | "strata";
+export type LocalServerState = "stopped" | "starting" | "ready" | "error";
+export interface LocalServerStatusView {
+  id: LocalServerId;
+  name: string;                 // "Gufo" | "Strata"
+  state: LocalServerState;
+  port?: number;                // of the last start
+  pid?: number;                 // while the process lives
+  startedAt?: number;           // epoch ms of the last spawn
+  readyAt?: number;             // epoch ms the probe first answered 200
+  error?: string;               // set in state "error"
+  commandLine?: string;         // what was run (no secrets: apiKey is never put on the command line)
+  log: string[];                // last lines, oldest first, at most 200, ANSI codes stripped
 }
 /** Deep partial; `null` clears an optional field (same contract as the core SettingsPatch). */
 export type SettingsPatchView = {
@@ -57,6 +74,8 @@ export type SettingsPatchView = {
     codex?: { [K in keyof SettingsView["providers"]["codex"]]?: SettingsView["providers"]["codex"][K] | null };
     antigravity?: { [K in keyof SettingsView["providers"]["antigravity"]]?: SettingsView["providers"]["antigravity"][K] | null };
     claude?: { [K in keyof SettingsView["providers"]["claude"]]?: SettingsView["providers"]["claude"][K] | null };
+    gufo?: { [K in keyof LocalProviderSettingsView]?: LocalProviderSettingsView[K] | null };
+    strata?: { [K in keyof LocalProviderSettingsView]?: LocalProviderSettingsView[K] | null };
   };
 };
 
@@ -182,6 +201,12 @@ export interface ProxyApi {
   getPlanLimits(): Promise<PlanLimitsView[]>;
   /** Probes unless a value younger than 60 s exists and `force` is not true. */
   refreshPlanLimits(providerId: string, force?: boolean): Promise<PlanLimitsView>;
+  /** Both local servers, in the order gufo, strata. */
+  getLocalServers(): Promise<LocalServerStatusView[]>;
+  /** Resolves once the process is spawned (not when ready); readiness arrives through `onLocalServers`. */
+  startLocalServer(id: LocalServerId): Promise<ActionResult>;
+  stopLocalServer(id: LocalServerId): Promise<ActionResult>;
+  onLocalServers(callback: (servers: LocalServerStatusView[]) => void): () => void;
 }
 
 declare global {

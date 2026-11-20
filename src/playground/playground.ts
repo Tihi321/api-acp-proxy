@@ -1,4 +1,4 @@
-import { chatTitle, curlFor, formatMs, groupModels, isHttpUrl, parseSseLines } from "./lib.js";
+import { chatTitle, curlFor, decodeRate, estimateTokens, formatMs, formatRate, groupModels, isHttpUrl, parseSseLines, previewDocument, splitBlocks, tokensPerSecond } from "./lib.js";
 
 // The playground page served by the proxy at /playground: pick a model, chat, keep a history in this browser. Text is always rendered as text.
 
@@ -117,9 +117,22 @@ function renderMessages(): void {
 function renderMessage(message: Msg): HTMLElement {
   const node = make("div", `msg ${message.role}`);
   node.append(make("div", "who", message.role === "user" ? "You" : message.meta?.model ?? "Assistant"));
-  const text = make("div", "text", message.content);
-  if (message.role === "assistant" && !message.meta && !message.error) text.classList.add("pending");
-  if (message.content || !message.error) node.append(text);
+  const blocks = message.role === "assistant" && message.meta ? splitBlocks(message.content) : [];
+  if (blocks.length) {
+    for (const block of blocks) {
+      if (block.type === "text") { node.append(make("div", "text", block.text)); continue; }
+      const figure = make("figure", "code");
+      if (block.lang) figure.append(make("figcaption", "", block.lang));
+      const pre = make("pre");
+      pre.append(make("code", "", block.code));
+      figure.append(pre);
+      node.append(figure);
+    }
+  } else {
+    const text = make("div", "text", message.content);
+    if (message.role === "assistant" && !message.meta && !message.error) text.classList.add("pending");
+    if (message.content || !message.error) node.append(text);
+  }
   for (const url of message.images ?? []) if (url.startsWith("data:image/")) node.append(Object.assign(make("img"), { src: url, alt: "Generated image" }));
   if (message.citations?.length) {
     const list = make("ol", "cites");
@@ -133,13 +146,17 @@ function renderMessage(message: Msg): HTMLElement {
     node.append(list);
   }
   if (message.error) node.append(make("div", "error", message.error));
+  const html = message.role === "assistant" && message.meta ? previewDocument(blocks) : undefined;
+  if (html !== undefined) node.append(previewBar(html));
   if (message.meta) {
     const meta = message.meta;
+    const rate = decodeRate(meta);
     const parts = [
       meta.stream ? "streamed" : "not streamed",
-      ...(meta.firstMs !== undefined ? [`first token ${formatMs(meta.firstMs)}`] : []),
+      ...(meta.firstMs !== undefined ? [`TTFT ${formatMs(meta.firstMs)}`] : []),
       `total ${formatMs(meta.totalMs)}`,
       ...(meta.inputTokens !== undefined ? [`${meta.inputTokens} in / ${meta.outputTokens ?? 0} out tokens`] : []),
+      ...(rate !== undefined ? [formatRate(rate)] : []),
       ...(meta.finish ? [`finish: ${meta.finish}`] : []),
     ];
     const line = make("div", "meta");
@@ -158,6 +175,45 @@ function renderMessage(message: Msg): HTMLElement {
     node.append(details);
   }
   return node;
+}
+
+// The preview page announces itself with a message; the window that sent it (iframe or tab) is answered with the document, once. Model code runs only after a click.
+const waiting = new Map<MessageEventSource, string>();
+window.addEventListener("message", (event) => {
+  const html = event.source ? waiting.get(event.source) : undefined;
+  if (html === undefined || !event.source || (event.data as { type?: unknown } | null)?.type !== "acp-preview-ready") return;
+  waiting.delete(event.source);
+  // The target is "*" because the sandboxed preview has an opaque origin; the receiver checks that the sender is its parent/opener.
+  (event.source as Window).postMessage({ type: "acp-preview-run", html }, "*");
+});
+
+/** Run (in a sandboxed iframe under the message) and Open in new tab for the html/css/js blocks of one finished answer. */
+function previewBar(html: string): HTMLElement {
+  const bar = make("div", "preview-bar");
+  const holder = make("div", "preview-holder");
+  const run = make("button", "", "Run");
+  run.type = "button";
+  const tab = make("button", "", "Open in new tab");
+  tab.type = "button";
+  run.onclick = () => {
+    const frame = make("iframe", "preview");
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.src = "/playground/preview";
+    frame.title = "Preview";
+    const close = make("button", "", "Close");
+    close.type = "button";
+    close.onclick = () => holder.replaceChildren();
+    holder.replaceChildren(close, frame);
+    if (frame.contentWindow) waiting.set(frame.contentWindow, html);
+  };
+  tab.onclick = () => {
+    const handle = window.open("/playground/preview", "_blank");
+    if (handle) waiting.set(handle, html);
+  };
+  bar.append(run, tab);
+  const wrap = make("div", "preview-wrap");
+  wrap.append(bar, holder);
+  return wrap;
 }
 
 /** The request body for the current chat: system prompt, then every turn that has an answer (failed answers are left out). */
@@ -236,6 +292,8 @@ async function readStream(body: ReadableStream<Uint8Array>, answer: Msg, meta: M
   const decoder = new TextDecoder();
   let buffer = "";
   let textNode: HTMLElement | undefined;
+  let rateNode: HTMLElement | undefined;
+  let rateAt = 0;
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -253,6 +311,15 @@ async function readStream(body: ReadableStream<Uint8Array>, answer: Msg, meta: M
         answer.content += delta.content;
         textNode ??= [...el("messages").querySelectorAll<HTMLElement>(".msg.assistant .text")].at(-1);
         if (textNode) { textNode.textContent = answer.content; el("messages").scrollTop = el("messages").scrollHeight; }
+        const now = performance.now();
+        if (now - rateAt >= 250) {
+          const live = tokensPerSecond(estimateTokens(answer.content), now - started - meta.firstMs);
+          if (live !== undefined) {
+            rateAt = now;
+            rateNode ??= textNode?.parentElement?.appendChild(make("span", "rate"));
+            if (rateNode) rateNode.textContent = `~${formatRate(live)}`;
+          }
+        }
       }
       if (delta?.annotations) answer.citations = [...(answer.citations ?? []), ...citationsOf(delta.annotations)];
       if (delta?.images) answer.images = [...(answer.images ?? []), ...imagesOf(delta.images)];

@@ -2,6 +2,8 @@
 .series-codex { background: var(--series-codex); }
 .series-claude { background: var(--series-claude); }
 .series-antigravity { background: var(--series-antigravity); }
+.series-gufo { background: var(--series-gufo); }
+.series-strata { background: var(--series-strata); }
 .series-other { background: var(--series-other); }
 
 #usage-table th:not(:first-child) { text-align: right; }
