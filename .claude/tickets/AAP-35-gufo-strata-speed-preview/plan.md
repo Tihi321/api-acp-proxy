@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 request: REQ-0004
 repos: [api-acp-proxy]
 branch: AAP-35_gufo-strata-speed-preview
