@@ -1,0 +1,11 @@
+## A-001 Approve AAP-38 plan?
+- status: answered
+- asked: 2026-11-21 14:05
+- by: director-scribe
+- why: Approve AAP-38 plan? Assumptions: D:\\LlamaCpp\\bin and D:\\LlamaCpp\\models defaults; Inkling minBuild 12607; no delete UI; api.github.com allowed.
+- options:
+  - Approve the plan as written
+  - Change the plan (say what to change)
+- recommendation: Approve the plan as written
+- default: The plan stays draft; implement does not start
+- answer: Yes, implement (approved as written, assumptions accepted) - 2026-11-21 14:23
