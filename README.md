@@ -412,20 +412,43 @@ At most 8 per `ask_model` call. The model must accept images (`image_input` in `
 
 ## Playground
 
-Open `http://127.0.0.1:8787/playground` in a browser, or use **Open playground** in the desktop app's Overview or the tray menu. On the page you can:
+Open `http://127.0.0.1:8787/playground` in a browser, or use **Open playground** in the desktop app's Overview or the tray menu. The layout follows current chat apps, in light or dark to match the system. On the page you can:
 
-- **Pick a model:** every model the proxy lists, grouped by provider.
-- **Chat:** multi-turn chats with an optional system prompt, and toggles for streaming, web search and image generation.
+- **Pick a model:** the model button in the composer opens a searchable list of every model the proxy lists, grouped by provider, with badges `image`, `vision` and `limit reached` (the model can still be picked). **Refresh models** reloads the list (in the picker and in Settings).
+- **Chat:** multi-turn chats with an optional system prompt (the **Chat settings** button in the chat header, saved per chat). The **Tools** menu in the composer has toggles for streaming, web search and image generation; web search and image generation exclude each other. **Enter** sends, **Shift+Enter** adds a new line, and **Stop** (or **Esc** in the composer) cancels a running answer.
+- **Generate images:** pick an image model and the **Image settings** button appears (negative prompt, size, steps, seed, guidance; a dot marks values changed from the defaults). With reference images attached the request goes to the edits endpoint. Image runs are kept for the tab only, not in the history.
+- **Attach images:** with the attach button, by drag and drop onto the page, or by pasting. Image models take them as reference images (up to 10). Chat models take them unless the model is listed with `vision: false` (then the button is disabled); they are sent as `image_url` content parts and stored with the chat, so later turns resend them. If the browser storage is full, the history is saved without them and the bubble shows **Image not saved**. The request JSON stored with an answer shows each data URL as `data:…(N KB)` instead of the image, so **Copy as curl** then contains that placeholder.
 - **See how each answer was made:**
-  - time to first token (TTFT, the first token of any kind, thinking included) and total time;
+  - time to first token (TTFT, the first token of any kind, thinking included) and total time, drawn as a thin timing strip under the answer (waiting, thinking, writing) with the numbers beside it;
   - input and output tokens, and the decode speed in tok/s (thinking tokens included): output tokens / ((total - TTFT) / 1000). While streaming, the page shows a live `~N tok/s` estimate from the text so far (about 4 characters per token). Output tokens of the ACP providers may themselves be an estimate;
   - finish reason;
-  - citations and any generated images;
+  - citations and any generated images (each with **Download** and **Open full size**);
   - the exact JSON request, with a **Copy as curl** button.
 - **See the thinking:** reasoning appears in a **Thinking…** accordion above the answer while it streams, and collapses to **Thought for N** (the time spent thinking) at the first answer token. Whether it is open is saved with the chat in the history.
 - **Read the answer:** answers are rendered as Markdown (headings, lists, tables, links and so on), live while streaming. Raw HTML in an answer is shown as text, and links open in a new tab only for `http`, `https` and `mailto`. Fenced code blocks are highlighted and have a **Copy** button.
-- **Preview html/css/js:** a finished answer with `html`, `css` or `js` blocks gets **Run** (in a frame under the message) and **Open in new tab** buttons. Nothing runs automatically. The frame is sandboxed (`allow-scripts`, no `allow-same-origin`) and loads `/playground/preview`, which has its own CSP: inline script and style only, no network, an opaque origin. The page then cannot read the playground's key or chats.
-- **Keep a history:** chats are saved in this browser's `localStorage`, never on the proxy. The optional API key field is kept for the tab only.
+- **Act on messages:** hover or focus a message for **Copy**, **Retry** (last answer: runs it again with the current model and toggles), **Edit** (last user message: edit and resend) and **Delete** (a user message also deletes the answer after it). They are disabled while a request runs.
+- **Preview html/css/js:** a finished answer with `html`, `css` or `js` blocks gets **Run** and **Open in new tab** buttons. **Run** opens the preview in a pane on the right that you can resize by dragging its edge (or with the arrow keys) and close; **Reload** in the pane restarts it. Below 900 px the pane covers the page. Nothing runs automatically. The frame is sandboxed (`allow-scripts`, no `allow-same-origin`) and loads `/playground/preview`, which has its own CSP: inline script and style only, no network, an opaque origin. The page then cannot read the playground's key or chats.
+- **Keep a history:** chats are saved in this browser's `localStorage`, never on the proxy. The optional API key (in **Settings**, the gear in the sidebar) is kept for the tab only.
+
+**History sidebar.** Search finds chats by title and message text. Chats are grouped as **Pinned**, then **Today**, **Yesterday**, **Previous 7 days** and **Older**, by the day of the last activity. Pin or unpin from the row menu. Drag a row to reorder it: pinned chats reorder within Pinned, unpinned chats reorder within their date group, and dropping an unpinned chat into Pinned pins it (dropping a pinned chat into a date group unpins it). An unpinned chat cannot be moved into another date group. Without a mouse use **Alt+Up** / **Alt+Down** or **Move up** / **Move down** in the row menu. Sending in a chat moves it to the top of Today; a pinned chat keeps its place. Rename by double-click, **F2** or the row menu; delete shows an **Undo** toast. At most 50 chats are kept: every pinned chat, plus the newest others. The sidebar collapses (toggle button) and its width can be dragged or changed with the arrow keys; both are remembered. Below 720 px it becomes a drawer over the page.
+
+**Keyboard shortcuts** (also listed in Settings):
+
+| Shortcut | Action |
+|---|---|
+| Ctrl/Cmd+Shift+O | New chat |
+| Ctrl/Cmd+Shift+S | Toggle the sidebar |
+| Ctrl/Cmd+K | Search chats (opens the sidebar if collapsed) |
+| Shift+Esc | Focus the composer |
+| Esc | Stop the running request when the composer has focus; otherwise close the open popover, dialog, drawer or rename field |
+| Alt+Up / Alt+Down | Move the focused chat |
+| F2 | Rename the focused chat |
+| Delete | Delete the focused chat (with Undo) |
+| Ctrl/Cmd+/ | Open the shortcut list |
+
+In Firefox, Ctrl+Shift+S is the browser's screenshot shortcut and may not be overridable; use the toggle button there.
+
+**Stored in this browser.** `localStorage["acp-playground-chats"]` holds the chats (optional per-chat `pinned` and `order` fields; older histories load unchanged). `localStorage["acp-playground-ui"]` holds the layout and composer preferences (sidebar open and width, preview width, the Stream toggle and the image settings). `sessionStorage["acp-playground-key"]` holds the API key for the tab. Nothing is sent to the proxy for storage.
 
 The page itself needs no API key; its API calls send the key you enter. It talks only to the proxy that served it, under a strict Content-Security-Policy (`frame-src 'self'` for the preview, `frame-ancestors 'none'` kept). Answers are shown as text, never injected as HTML; model code runs only in the sandboxed preview.
 
