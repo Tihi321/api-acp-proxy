@@ -13,8 +13,9 @@ import type { GenerateOptions, GenerationResult, Provider } from "../src/provide
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
 import { ToolBridgeHub } from "../src/tool-bridge.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
-const root = path.resolve(".claude/temp/mcp-endpoint-tests", String(process.pid));
+const root = tempRoot("mcp-endpoint");
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 const png = Buffer.from(PNG_B64, "base64");
 const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("JFIF-test-image-bytes")]);

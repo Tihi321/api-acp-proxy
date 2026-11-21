@@ -4,6 +4,7 @@
 .series-antigravity { background: var(--series-antigravity); }
 .series-gufo { background: var(--series-gufo); }
 .series-strata { background: var(--series-strata); }
+.series-llama { background: var(--series-llama); }
 .series-other { background: var(--series-other); }
 
 #usage-table th:not(:first-child) { text-align: right; }

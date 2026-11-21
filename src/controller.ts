@@ -13,7 +13,7 @@ import type { UsageView } from "./shared/ipc.js";
 import { codexRegistration } from "./providers/codex.js";
 import { antigravityRegistration } from "./providers/antigravity.js";
 import { claudeRegistration } from "./providers/claude.js";
-import { gufoRegistration, strataRegistration } from "./providers/local-openai.js";
+import { gufoRegistration, llamaRegistration, strataRegistration } from "./providers/local-openai.js";
 import { defaultRuntimeContext } from "./provider.js";
 import type { ModelInfo, Provider, ProviderStatus, RuntimeContext } from "./provider.js";
 import { defaultSettingsPath, mergeSettings, resolveConfig, SettingsStore } from "./settings.js";
@@ -87,7 +87,7 @@ export class ProxyController extends EventEmitter {
     this.logger = options.logger ?? createLogger();
     const settingsPath = options.settingsPath ?? defaultSettingsPath(this.env);
     this.store = new SettingsStore(settingsPath, options.secretCodec, this.logger);
-    this.registry = [...(options.registry ?? [codexRegistration, antigravityRegistration, claudeRegistration, gufoRegistration, strataRegistration])];
+    this.registry = [...(options.registry ?? [codexRegistration, antigravityRegistration, claudeRegistration, gufoRegistration, strataRegistration, llamaRegistration])];
     this.drainMs = options.drainMs ?? 5000;
     this.dataDir = options.ctx?.dataDir ?? path.dirname(settingsPath);
     this.ctx = defaultRuntimeContext({ ...options.ctx, logger: this.logger, dataDir: this.dataDir });
@@ -197,11 +197,36 @@ export class ProxyController extends EventEmitter {
 
   /** Persists a patch without a restart; serialized with the other lifecycle operations. */
   private saveSettings(patch: SettingsPatch): Promise<void> {
+    return this.exclusive(() => this.save(patch));
+  }
+
+  private async save(patch: SettingsPatch): Promise<void> {
+    await this.load();
+    const merged = mergeSettings(this.settings!, patch);
+    await this.store.save(merged);
+    this.settings = merged;
+  }
+
+  /**
+   * Persists a patch without restarting the server, so in-flight requests keep running. A function patch is built from the stored settings
+   * inside the lifecycle queue (a job that finishes after a long download patches only its own fields of what is saved now). Running providers
+   * that take settings live (`updateSettings`, e.g. the local profiles) get their new settings, and the router their new model list.
+   */
+  persistSettings(patch: SettingsPatch | ((current: Settings) => SettingsPatch)): Promise<ControllerStatus> {
     return this.exclusive(async () => {
       await this.load();
-      const merged = mergeSettings(this.settings!, patch);
-      await this.store.save(merged);
-      this.settings = merged;
+      await this.save(typeof patch === "function" ? patch(this.settings!) : patch);
+      const { providers: providerSettings } = await this.load();
+      const running = this.running;
+      if (running) {
+        for (const provider of running.providers) {
+          const next = providerSettings[provider.id];
+          if (!provider.updateSettings || !next) continue;
+          provider.updateSettings(next);
+          running.router.syncStaticModels(provider.id);
+        }
+      }
+      return this.publish();
     });
   }
 

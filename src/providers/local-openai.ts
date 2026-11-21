@@ -1,24 +1,33 @@
 import type { StopReason, Usage } from "@agentclientprotocol/sdk";
 import { ApiError, messageText, type Message } from "../api.js";
 import type { ProviderRegistration } from "../controller.js";
-import { STRATA_PROFILE_ID, type LocalModelCoordinator } from "../local-models.js";
+import { STRATA_PROFILE_ID, targetKey, type LocalModelCoordinator } from "../local-models.js";
 import type { Logger } from "../logger.js";
 import { AcpUnavailableError, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type ImagePassthrough, type ModelInfo, type Provider, type ProviderState, type ProviderStatus } from "../provider.js";
-import type { GufoProfile } from "../settings.js";
+import type { GufoProfile, LlamaProfile } from "../settings.js";
+import type { LocalServerId } from "../shared/ipc.js";
 
 export interface LocalOpenAiOptions {
-  id: "gufo" | "strata"; displayName: string;
+  id: LocalServerId; displayName: string;
   /** "http://127.0.0.1:<port>/v1" */
   baseUrl: string;
   apiKey?: string; logger: Logger;
   /** Default `globalThis.fetch`, not the Electron `net.fetch` of the runtime context (see `registration`). */
   fetch?: typeof fetch;
-  /** Gufo: the models this provider offers (listed whether or not the server runs). Without profiles the upstream's own list is used (Strata). */
-  profiles?: GufoProfile[];
+  /** Gufo / Llama.cpp: the models this provider offers (listed whether or not the server runs). Without profiles the upstream's own list is used (Strata). */
+  profiles?: GufoProfile[] | LlamaProfile[];
   /** Gufo: switches/queues the single server to the profile a request names. Without it requests go straight to the upstream. */
   coordinator?: LocalModelCoordinator;
   /** Coordinator profile every request of this provider holds a lease on (Strata: `strata`); Gufo derives it from the model's profile. */
   leaseProfile?: string;
+}
+
+/** What the provider needs of a Gufo or Llama.cpp profile. */
+interface ProfileEntry { id: string; model: string; label: string; kind: "llm" | "image"; vision: boolean; requestTimeoutMs?: number }
+
+function toEntry(profile: GufoProfile | LlamaProfile): ProfileEntry {
+  if ("modelFile" in profile) return { id: profile.id, model: profile.model, label: profile.label, kind: "llm", vision: profile.vision && !!profile.mmprojFile, requestTimeoutMs: profile.requestTimeoutMs };
+  return { id: profile.id, model: profile.model, label: profile.label, kind: profile.kind, vision: profile.vision, requestTimeoutMs: profile.requestTimeoutMs };
 }
 
 const DEFAULT_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
@@ -38,12 +47,12 @@ function errorCode(error: unknown): string | undefined {
 
 /** A generic OpenAI-compatible HTTP upstream (a local llama-server style process such as Gufo or Strata); text only, no tools. */
 export class LocalOpenAiProvider implements Provider {
-  readonly id: string;
+  readonly id: LocalServerId;
   readonly displayName: string;
   readonly ownedBy: string;
   readonly exposeUnprefixed = false;
-  readonly staticModels?: ModelInfo[];
-  private readonly profiles?: GufoProfile[];
+  staticModels?: ModelInfo[];
+  private profiles?: ProfileEntry[];
   private readonly coordinator?: LocalModelCoordinator;
   private readonly leaseProfile?: string;
   private readonly baseUrl: string;
@@ -62,14 +71,22 @@ export class LocalOpenAiProvider implements Provider {
     this.fetchImpl = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.coordinator = options.coordinator;
     this.leaseProfile = options.leaseProfile;
-    if (options.profiles) {
-      this.profiles = options.profiles;
-      this.staticModels = options.profiles.map((profile) => ({ id: profile.model, name: profile.label, kind: profile.kind, vision: profile.kind === "llm" && profile.vision }));
-      this.models = this.staticModels;
-    }
+    if (options.profiles) this.setProfiles(options.profiles);
   }
 
-  private profileOf(model: string): GufoProfile | undefined { return this.profiles?.find((profile) => profile.model === model); }
+  private setProfiles(profiles: GufoProfile[] | LlamaProfile[]): void {
+    this.profiles = (profiles as Array<GufoProfile | LlamaProfile>).map(toEntry);
+    this.staticModels = this.profiles.map((profile) => ({ id: profile.model, name: profile.label, kind: profile.kind, vision: profile.kind === "llm" && profile.vision }));
+    this.models = this.staticModels;
+  }
+
+  /** A saved profile change (e.g. model files and vision after a download) takes effect without a restart; a provider without profiles (Strata) keeps its upstream list. */
+  updateSettings(providerSettings: Record<string, unknown>): void {
+    if (!this.profiles || !Array.isArray(providerSettings.profiles)) return;
+    this.setProfiles(providerSettings.profiles as GufoProfile[] | LlamaProfile[]);
+  }
+
+  private profileOf(model: string): ProfileEntry | undefined { return this.profiles?.find((profile) => profile.model === model); }
 
   acceptsImages(model: string): boolean { const profile = this.profileOf(model); return profile?.kind === "llm" && profile.vision; }
 
@@ -87,7 +104,7 @@ export class LocalOpenAiProvider implements Provider {
       if (profile?.kind === "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' generates images; it does not answer chat requests.`, "model");
       if (messages.some((message) => message.parts.some((part) => part.type === "image")) && !(profile?.kind === "llm" && profile.vision)) throw new ApiError(400, "unsupported_content", `The model '${this.id}/${model}' does not accept image input.`, "messages");
     } else if (profile && profile.kind !== "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' does not generate images.`, "model");
-    const leaseId = profile?.id ?? this.leaseProfile;
+    const leaseId = profile ? targetKey(this.id, profile.id) : this.leaseProfile;
     if (!leaseId || !this.coordinator) return undefined;
     return this.coordinator.acquire(leaseId, signal);
   }
@@ -271,11 +288,11 @@ export class LocalOpenAiProvider implements Provider {
 
 export interface GufoHost { coordinator?: LocalModelCoordinator }
 
-function registration(id: "gufo" | "strata", displayName: string, host: GufoHost = {}): ProviderRegistration {
+function registration(id: LocalServerId, displayName: string, host: GufoHost = {}): ProviderRegistration {
   return {
     id, displayName,
     // Node's global fetch on purpose, not ctx.fetch (Electron net.fetch): Strata refuses a POST that carries a browser Origin header.
-    create: ({ providerSettings, ctx }) => new LocalOpenAiProvider({ id, displayName, baseUrl: `http://127.0.0.1:${providerSettings.port as number}/v1`, ...(typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? { apiKey: providerSettings.apiKey } : {}), logger: ctx.logger.child(id), ...(id === "gufo" && Array.isArray(providerSettings.profiles) ? { profiles: providerSettings.profiles as GufoProfile[] } : {}), ...(host.coordinator ? { coordinator: host.coordinator, ...(id === "strata" ? { leaseProfile: STRATA_PROFILE_ID } : {}) } : {}) }),
+    create: ({ providerSettings, ctx }) => new LocalOpenAiProvider({ id, displayName, baseUrl: `http://127.0.0.1:${providerSettings.port as number}/v1`, ...(typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? { apiKey: providerSettings.apiKey } : {}), logger: ctx.logger.child(id), ...(Array.isArray(providerSettings.profiles) ? { profiles: providerSettings.profiles as GufoProfile[] | LlamaProfile[] } : {}), ...(host.coordinator ? { coordinator: host.coordinator, ...(id === "strata" ? { leaseProfile: STRATA_PROFILE_ID } : {}) } : {}) }),
   };
 }
 
@@ -285,3 +302,6 @@ export const gufoRegistration: ProviderRegistration = createGufoRegistration();
 /** Strata; `host.coordinator` (the app) makes each request hold a lease on the `strata` profile so a Gufo switch cannot kill it mid-generation. */
 export function createStrataRegistration(host: GufoHost = {}): ProviderRegistration { return registration("strata", "Strata", host); }
 export const strataRegistration: ProviderRegistration = createStrataRegistration();
+/** Llama.cpp with its profiles; `host.coordinator` (the app) switches the single server to the model a request names. */
+export function createLlamaRegistration(host: GufoHost = {}): ProviderRegistration { return registration("llama", "Llama.cpp", host); }
+export const llamaRegistration: ProviderRegistration = createLlamaRegistration();

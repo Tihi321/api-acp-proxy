@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,10 +7,13 @@ import { textMessage } from "../src/api.js";
 import { codexDescriptor } from "../src/providers/codex.js";
 import { claudeDescriptor } from "../src/providers/claude.js";
 import { ProviderAuthRequiredError, defaultRuntimeContext, type ProviderDescriptor, type ProviderStatus } from "../src/provider.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 // Log out and sign-in status with the fake agent. The real agents are never logged out here: nothing in these tests reads or touches ~/.codex, ~/.claude, ~/.gemini or ~/.agents.
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/logout-tests", String(process.pid));
+// One folder per run: Windows reuses pids, and a log or folder left by an earlier run with the same pid would be appended to or found again.
+const root = tempRoot("logout");
+afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 const user = [textMessage("user", "hello")];
 const providers: AcpProvider[] = [];
 let counter = 0;

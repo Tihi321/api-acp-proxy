@@ -8,9 +8,10 @@ import { createLogger } from "../src/logger.js";
 import { parseClaudeUsage, parseCodexStatus, redactLimitsText } from "../src/plan-limits.js";
 import { codexDescriptor } from "../src/providers/codex.js";
 import { defaultSettings, mergeSettings } from "../src/settings.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/plan-limits-tests", String(process.pid));
+const root = tempRoot("plan-limits");
 mkdirSync(root, { recursive: true });
 let counter = 0;
 const controllers: ProxyController[] = [];

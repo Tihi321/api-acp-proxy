@@ -1,0 +1,32 @@
+{"ts":"2026-11-21T13:05:58Z","actor":"director-scribe","type":"plan.created","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"planner returned plan (T1-T9), status draft"}
+{"ts":"2026-11-21T13:05:58Z","actor":"director-scribe","type":"attention.opened","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"A-001 approve AAP-38 plan","data":{"id":"A-001"}}
+{"ts":"2026-11-21T13:23:34Z","actor":"director-scribe","type":"attention.answered","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"A-001 answered: yes, implement","data":{"id":"A-001"}}
+{"ts":"2026-11-21T13:23:34Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"user approved the plan (assumptions accepted)"}
+{"ts":"2026-11-21T13:24:51Z","actor":"implement","type":"implement.started","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"branch AAP-38_llama-cpp-provider from master 2c37d17"}
+{"ts":"2026-11-21T13:25:30Z","actor":"implement","type":"slice.started","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T1 settings and view types","data":{"tasks":["T1"]}}
+{"ts":"2026-11-21T13:25:30Z","actor":"implement","type":"slice.started","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T2 download core","data":{"tasks":["T2"]}}
+{"ts":"2026-11-21T13:27:26Z","actor":"implement","type":"slice.done","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T2 done, 20 tests green","data":{"tasks":["T2"]}}
+{"ts":"2026-11-21T13:27:26Z","actor":"implement","type":"slice.done","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T1 done, 25 tests green, typecheck clean","data":{"tasks":["T1"]}}
+{"ts":"2026-11-21T13:27:40Z","actor":"implement","type":"slice.started","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T3 started","data":{"tasks":["T3"]}}
+{"ts":"2026-11-21T13:27:40Z","actor":"implement","type":"slice.started","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T4 started","data":{"tasks":["T4"]}}
+{"ts":"2026-11-21T13:27:40Z","actor":"implement","type":"slice.started","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T5 started","data":{"tasks":["T5"]}}
+{"ts":"2026-11-21T13:32:33Z","actor":"implement","type":"slice.done","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T3 done, 2 tests green","data":{"tasks":["T3"]}}
+{"ts":"2026-11-21T13:32:33Z","actor":"implement","type":"slice.done","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T4 done, 2 tests green","data":{"tasks":["T4"]}}
+{"ts":"2026-11-21T13:32:33Z","actor":"implement","type":"slice.done","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T5 done, 18 tests green, typecheck clean","data":{"tasks":["T5"]}}
+{"ts":"2026-11-21T13:32:33Z","actor":"implement","type":"slice.started","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T6 provider registration","data":{"tasks":["T6"]}}
+{"ts":"2026-11-21T13:34:45Z","actor":"implement","type":"slice.done","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T6 done, 56 tests green","data":{"tasks":["T6"]}}
+{"ts":"2026-11-21T13:34:45Z","actor":"implement","type":"slice.started","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T7 electron main and preload","data":{"tasks":["T7"]}}
+{"ts":"2026-11-21T13:34:45Z","actor":"implement","type":"slice.started","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T8 settings UI page","data":{"tasks":["T8"]}}
+{"ts":"2026-11-21T13:39:31Z","actor":"implement","type":"slice.done","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T7 done, typecheck and build green","data":{"tasks":["T7"]}}
+{"ts":"2026-11-21T13:39:31Z","actor":"implement","type":"slice.done","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T8 done, typecheck and build green","data":{"tasks":["T8"]}}
+{"ts":"2026-11-21T13:39:31Z","actor":"implement","type":"slice.started","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T9 docs","data":{"tasks":["T9"]}}
+{"ts":"2026-11-21T13:41:05Z","actor":"implement","type":"slice.done","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"T9 docs done","data":{"tasks":["T9"]}}
+{"ts":"2026-11-21T13:42:37Z","actor":"implement","type":"verify.passed","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"500 tests pass, typecheck and build green","data":{"passed":500,"skipped":1}}
+{"ts":"2026-11-21T13:42:37Z","actor":"implement","type":"changelog.written","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"changelog.md written; ticket stays in-progress"}
+{"ts":"2026-11-21T13:49:59Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"checker FAIL: S2 and S11 open, plus docs nits","data":{"verdict":"FAIL","round":0}}
+{"ts":"2026-11-21T13:54:46Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"re-check 1 PASS: S2, S11 and docs fixed","data":{"verdict":"PASS","round":1}}
+{"ts":"2026-11-21T13:54:46Z","actor":"director-scribe","type":"attention.opened","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"A-002 which extra ideas to build before closing","data":{"id":"A-002"}}
+{"ts":"2026-11-21T14:04:09Z","actor":"director-scribe","type":"attention.answered","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"A-002 answered: build extras a, c, d, h, i, k, l","data":{"id":"A-002"}}
+{"ts":"2026-11-21T14:21:16Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"re-check 2 FAIL: full suite temp-folder flake; delta passed","data":{"verdict":"FAIL","round":2}}
+{"ts":"2026-11-21T14:39:09Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"re-check 3 PASS: final re-check passed","data":{"verdict":"PASS","round":3}}
+{"ts":"2026-11-21T14:39:09Z","actor":"director-scribe","type":"ticket.done","request":"REQ-0007","ticket":"AAP-38-llama-cpp-provider","detail":"ticket done on branch AAP-38_llama-cpp-provider after PASS re-check 3"}

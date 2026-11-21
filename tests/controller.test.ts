@@ -8,9 +8,10 @@ import { createLogger } from "../src/logger.js";
 import type { Provider } from "../src/provider.js";
 import { codexRegistration } from "../src/providers/codex.js";
 import { defaultSettings, mergeSettings, type SettingsPatch } from "../src/settings.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/controller-tests", String(process.pid));
+const root = tempRoot("controller");
 mkdirSync(root, { recursive: true });
 let counter = 0;
 const controllers: ProxyController[] = [];
@@ -57,7 +58,7 @@ describe("ProxyController", () => {
     const status = await controller.start();
     expect(status.server.state).toBe("running");
     expect(status.server.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
-    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", expect.stringMatching(/^(starting|ready)$/)], ["antigravity", "disabled"], ["claude", "disabled"], ["gufo", "disabled"], ["strata", "disabled"]]); // Codex lists its models through the agent, which starts with the proxy.
+    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", expect.stringMatching(/^(starting|ready)$/)], ["antigravity", "disabled"], ["claude", "disabled"], ["gufo", "disabled"], ["strata", "disabled"], ["llama", "stopped"]]); // Codex lists its models through the agent, which starts with the proxy.
     expect(((await get(`${status.server.baseUrl}/models`)).data ?? []).map((model) => model.id)).toContain("gpt-6-luna");
     const chat = await fetch(`${status.server.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-6-luna", messages: [{ role: "user", content: "hi" }] }) });
     expect(((await chat.json()) as { choices: Array<{ message: { content: string } }> }).choices[0]?.message.content).toBe("fake response");
@@ -88,6 +89,21 @@ describe("ProxyController", () => {
     expect((await get(`http://127.0.0.1:${second}/healthz`)).status).toBe("ok");
     await expect(fetch(`http://127.0.0.1:${first}/healthz`)).rejects.toThrow();
     expect(JSON.parse(readFileSync(controller.settingsPath, "utf8")).server.port).toBe(second);
+  });
+
+  it("persists a job result without a restart: the server keeps running and /v1/models shows the new profile", async () => {
+    const profile = { id: "text", label: "Text", model: "text", modelFile: "m.gguf" };
+    const controller = make({ providers: { llama: { profiles: [profile] } } });
+    const status = await controller.start();
+    const states: string[] = [];
+    controller.on("status", (next) => states.push(next.server.state));
+    const vision = async () => ((await get(`${status.server.baseUrl}/models`)).data as Array<{ id: string; vision?: boolean }>).find((model) => model.id === "llama/text")?.vision;
+    expect(await vision()).toBe(false);
+    const after = await controller.persistSettings((current) => ({ providers: { llama: { profiles: current.providers.llama.profiles.map((entry) => ({ ...entry, mmprojFile: "p.gguf", vision: true })) } } }));
+    expect(after.server).toMatchObject({ state: "running", port: status.server.port });
+    expect(states).not.toContain("starting");
+    expect(await vision()).toBe(true);
+    expect(JSON.parse(readFileSync(controller.settingsPath, "utf8")).providers.llama.profiles[0].vision).toBe(true);
   });
 
   it("recovers from a port conflict by applying a new port", async () => {

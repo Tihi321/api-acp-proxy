@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
@@ -16,12 +16,14 @@ import { codexDescriptor } from "../src/providers/codex.js";
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
 import { ToolBridgeHub } from "../src/tool-bridge.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 // Every Antigravity provider start runs the Windows orphan sweep, which is slow.
 vi.setConfig({ testTimeout: 30_000 });
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/web-search-tests", String(process.pid));
+const root = tempRoot("web-search");
+afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 const PLAIN_PREAMBLE = "This is an API request. Do not use your own environment: no shell commands, no file access, no web access, no permission requests. If the conversation describes actions, functions or a JSON format for you to produce, produce them as text exactly as asked: the calling application executes them. Respond with the answer only.";
 const ANSWER = "Node.js 26 is the current release, see [Node.js releases](https://nodejs.org/en/about/previous-releases) and https://endoflife.date/nodejs.";
 const LINK = "[Node.js releases](https://nodejs.org/en/about/previous-releases)";

@@ -10,6 +10,7 @@ import { PLAYGROUND_CSP, PREVIEW_CSP, servePlayground } from "../src/playground-
 import { chatTitle, curlFor, decodeRate, estimateTokens, formatMs, groupModels, isHttpUrl, outputTokensEstimate, parseSseLines, previewDocument, splitBlocks, tokensPerSecond, validateImageForm } from "../src/playground/lib.js";
 import { highlight, parseMarkdown, safeHref } from "../src/playground/markdown.js";
 import { createProxyServer } from "../src/server.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 describe("playground helpers", () => {
   it("groups models by provider and shows an unprefixed twin once, prefixed", () => {
@@ -137,7 +138,7 @@ describe("playground helpers", () => {
   });
 });
 
-const root = path.resolve(".claude/temp/playground-tests", String(process.pid));
+const root = tempRoot("playground");
 afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 
 let servers: Server[] = [];

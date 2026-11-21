@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
@@ -16,12 +16,15 @@ import { codexDescriptor } from "../src/providers/codex.js";
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
 import { ToolBridgeHub } from "../src/tool-bridge.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 // Every Antigravity provider start runs the Windows orphan sweep, which is slow.
 vi.setConfig({ testTimeout: 30_000 });
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/tool-calling-tests", String(process.pid));
+// One folder per run: Windows reuses pids, and a log or folder left by an earlier run with the same pid would be appended to or found again.
+const root = tempRoot("tool-calling");
+afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 
 let counter = 0;
 const servers: Server[] = [];

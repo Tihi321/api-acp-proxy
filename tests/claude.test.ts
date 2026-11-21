@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpProvider } from "../src/acp-provider.js";
@@ -9,9 +9,11 @@ import { serializePrompt, textMessage } from "../src/api.js";
 import { createProxyServer } from "../src/server.js";
 import { ProviderRouter } from "../src/router.js";
 import type { AddressInfo } from "node:net";
+import { tempRoot } from "./helpers/temp-root.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/claude-tests", String(process.pid));
+const root = tempRoot("claude");
+afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 const user = [textMessage("user", "hello")];
 const providers: AcpProvider[] = [];
 let counter = 0;

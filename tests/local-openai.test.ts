@@ -7,8 +7,8 @@ import OpenAI from "openai";
 import type { ProxyConfig } from "../src/config.js";
 import type { LocalModelCoordinator } from "../src/local-models.js";
 import { createLogger } from "../src/logger.js";
-import type { GufoProfile } from "../src/settings.js";
-import { LocalOpenAiProvider } from "../src/providers/local-openai.js";
+import { LLAMA_PRESETS, type GufoProfile } from "../src/settings.js";
+import { createLlamaRegistration, LocalOpenAiProvider } from "../src/providers/local-openai.js";
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
 
@@ -167,7 +167,7 @@ describe("LocalOpenAiProvider", () => {
   it("sends image parts to a vision profile only, refuses them elsewhere before any switch, and lists every profile with kind and vision", async () => {
     const { router, bodies, acquired } = await gufo();
     const lease = await router.prepareModel("gufo/flash-next-q4", withImage, abort);
-    expect(acquired).toEqual(["flash-next-q4"]);
+    expect(acquired).toEqual(["gufo:flash-next-q4"]);
     lease?.release();
     await router.generate("gufo/flash-next-q4", withImage);
     expect(JSON.parse(bodies[0]!).messages[0].content).toEqual([{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } }]);
@@ -179,13 +179,40 @@ describe("LocalOpenAiProvider", () => {
     await expect(router.prepareModel("gufo/deepseek4", withImage, abort)).rejects.toMatchObject({ status: 400, code: "unsupported_content" });
     const strata = new LocalOpenAiProvider({ id: "strata", displayName: "Strata", baseUrl: "http://127.0.0.1:1/v1", logger });
     await expect(new ProviderRouter({ providers: [strata] }).prepareModel("strata/x", withImage, abort)).rejects.toMatchObject({ status: 400, code: "unsupported_content" });
-    expect(acquired).toEqual(["flash-next-q4"]);
+    expect(acquired).toEqual(["gufo:flash-next-q4"]);
 
     // Listed while the upstream is down too: the profiles, not the server, decide.
     const down = createServer(); const port = await listen(down); await new Promise<void>((resolve) => down.close(() => resolve()));
     const offline = new ProviderRouter({ providers: [new LocalOpenAiProvider({ id: "gufo", displayName: "Gufo", baseUrl: `http://127.0.0.1:${port}/v1`, logger, profiles })] });
     const listed = await offline.listModels({ waitMs: 2000 });
     expect(listed.map((model) => [model.id, model.kind, model.vision])).toEqual([["gufo/Qwen3.8-27B", "llm", false], ["gufo/flash-next-q4", "llm", true], ["gufo/deepseek4", "llm", false], ["gufo/qwen-image-2.1", "image", false], ["gufo/qwen-image-2.1-turbo", "image", false]]);
+  });
+
+  it("registers llama with its profiles: listed while stopped, leased as llama:<id>, upstream gets the model, no image to a non-vision profile", async () => {
+    const acquired: string[] = []; const bodies: string[] = [];
+    const coordinator = { acquire: async (id: string) => { acquired.push(id); return { release: () => undefined }; } } as unknown as LocalModelCoordinator;
+    const noVision = { ...structuredClone(LLAMA_PRESETS[1]!), id: "text-only", model: "text-only", vision: false, mmprojFile: undefined };
+    const make = (port: number) => createLlamaRegistration({ coordinator }).create({ providerSettings: { port, profiles: [LLAMA_PRESETS[0], LLAMA_PRESETS[1], noVision] }, ctx: { logger } } as never) as LocalOpenAiProvider;
+    const down = createServer(); const closedPort = await listen(down); await new Promise<void>((resolve) => down.close(() => resolve()));
+    const offline = await new ProviderRouter({ providers: [make(closedPort)] }).listModels({ waitMs: 2000 });
+    expect(offline.map((model) => [model.id, model.vision])).toEqual([["llama/inkling-2-mini", true], ["llama/inkling-2-mini-dspark", true], ["llama/text-only", false]]);
+
+    const upstream = createServer((request, response) => {
+      let raw = ""; request.on("data", (part) => { raw += part; });
+      request.on("end", () => { bodies.push(raw); response.setHeader("content-type", "text/event-stream"); response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] })}
+
+data: [DONE]
+
+`); });
+    });
+    const router = new ProviderRouter({ providers: [make(await listen(upstream))] });
+    const lease = await router.prepareModel("llama/inkling-2-mini", [{ role: "user", parts: [{ type: "text", text: "hi" }] }], abort);
+    lease?.release();
+    await router.generate("llama/inkling-2-mini", [{ role: "user", parts: [{ type: "text", text: "hi" }] }]);
+    expect(acquired).toEqual(["llama:inkling-2-mini"]);
+    expect(JSON.parse(bodies[0]!).model).toBe("inkling-2-mini");
+    await expect(router.prepareModel("llama/text-only", withImage, abort)).rejects.toMatchObject({ status: 400, code: "unsupported_content" });
+    expect(acquired).toEqual(["llama:inkling-2-mini"]);
   });
 
   it("answers 400 model_not_capable for chat to an image profile and for images from an llm profile, before any switch", async () => {

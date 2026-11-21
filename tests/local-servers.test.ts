@@ -16,7 +16,7 @@ afterEach(() => {
 
 describe("LocalServerManager", () => {
   it("runs one server at a time, keeps the log and stops everything", async () => {
-    const ports: Record<number, LocalServerId> = { 18081: "gufo", 18080: "strata" };
+    const ports: Record<number, LocalServerId> = { 18081: "gufo", 18080: "strata", 18082: "llama" };
     const manager = new LocalServerManager({
       pollMs: 20,
       spawn: () => {
@@ -37,7 +37,7 @@ describe("LocalServerManager", () => {
     const cwd = path.resolve(".");
     const spec = (id: LocalServerId, port: number): LocalServerSpec => ({ id, command: process.execPath, args: "--port {port}", cwd, port });
 
-    expect(manager.list().map((s) => s.id)).toEqual(["gufo", "strata"]);
+    expect(manager.list().map((s) => s.id)).toEqual(["gufo", "strata", "llama"]);
     await manager.start(spec("gufo", 18081));
     await waitFor("gufo", "ready");
     const gufoChild = children[0];
@@ -50,8 +50,15 @@ describe("LocalServerManager", () => {
     await waitFor("strata", "ready");
     expect(state("gufo").log).toContain("up");
 
+    await manager.start(spec("llama", 18082));
+    expect(state("strata").state).toBe("stopped");
+    await waitFor("llama", "ready");
+    await manager.start(spec("gufo", 18081));
+    await waitFor("gufo", "ready");
+    expect(state("llama").state).toBe("stopped");
+
     await manager.stopAll();
-    expect(manager.list().map((s) => s.state)).toEqual(["stopped", "stopped"]);
+    expect(manager.list().map((s) => s.state)).toEqual(["stopped", "stopped", "stopped"]);
     expect(children.every((child) => child.exitCode !== null || child.signalCode !== null)).toBe(true);
   });
 
@@ -122,6 +129,9 @@ describe("LocalServerManager", () => {
 
     const missing = path.resolve("definitely-missing", "model.gguf");
     await expect(manager.start(spec("C", `--model "${missing}" --port {port}`))).rejects.toThrow("File not found");
+    expect(view().profile).toBe("B");
+    await expect(manager.start(spec("D", `-m "${missing}" --port {port}`))).rejects.toThrow("File not found");
+    await expect(manager.start(spec("E", `--model "${process.execPath}" --spec-draft-model "${missing}" --port {port}`))).rejects.toThrow("File not found");
     expect(view().profile).toBe("B");
     await manager.stopAll();
   });

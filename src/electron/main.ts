@@ -9,18 +9,28 @@ import type { ControllerStatus } from "../controller.js";
 import { createLogger } from "../logger.js";
 import { claudeRegistration } from "../providers/claude.js";
 import { codexRegistration } from "../providers/codex.js";
-import { createGufoRegistration, createStrataRegistration } from "../providers/local-openai.js";
-import { LocalModelCoordinator, STRATA_PROFILE_ID } from "../local-models.js";
-import type { LocalModelHost } from "../local-models.js";
-import { LocalServerManager } from "../local-servers.js";
+import { createGufoRegistration, createLlamaRegistration, createStrataRegistration } from "../providers/local-openai.js";
+import { LocalModelCoordinator, targetKey } from "../local-models.js";
+import type { LocalModelTarget } from "../local-models.js";
+import { createLocalModelHost } from "../local-host.js";
+import { LOCAL_SERVER_IDS, LocalServerManager } from "../local-servers.js";
 import type { LocalServerSpec } from "../local-servers.js";
 import { listMcpServers } from "../mcp-servers.js";
-import { defaultSettingsPath, restoreMissingPresets } from "../settings.js";
-import type { GufoProfile, SecretCodec, SettingsPatch } from "../settings.js";
+import { LLAMA_SOURCES, defaultSettingsPath, restoreMissingLlamaPresets, restoreMissingPresets } from "../settings.js";
+import type { GufoProfile, LlamaProfile, LlamaSource, SecretCodec, SettingsPatch } from "../settings.js";
+import { DownloadError } from "../download.js";
+import { GITHUB_POLICY, fetchReleases } from "../llama-releases.js";
+import type { LlamaReleaseView } from "../llama-releases.js";
+import { installLlama, probeLlamaVersion } from "../llama-install.js";
+import { HF_POLICY, downloadHfFiles, listHfFiles, parseHfLink } from "../hf-models.js";
+import type { HfFile, HfFileGroup } from "../hf-models.js";
+import { buildLlamaArgs, checkBuild, checkLlamaFiles } from "../llama-args.js";
+import { autoMmproj, customExePatch, installPatch, profileFilesPatch } from "../llama-jobs.js";
+import type { ProfileFiles } from "../llama-jobs.js";
 import { antigravityRegistration, installAntigravity, readInstallInfo } from "./antigravity.js";
 import { SettingsWindow } from "./settings-window.js";
 import { TrayController } from "./tray.js";
-import type { ActionResult, ActivityView, FieldError, GufoProfileView, InstallInfoView, InstallResult, OpenTarget, SaveResult, StateView, UsageView } from "../shared/ipc.js";
+import type { ActionResult, ActivityView, FieldError, Failure, GufoProfileView, HfDownloadResult, HfListResult, InstallInfoView, InstallResult, LlamaCheckResult, LlamaInstallResult, LlamaProfileView, LlamaProgressView, LlamaReleasesResult, LlamaStatusView, LocalServerId, OpenTarget, PickResult, ProfileModelsResult, SaveResult, StateView, UsageView } from "../shared/ipc.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(here, "..", "..");
@@ -49,6 +59,20 @@ function toInstallView(info: Awaited<ReturnType<typeof readInstallInfo>> & objec
     ...(info.signature ? { signature: info.signature } : {}),
   };
 }
+
+/** The llama-server.exe the settings point at, and what is known about its build. `source` is `custom` for an own exe. */
+function llamaBinary(llama: { binary: { mode: "managed" | "custom"; customPath?: string | undefined; customBuild?: number | undefined; installed?: { command: string; source: LlamaSource; build?: number | undefined } | undefined } }): { command?: string; source: LlamaSource | "custom"; build?: number } {
+  const { binary } = llama;
+  if (binary.mode === "custom") return { ...(binary.customPath ? { command: binary.customPath } : {}), source: "custom", ...(binary.customBuild !== undefined ? { build: binary.customBuild } : {}) };
+  const installed = binary.installed;
+  return { ...(installed ? { command: installed.command } : {}), source: installed?.source ?? "ggml-org", ...(installed?.build !== undefined ? { build: installed.build } : {}) };
+}
+
+const RELEASES_TTL_MS = 10 * 60 * 1000;
+const HF_REPO = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/;
+const isLocalServerId = (id: unknown): id is LocalServerId => typeof id === "string" && (LOCAL_SERVER_IDS as readonly string[]).includes(id);
+const isLlamaSource = (value: unknown): value is LlamaSource => typeof value === "string" && (LLAMA_SOURCES as readonly string[]).includes(value);
+const shortString = (value: unknown, max: number): value is string => typeof value === "string" && value.length > 0 && value.length <= max;
 
 async function main(): Promise<void> {
   let controller: ProxyController | undefined;
@@ -101,58 +125,47 @@ async function main(): Promise<void> {
   let gufoSettings: GufoSettings | undefined;
   type StrataSettings = Awaited<ReturnType<ProxyController["getSettings"]>>["effective"]["providers"]["strata"];
   let strataSettings: StrataSettings | undefined;
-  const refreshLocalSettings = async (): Promise<void> => { const providers = (await proxy.getSettings()).effective.providers; gufoSettings = providers.gufo; strataSettings = providers.strata; };
-  const gufoHost: LocalModelHost = {
-    // Strata counts as the profile `strata`; only one of the two servers runs at a time.
-    current: () => {
-      const list = servers.list();
-      const strata = list.find((candidate) => candidate.id === "strata");
-      if (strata && (strata.state === "starting" || strata.state === "ready")) return { profile: STRATA_PROFILE_ID, state: strata.state };
-      const entry = list.find((candidate) => candidate.id === "gufo");
-      return { profile: entry?.profile, state: entry?.state ?? "stopped", error: entry?.error };
-    },
-    start: async (target) => {
-      if (target.id === STRATA_PROFILE_ID) {
+  type LlamaSettings = Awaited<ReturnType<ProxyController["getSettings"]>>["effective"]["providers"]["llama"];
+  let llamaSettings: LlamaSettings | undefined;
+  const refreshLocalSettings = async (): Promise<void> => { const providers = (await proxy.getSettings()).effective.providers; gufoSettings = providers.gufo; strataSettings = providers.strata; llamaSettings = providers.llama; };
+  const localHost = createLocalModelHost(servers, {
+    specFor: (target): LocalServerSpec => {
+      if (target.server === "strata") {
         const strata = strataSettings;
         if (!strata) throw new Error("Settings are not loaded yet.");
-        await servers.start({ id: "strata", command: strata.command, args: strata.args, cwd: strata.cwd, port: strata.port });
-        return;
+        return { id: "strata", command: strata.command, args: strata.args, cwd: strata.cwd, port: strata.port };
       }
-      const profile = target as GufoProfile;
+      if (target.server === "llama") {
+        const llama = llamaSettings;
+        if (!llama) throw new Error("Settings are not loaded yet.");
+        const binary = llamaBinary(llama);
+        if (!binary.command) throw new Error("Llama.cpp is not installed: download a build or choose your own llama-server.exe on the Llama.cpp page.");
+        const gate = checkBuild(target.profile, { source: binary.source, ...(binary.build !== undefined ? { build: binary.build } : {}) });
+        if (gate.ok === false) throw new Error(gate.message);
+        const missing = checkLlamaFiles(target.profile, llama.modelsDir);
+        if (missing.length > 0) throw new Error(`File not found: ${missing[0]} (download the model files on the Llama.cpp page)`);
+        return { id: "llama", command: binary.command, args: buildLlamaArgs(target.profile, llama.modelsDir), cwd: path.dirname(binary.command), port: llama.port, profile: target.profile.id, startTimeoutMs: target.profile.startTimeoutMs };
+      }
       const settings = gufoSettings;
       if (!settings) throw new Error("Settings are not loaded yet.");
-      await servers.start({ id: "gufo", command: settings.command, args: profile.args, cwd: settings.cwd, port: settings.port, profile: profile.id, startTimeoutMs: profile.startTimeoutMs });
+      return { id: "gufo", command: settings.command, args: target.profile.args, cwd: settings.cwd, port: settings.port, profile: target.profile.id, startTimeoutMs: target.profile.startTimeoutMs };
     },
-    external: async (target) => {
-      const isStrata = target.id === STRATA_PROFILE_ID;
-      const port = isStrata ? strataSettings?.port : gufoSettings?.port;
-      return port !== undefined && servers.answersExternally(isStrata ? "strata" : "gufo", port);
-    },
-    waitReady: (profile, signal) => new Promise<void>((resolve, reject) => {
-      const serverId = profile === STRATA_PROFILE_ID ? "strata" : "gufo";
-      const name = serverId === "strata" ? "Strata" : "Gufo";
-      const check = (): boolean => {
-        const entry = servers.list().find((candidate) => candidate.id === serverId);
-        if (!entry || (serverId === "gufo" && entry.profile !== profile)) { reject(new Error(`${name} was switched away from '${profile}' while it started.`)); return true; }
-        if (entry.state === "ready") { resolve(); return true; }
-        if (entry.state === "error" || entry.state === "stopped") { reject(new Error(entry.error ?? entry.log[entry.log.length - 1] ?? `${name} '${profile}' stopped before it was ready.`)); return true; }
-        return false;
-      };
-      if (check()) return;
-      const onChange = (): void => { if (check()) cleanup(); };
-      const onAbort = (): void => { cleanup(); reject(new Error("Aborted")); };
-      const cleanup = (): void => { servers.off("change", onChange); signal.removeEventListener("abort", onAbort); };
-      servers.on("change", onChange);
-      if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
-    }),
-  };
-  const coordinator = new LocalModelCoordinator(gufoHost, () => ({ profiles: gufoSettings?.profiles ?? [], switchWaitMs: gufoSettings?.switchWaitMs ?? 30 * 60 * 1000 }));
+    port: (server) => (server === "strata" ? strataSettings?.port : server === "gufo" ? gufoSettings?.port : llamaSettings?.port),
+  });
+  const coordinator = new LocalModelCoordinator(localHost, () => ({
+    targets: [
+      ...(gufoSettings?.profiles ?? []).map((profile): LocalModelTarget => ({ key: `gufo:${profile.id}`, server: "gufo", profile })),
+      ...(llamaSettings?.profiles ?? []).map((profile): LocalModelTarget => ({ key: `llama:${profile.id}`, server: "llama", profile })),
+      { key: "strata", server: "strata" },
+    ],
+    switchWaitMs: (server) => (server === "llama" ? llamaSettings?.switchWaitMs : gufoSettings?.switchWaitMs) ?? 30 * 60 * 1000,
+  }));
 
   const proxy = new ProxyController({
     settingsPath,
     logger,
     ...(secretCodec ? { secretCodec } : {}),
-    registry: [codexRegistration, antigravityRegistration, claudeRegistration, createGufoRegistration({ coordinator }), createStrataRegistration({ coordinator })],
+    registry: [codexRegistration, antigravityRegistration, claudeRegistration, createGufoRegistration({ coordinator }), createStrataRegistration({ coordinator }), createLlamaRegistration({ coordinator })],
     ctx: {
       dataDir,
       nodeRuntime: { command: process.execPath, argsPrefix: ["--require", hideWindows], env: { ELECTRON_RUN_AS_NODE: "1", NODE_OPTIONS: nodeOptions } },
@@ -300,21 +313,200 @@ async function main(): Promise<void> {
   });
   handle("proxy:localServers", () => servers.list());
   handle("proxy:startLocalServer", async (id: unknown, profileId?: unknown): Promise<ActionResult> => {
-    if (id !== "gufo" && id !== "strata") return { ok: false, message: "Invalid server" };
+    if (!isLocalServerId(id)) return { ok: false, message: "Invalid server" };
+    if (profileId !== undefined && profileId !== null && !(typeof profileId === "string" && profileId.length <= 200)) return { ok: false, message: "Invalid profile" };
     return action(async () => {
       await refreshLocalSettings();
-      // Both servers start through the coordinator: it queues behind in-flight requests and resolves when ready (minutes for a large model); a queued or failed switch comes back as the error message.
-      if (id === "strata") { await coordinator.switchTo(STRATA_PROFILE_ID); return; }
+      // All servers start through the coordinator: it queues behind in-flight requests and resolves when ready (minutes for a large model); a queued or failed switch comes back as the error message.
+      if (id === "strata") { await coordinator.switchTo(targetKey("strata")); return; }
+      const running = servers.list().find((candidate) => candidate.id === id)?.profile;
+      if (id === "llama") {
+        const profiles = llamaSettings!.profiles;
+        const chosen = typeof profileId === "string" && profileId ? profileId : running ?? profiles[0]?.id;
+        if (!chosen) throw new Error("No Llama.cpp profile is configured.");
+        await coordinator.switchTo(targetKey("llama", chosen));
+        return;
+      }
       const profiles = gufoSettings!.profiles;
-      const chosen = typeof profileId === "string" && profileId ? profileId : servers.list().find((candidate) => candidate.id === "gufo")?.profile ?? profiles.find((candidate) => candidate.kind === "llm")?.id ?? profiles[0]?.id;
+      const chosen = typeof profileId === "string" && profileId ? profileId : running ?? profiles.find((candidate) => candidate.kind === "llm")?.id ?? profiles[0]?.id;
       if (!chosen) throw new Error("No Gufo profile is configured.");
-      await coordinator.switchTo(chosen);
+      await coordinator.switchTo(targetKey("gufo", chosen));
     });
   });
   handle("proxy:restoreGufoPresets", (profiles: unknown): GufoProfileView[] => Array.isArray(profiles) ? restoreMissingPresets(profiles as GufoProfile[]) : []);
+  handle("proxy:restoreLlamaPresets", (profiles: unknown): LlamaProfileView[] => Array.isArray(profiles) ? restoreMissingLlamaPresets(profiles as LlamaProfile[]) as LlamaProfileView[] : []);
   handle("proxy:stopLocalServer", (id: unknown): Promise<ActionResult> | ActionResult => {
-    if (id !== "gufo" && id !== "strata") return { ok: false, message: "Invalid server" };
+    if (!isLocalServerId(id)) return { ok: false, message: "Invalid server" };
     return action(() => servers.stop(id));
+  });
+
+  // Llama.cpp downloads: one binary job and one model job at a time, each with its own abort controller; progress goes to the settings page.
+  const llamaJobs: { binary?: AbortController; model?: AbortController } = {};
+  const llamaProgress = (progress: LlamaProgressView): void => { if (win.webContents) win.send("proxy:llamaProgress", progress); };
+  const llamaFailure = (error: unknown): Failure => ({ ok: false, message: error instanceof Error ? error.message : String(error), ...(error instanceof DownloadError ? { code: error.code } : {}) });
+  /** Runs `run` as the single job of its kind; a second one gets `download_busy`. Failures and cancellation are also pushed as progress phases. */
+  const runLlamaJob = async <T,>(job: "binary" | "model", run: (signal: AbortSignal) => Promise<T>): Promise<{ ok: true; value: T } | Failure> => {
+    if (llamaJobs[job]) return { ok: false, message: "A download is already running.", code: "download_busy" };
+    const controller = new AbortController();
+    llamaJobs[job] = controller;
+    try {
+      return { ok: true, value: await run(controller.signal) };
+    } catch (error) {
+      const result = llamaFailure(error);
+      const cancelled = result.code === "download_cancelled" || controller.signal.aborted;
+      if (!cancelled) logger.warn(`Llama.cpp ${job} job failed: ${result.message}`);
+      llamaProgress({ job, phase: cancelled ? "cancelled" : "error", message: result.message });
+      return result;
+    } finally { delete llamaJobs[job]; }
+  };
+  const hfToken = (): string | undefined => llamaSettings?.hfToken || undefined;
+  const releasesCache = new Map<LlamaSource, { at: number; releases: LlamaReleaseView[] }>();
+  const llamaProfileView = (id: string): LlamaProfileView | undefined => llamaSettings?.profiles.find((profile) => profile.id === id) as LlamaProfileView | undefined;
+
+  handle("proxy:pickDirectory", async (title: unknown, defaultPath?: unknown): Promise<PickResult> => {
+    if (typeof title !== "string" || title.length === 0 || title.length > 100) return {};
+    if (defaultPath !== undefined && defaultPath !== null && !(typeof defaultPath === "string" && defaultPath.length <= 1000)) return {};
+    const parent = win.browserWindow;
+    const options: Electron.OpenDialogOptions = { title, ...(typeof defaultPath === "string" && defaultPath ? { defaultPath } : {}), properties: ["openDirectory", "createDirectory"] };
+    const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+    return result.canceled || !result.filePaths[0] ? {} : { path: result.filePaths[0] };
+  });
+  handle("proxy:llamaReleases", async (source: unknown, refresh?: unknown): Promise<LlamaReleasesResult> => {
+    if (!isLlamaSource(source)) return { ok: false, message: "Invalid source" };
+    const cached = releasesCache.get(source);
+    if (cached && refresh !== true && Date.now() - cached.at < RELEASES_TTL_MS) return { ok: true, releases: cached.releases };
+    try {
+      const releases = await fetchReleases(source, { fetch: fetch as typeof fetch, policy: GITHUB_POLICY, signal: AbortSignal.timeout(30_000) });
+      releasesCache.set(source, { at: Date.now(), releases });
+      return { ok: true, releases };
+    } catch (error) { return llamaFailure(error); }
+  });
+  handle("proxy:installLlama", async (request: unknown): Promise<LlamaInstallResult> => {
+    const r = request as { source?: unknown; tag?: unknown; backend?: unknown; arch?: unknown } | null;
+    if (typeof r !== "object" || r === null || !isLlamaSource(r.source) || !shortString(r.tag, 200) || !shortString(r.backend, 100) || (r.arch !== "x64" && r.arch !== "arm64")) return { ok: false, message: "Invalid install request" };
+    const { source, tag, backend, arch } = r;
+    await refreshLocalSettings();
+    const binDir = llamaSettings!.binary.dir;
+    const outcome = await runLlamaJob("binary", (signal) => installLlama({ source, tag, backend, arch, binDir, fetch: fetch as typeof fetch, signal, onProgress: llamaProgress }));
+    if (!outcome.ok) return outcome;
+    try {
+      // Job results are saved without a proxy restart (in-flight requests keep running), patched onto what is stored now.
+      await proxy.persistSettings((current) => installPatch(current.providers.llama, { source, backend, arch, info: outcome.value }));
+      await refreshLocalSettings();
+      pushState();
+      return { ok: true, info: outcome.value };
+    } catch (error) { return llamaFailure(error); }
+  });
+  handle("proxy:checkLlamaExecutable", async (file: unknown): Promise<LlamaCheckResult> => {
+    if (!shortString(file, 1000) || !file.toLowerCase().endsWith(".exe")) return { ok: false, message: "Choose a llama-server.exe file." };
+    try {
+      const stat = await fs.promises.stat(file).catch(() => undefined);
+      if (!stat?.isFile()) return { ok: false, message: `File not found: ${file}` };
+      const probe = await probeLlamaVersion(file);
+      await proxy.persistSettings((current) => customExePatch(current.providers.llama, file, probe.build));
+      await refreshLocalSettings();
+      pushState();
+      return { ok: true, ...(probe.build !== undefined ? { build: probe.build } : {}), version: probe.text };
+    } catch (error) { return llamaFailure(error); }
+  });
+  handle("proxy:hfListFiles", async (link: unknown): Promise<HfListResult> => {
+    if (!shortString(link, 500)) return { ok: false, message: "Enter a Hugging Face link.", code: "hf_link_invalid" };
+    try {
+      await refreshLocalSettings();
+      const ref = parseHfLink(link.trim());
+      const token = hfToken();
+      const listing = await listHfFiles(ref, { fetch: fetch as typeof fetch, policy: HF_POLICY, signal: AbortSignal.timeout(60_000), ...(token ? { token } : {}) });
+      return { ok: true, repo: ref.repo, revision: ref.revision, ...(listing.quant ? { quant: listing.quant } : {}), groups: listing.groups };
+    } catch (error) { return llamaFailure(error); }
+  });
+  /** Re-lists the repository (sizes and checksums come from Hugging Face, never from the renderer) and returns the entries for `wanted` paths, in order. */
+  const resolveHfFiles = (groups: readonly HfFileGroup[], wanted: readonly string[]): HfFile[] => {
+    const all = new Map<string, HfFile>();
+    for (const group of groups) for (const file of group.files) all.set(file.path, file);
+    return wanted.map((file) => {
+      const found = all.get(file);
+      if (!found) throw new DownloadError("hf_not_found", `File not found in the repository: ${file}`);
+      return found;
+    });
+  };
+  handle("proxy:hfDownload", async (request: unknown): Promise<HfDownloadResult> => {
+    const r = request as { repo?: unknown; revision?: unknown; files?: unknown } | null;
+    if (typeof r !== "object" || r === null || typeof r.repo !== "string" || !HF_REPO.test(r.repo) || !shortString(r.revision, 200)
+      || !Array.isArray(r.files) || r.files.length === 0 || r.files.length > 200 || !r.files.every((file) => shortString(file, 500))) return { ok: false, message: "Invalid download request" };
+    const { repo, revision } = r;
+    const files = [...new Set(r.files as string[])];
+    await refreshLocalSettings();
+    const modelsDir = llamaSettings!.modelsDir;
+    const token = hfToken();
+    const outcome = await runLlamaJob("model", async (signal) => {
+      const listing = await listHfFiles({ repo, revision }, { fetch: fetch as typeof fetch, policy: HF_POLICY, signal, ...(token ? { token } : {}) });
+      return downloadHfFiles({ repo, revision, files: resolveHfFiles(listing.groups, files), modelsDir, fetch: fetch as typeof fetch, signal, onProgress: llamaProgress, ...(token ? { token } : {}) });
+    });
+    return outcome.ok ? { ok: true, paths: outcome.value } : outcome;
+  });
+  handle("proxy:downloadProfileModels", async (profileId: unknown): Promise<ProfileModelsResult> => {
+    if (!shortString(profileId, 200)) return { ok: false, message: "Invalid profile" };
+    await refreshLocalSettings();
+    const profile = llamaSettings!.profiles.find((candidate) => candidate.id === profileId);
+    if (!profile) return { ok: false, message: `Unknown profile '${profileId}'.` };
+    const hf = profile.hf;
+    if (!hf) return { ok: false, message: "This profile has no Hugging Face source." };
+    const modelsDir = llamaSettings!.modelsDir;
+    const token = hfToken();
+    const outcome = await runLlamaJob("model", async (signal) => {
+      const listing = await listHfFiles({ repo: hf.repo, revision: hf.revision }, { fetch: fetch as typeof fetch, policy: HF_POLICY, signal, ...(token ? { token } : {}) });
+      const wantedQuant = hf.quant.toLowerCase();
+      const candidates = listing.groups.filter((group) => group.kind === "model" && group.selectable && group.quant?.toLowerCase() === wantedQuant);
+      const model = candidates.find((group) => !group.label.endsWith("(mainline)")) ?? candidates[0];
+      if (!model) throw new DownloadError("hf_not_found", `No ${hf.quant} quant found in ${hf.repo}.`);
+      const byName = (kind: "mmproj" | "draft", name: string): HfFile => {
+        const found = listing.groups.filter((group) => group.kind === kind).flatMap((group) => group.files).find((file) => file.path.split("/").pop() === name || file.saveAs.split("/").pop() === name);
+        if (!found) throw new DownloadError("hf_not_found", `File not found in ${hf.repo}: ${name}`);
+        return found;
+      };
+      // A profile without an mmproj gets the repository's one too (vision is turned on only if it was downloaded and the profile still has none).
+      const picked = hf.mmproj ? undefined : autoMmproj(profile, listing.groups);
+      const mmproj = hf.mmproj ? byName("mmproj", hf.mmproj) : picked;
+      const draft = hf.draft ? byName("draft", hf.draft) : undefined;
+      const files = [...model.files, ...(mmproj ? [mmproj] : []), ...(draft ? [draft] : [])];
+      const paths = await downloadHfFiles({ repo: hf.repo, revision: hf.revision, files, modelsDir, fetch: fetch as typeof fetch, signal, onProgress: llamaProgress, ...(token ? { token } : {}) });
+      return { modelFile: paths[0]!, ...(mmproj ? { mmprojFile: paths[model.files.length]!, ...(picked ? { autoMmproj: true } : {}) } : {}), ...(draft ? { draftFile: paths[paths.length - 1]! } : {}) } satisfies ProfileFiles;
+    });
+    if (!outcome.ok) return outcome;
+    try {
+      await proxy.persistSettings((current) => profileFilesPatch(current.providers.llama, profileId, outcome.value));
+      await refreshLocalSettings();
+      pushState();
+      const view = llamaProfileView(profileId);
+      return view ? { ok: true, profile: view } : { ok: false, message: `Profile '${profileId}' was removed during the download.` };
+    } catch (error) { return llamaFailure(error); }
+  });
+  handle("proxy:cancelLlamaDownload", (job: unknown): void => { if (job === "binary" || job === "model") llamaJobs[job]?.abort(); });
+  handle("proxy:llamaStatus", async (): Promise<LlamaStatusView> => {
+    await refreshLocalSettings();
+    const llama = llamaSettings!;
+    const binary = llamaBinary(llama);
+    const managed = llama.binary.mode === "managed";
+    const installed = llama.binary.installed;
+    const profiles: LlamaStatusView["profiles"] = {};
+    for (const profile of llama.profiles) {
+      const gate = checkBuild(profile, { source: binary.source, ...(binary.build !== undefined ? { build: binary.build } : {}) });
+      profiles[profile.id] = {
+        build: gate.ok === true ? "ok" : gate.ok === false ? "too_old" : "unknown",
+        ...(gate.ok === true ? {} : { buildMessage: gate.message }),
+        missingFiles: checkLlamaFiles(profile, llama.modelsDir),
+      };
+    }
+    return {
+      binary: {
+        mode: llama.binary.mode, ...(binary.command ? { command: binary.command } : {}), source: binary.source,
+        ...(managed && installed ? { tag: installed.tag, backend: installed.backend } : {}),
+        ...(binary.build !== undefined ? { build: binary.build } : {}),
+        exists: Boolean(binary.command && fs.existsSync(binary.command)),
+      },
+      profiles,
+      jobs: { binary: Boolean(llamaJobs.binary), model: Boolean(llamaJobs.model) },
+    };
   });
   handle("proxy:activity", () => activityViews());
   handle("proxy:clearActivity", () => { proxy.activity.clear(); });
@@ -362,7 +554,8 @@ async function main(): Promise<void> {
     const allowed = parsed.protocol === "https:" && (
       (parsed.origin === "https://antigravity.google" && parsed.pathname === "/terms")
       || (parsed.origin === "https://www.anthropic.com" && parsed.pathname === "/legal/consumer-terms")
-      || parsed.origin === "https://accounts.google.com");
+      || parsed.origin === "https://accounts.google.com"
+      || (parsed.origin === "https://huggingface.co" && parsed.pathname.length > 1 && !parsed.username && !parsed.password));
     if (!allowed) return { ok: false, message: "This link is not allowed." };
     return action(() => shell.openExternal(parsed.href));
   });

@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
@@ -17,12 +17,14 @@ import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
 import { defaultSettings, resolveConfig, settingsSchema } from "../src/settings.js";
 import { ToolBridgeHub } from "../src/tool-bridge.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 // Every Antigravity provider start runs the Windows orphan sweep, which is slow.
 vi.setConfig({ testTimeout: 30_000 });
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/mcp-servers-tests", String(process.pid));
+const root = tempRoot("mcp-servers");
+afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 
 let counter = 0;
 const servers: Server[] = [];

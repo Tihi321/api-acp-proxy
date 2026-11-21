@@ -90,6 +90,14 @@ export class ProviderRouter implements AcpLike {
 
   knownModels(providerId: string): ModelInfo[] { return this.known.get(providerId) ?? []; }
 
+  /** Re-reads a provider's `staticModels` after it took new settings live (its profile list changed). */
+  syncStaticModels(providerId: string): void {
+    const provider = this.byId.get(providerId);
+    if (!provider?.staticModels) return;
+    this.known.set(providerId, provider.staticModels);
+    this.unprefixed = undefined;
+  }
+
   private update(provider: Provider, models: ModelInfo[]): void {
     if (provider.staticModels || !models.length) return;
     if (JSON.stringify(models) === JSON.stringify(this.known.get(provider.id))) return;
