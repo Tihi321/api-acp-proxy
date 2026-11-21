@@ -1,0 +1,4 @@
+- 2026-11-21 implement: `clamp` in lib.ts has no NaN guard while the private copy in history.ts has one; harmless today (src/playground/lib.ts:188) - suggested: reuse one clamp with the NaN guard
+- 2026-11-21 implement: playground.css is LF while the playground .ts and html files are CRLF (src/playground/playground.css) - suggested: add a .gitattributes rule if line endings matter
+- 2026-11-21 implement: `#model-search` has a static aria-expanded="true" while its popover is hidden (src/playground/playground.html:144) - suggested: toggle it with the popover or drop it
+- 2026-11-21 implement: the desktop app (ACP Proxy.exe) holds port 8787, so the browser smoke check of the new playground was skipped (src/settings.ts:241) - suggested: run Acceptance 9 on a free port or after closing the app

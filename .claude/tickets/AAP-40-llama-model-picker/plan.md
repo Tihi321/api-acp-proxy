@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 request: REQ-0008
 repos: [api-acp-proxy]
 branch: AAP-40_llama-model-picker
