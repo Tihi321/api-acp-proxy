@@ -1,13 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpProvider } from "../src/acp-provider.js";
 import { defaultRuntimeContext, type ProviderDescriptor } from "../src/provider.js";
 import { textMessage } from "../src/api.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const workRoot = path.resolve(".claude/temp/acp-provider-login-tests");
+const workRoot = tempRoot("acp-provider-login");
+afterAll(() => { rmSync(workRoot, { recursive: true, force: true }); });
 const user = [textMessage("user", "hello")];
 const providers: AcpProvider[] = [];
 

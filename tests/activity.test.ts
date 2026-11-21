@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { request, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { ActivityLog, describeActivity, type ActivityEntry } from "../src/activity.js";
@@ -7,6 +7,8 @@ import { ApiError } from "../src/api.js";
 import { ProviderAuthRequiredError } from "../src/provider.js";
 import type { AcpLike, GenerationResult } from "../src/acp.js";
 import type { ProxyConfig } from "../src/config.js";
+import { rmSync } from "node:fs";
+import { tempRoot } from "./helpers/temp-root.js";
 
 const entry = (time: number, extra: Partial<ActivityEntry> = {}): ActivityEntry => ({ time, endpoint: "POST /v1/chat/completions", stream: false, features: [], durationMs: 5, status: 200, ...extra });
 
@@ -64,7 +66,8 @@ describe("ActivityLog", () => {
   });
 });
 
-const config: ProxyConfig = { host: "127.0.0.1", port: 0, maxBodyBytes: 100_000, timeoutMs: 5000, workRoot: ".claude/temp/aap19/activity", acpArgs: [], apiKey: "secret" };
+const config: ProxyConfig = { host: "127.0.0.1", port: 0, maxBodyBytes: 100_000, timeoutMs: 5000, workRoot: tempRoot("activity"), acpArgs: [], apiKey: "secret" };
+afterAll(() => { rmSync(config.workRoot, { recursive: true, force: true }); });
 const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 const SECRET_PROMPT = "SECRET-PROMPT-TEXT";
 const SECRET_ANSWER = "SECRET-ANSWER-TEXT";

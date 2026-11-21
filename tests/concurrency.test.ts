@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { AddressInfo } from "node:net";
 import { createLogger } from "../src/logger.js";
 import type { ModelInfo, Provider } from "../src/provider.js";
@@ -6,8 +6,11 @@ import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
 import type { ProxyConfig } from "../src/config.js";
 import { defaultSettings, resolveConfig } from "../src/settings.js";
+import { rmSync } from "node:fs";
+import { tempRoot } from "./helpers/temp-root.js";
 
-const config: ProxyConfig = { host: "127.0.0.1", port: 0, maxBodyBytes: 1024 * 1024, timeoutMs: 5000, workRoot: ".claude/temp/concurrency-tests", acpArgs: [] };
+const config: ProxyConfig = { host: "127.0.0.1", port: 0, maxBodyBytes: 1024 * 1024, timeoutMs: 5000, workRoot: tempRoot("concurrency"), acpArgs: [] };
+afterAll(() => { rmSync(config.workRoot, { recursive: true, force: true }); });
 
 /** A provider whose turn takes `delayMs` (or ends when aborted), counting how many run at once. */
 function slow(id: string, delayMs = 40) {

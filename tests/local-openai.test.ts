@@ -1,8 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync } from "node:fs";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import path from "node:path";
 import OpenAI from "openai";
 import type { ProxyConfig } from "../src/config.js";
 import type { LocalModelCoordinator } from "../src/local-models.js";
@@ -11,9 +10,10 @@ import { LLAMA_PRESETS, type GufoProfile } from "../src/settings.js";
 import { createLlamaRegistration, LocalOpenAiProvider } from "../src/providers/local-openai.js";
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
-const config: ProxyConfig = { host: "127.0.0.1", port: 0, maxBodyBytes: 1024 * 1024, timeoutMs: 5000, workRoot: ".claude/temp/local-openai-tests", acpArgs: [] };
-mkdirSync(path.resolve(config.workRoot), { recursive: true });
+const config: ProxyConfig = { host: "127.0.0.1", port: 0, maxBodyBytes: 1024 * 1024, timeoutMs: 5000, workRoot: tempRoot("local-openai"), acpArgs: [] };
+afterAll(() => { rmSync(config.workRoot, { recursive: true, force: true }); });
 const logger = createLogger({ console: false });
 
 const servers: Server[] = [];

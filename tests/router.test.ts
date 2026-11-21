@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
@@ -9,9 +9,11 @@ import { ProviderRouter } from "../src/router.js";
 import { UsageLimitError } from "../src/usage-limit.js";
 import { createProxyServer } from "../src/server.js";
 import type { ProxyConfig } from "../src/config.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
-const config: ProxyConfig = { host: "127.0.0.1", port: 0, maxBodyBytes: 1024, timeoutMs: 5000, workRoot: ".claude/temp/router-tests", acpArgs: [] };
-const tmp = path.resolve(".claude/temp/router-tests");
+const tmp = tempRoot("router");
+const config: ProxyConfig = { host: "127.0.0.1", port: 0, maxBodyBytes: 1024, timeoutMs: 5000, workRoot: tmp, acpArgs: [] };
+afterAll(() => { rmSync(tmp, { recursive: true, force: true }); });
 
 interface FakeOptions { unprefixed?: boolean; ownedBy?: string; delayMs?: number; static?: boolean; }
 function fake(id: string, models: string[], options: FakeOptions = {}): Provider {
