@@ -112,6 +112,8 @@ kbd { font: 12px var(--font-mono); background: var(--canvas); border: 1px solid 
 .row-pin { width: 13px; height: 13px; color: var(--ink-2); }
 .row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-title-input { flex: 1; min-width: 0; padding: 3px 6px; font-size: 13px; }
+.row > .row-title-input { margin: 2px 6px 2px 8px; }
+.hist-placeholder .hist-list { min-height: 4px; }
 .row-more { width: 26px; height: 26px; margin-right: 4px; opacity: 0; }
 .row:hover .row-more, .row:focus-within .row-more, .row.menu-open .row-more { opacity: 1; }
 @media (hover: none) { .row-more { opacity: 1; } }
