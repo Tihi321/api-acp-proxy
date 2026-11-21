@@ -9,6 +9,7 @@ const FILES: Record<string, string> = {
   "": "playground.html",
   "playground.js": "playground.js",
   "lib.js": "lib.js",
+  "markdown.js": "markdown.js",
   "playground.css": "playground.css",
   "preview": "preview.html",
 };
