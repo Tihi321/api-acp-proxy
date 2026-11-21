@@ -7,7 +7,7 @@ import { DEFAULT_COOLDOWN_MS, MAX_RESET_MS, UsageLimitError, exhaustedUntil, usa
 import { silentLogger, type Logger } from "./logger.js";
 import { ConcurrencyLimiter, QueueAbortedError, type LimiterStats } from "./limiter.js";
 import type { PlanLimitsView } from "./shared/ipc.js";
-import type { GenerateOptions, GenerationCallbacks, GenerationResult, ModelInfo, Provider } from "./provider.js";
+import type { GenerateOptions, GenerationCallbacks, GenerationResult, ImagePassthrough, ModelInfo, Provider } from "./provider.js";
 
 export interface RouterOptions {
   providers: Provider[];
@@ -67,7 +67,7 @@ export class ProviderRouter implements AcpLike {
       const parsed = JSON.parse(fs.readFileSync(this.options.cachePath, "utf8")) as { providers?: Record<string, unknown> };
       const out: Record<string, ModelInfo[]> = {};
       for (const [id, models] of Object.entries(parsed.providers ?? {})) {
-        if (Array.isArray(models)) out[id] = models.filter((m): m is ModelInfo => typeof m?.id === "string").map((m) => ({ id: m.id, ...(typeof m.name === "string" ? { name: m.name } : {}) }));
+        if (Array.isArray(models)) out[id] = models.filter((m): m is ModelInfo => typeof m?.id === "string").map((m) => ({ id: m.id, ...(typeof m.name === "string" ? { name: m.name } : {}), ...(m.kind === "llm" || m.kind === "image" ? { kind: m.kind } : {}), ...(typeof m.vision === "boolean" ? { vision: m.vision } : {}) }));
       }
       return out;
     } catch { return {}; }
@@ -132,11 +132,28 @@ export class ProviderRouter implements AcpLike {
 
   hasModel(id: string): boolean { return this.resolve(id) !== undefined; }
 
-  canGenerateImages(id: string): boolean { return this.resolve(id)?.provider.imageGeneration === true; }
+  canGenerateImages(id: string): boolean { const target = this.resolve(id); return target ? target.provider.supportsImageGeneration?.(target.model) ?? target.provider.imageGeneration === true : false; }
 
   canSearchWeb(id: string): boolean { return this.resolve(id)?.provider.webSearchSupport === true; }
 
-  acceptsImages(id: string): boolean | undefined { return this.resolve(id)?.provider.status().capabilities?.image; }
+  acceptsImages(id: string): boolean | undefined { const target = this.resolve(id); return target ? target.provider.acceptsImages?.(target.model) ?? target.provider.status().capabilities?.image : undefined; }
+
+  /** Switches/queues to a local model before the request timer starts; undefined for providers without that. */
+  async prepareModel(id: string, messages: Message[] | undefined, signal: AbortSignal): Promise<{ release(): void } | undefined> {
+    const target = this.resolve(id);
+    return target?.provider.prepareModel?.(target.model, messages, signal);
+  }
+
+  requestTimeoutMs(id: string): number | undefined { const target = this.resolve(id); return target?.provider.requestTimeoutMs?.(target.model); }
+
+  /** True when image requests for the model are forwarded to the provider's image server. */
+  imagePassthrough(id: string): boolean { const target = this.resolve(id); return target?.provider.generateImage !== undefined && target.provider.supportsImageGeneration?.(target.model) === true; }
+
+  async generateImage(id: string, request: ImagePassthrough, signal: AbortSignal): Promise<{ status: number; body: unknown }> {
+    const target = this.resolve(id);
+    if (!target?.provider.generateImage) throw new ApiError(404, "model_not_found", `The model '${id}' does not exist.`, "model");
+    return target.provider.generateImage(target.model, request, signal);
+  }
 
   canCallTools(id: string): boolean { return this.resolve(id)?.provider.toolCalling === true; }
 
@@ -151,8 +168,9 @@ export class ProviderRouter implements AcpLike {
       const until = this.exhaustedUntilMs(provider.id);
       const limit = { ...(provider.maxPromptChars ? { maxPromptChars: provider.maxPromptChars } : {}), ...(until !== undefined ? { exhaustedUntil: new Date(until).toISOString() } : {}) };
       for (const model of this.known.get(provider.id) ?? []) {
-        if (this.options.listBareAliases !== false && owners.get(model.id) === provider) out.push({ id: model.id, ownedBy: provider.ownedBy, provider: provider.id, ...limit });
-        out.push({ id: `${provider.id}/${model.id}`, ownedBy: provider.ownedBy, provider: provider.id, ...limit });
+        const kind = { ...(model.kind ? { kind: model.kind } : {}), ...(model.vision !== undefined ? { vision: model.vision } : {}) };
+        if (this.options.listBareAliases !== false && owners.get(model.id) === provider) out.push({ id: model.id, ownedBy: provider.ownedBy, provider: provider.id, ...kind, ...limit });
+        out.push({ id: `${provider.id}/${model.id}`, ownedBy: provider.ownedBy, provider: provider.id, ...kind, ...limit });
       }
     }
     return out;

@@ -39,7 +39,12 @@ export class ProviderTermsRequiredError extends AcpUnavailableError {
   constructor(message: string) { super(message, undefined, "provider_terms_required"); this.name = "ProviderTermsRequiredError"; }
 }
 
-export interface ModelInfo { id: string; name?: string; }
+/** `kind` and `vision` are set for Gufo profile models (listed in /v1/models as extra fields). */
+export interface ModelInfo { id: string; name?: string; kind?: "llm" | "image"; vision?: boolean; }
+/** A request for an image server that the proxy forwards unchanged in meaning (Gufo): JSON generations or multipart edits. */
+export type ImagePassthrough =
+  | { kind: "generations"; fields: Record<string, unknown> }
+  | { kind: "edits"; fields: Record<string, string>; files: Array<{ field: string; name: string; type: string; data: Uint8Array }> };
 /** "terminal" methods cannot be passed to authenticate. */
 export interface AuthMethodInfo { id: string; name: string; description?: string; type?: string; }
 export type ProviderState = "disabled" | "stopped" | "starting" | "ready" | "needs_login" | "not_installed" | "terms_required" | "error";
@@ -213,6 +218,16 @@ export interface Provider {
   readonly maxPromptChars?: number;
   /** Throws a 400 `context_length_exceeded` when the prompt built from these messages is over `maxPromptChars`. Synchronous, no side effects. */
   checkPrompt?(messages: Message[], options?: GenerateOptions): void;
+  /** Whether this model accepts image input; the router prefers it over `status().capabilities.image`. */
+  acceptsImages?(model: string): boolean;
+  /** Whether this model generates images; the router prefers it over `imageGeneration`. */
+  supportsImageGeneration?(model: string): boolean;
+  /** Before the request timer starts: switches/queues to the model; rejects with ApiError 400/503. `messages` is undefined for an image request. The lease is released when the request ends. */
+  prepareModel?(model: string, messages: Message[] | undefined, signal: AbortSignal): Promise<{ release(): void } | undefined>;
+  /** The request timeout for this model; undefined = the server default. */
+  requestTimeoutMs?(model: string): number | undefined;
+  /** Image passthrough: present only on providers that proxy an image server. */
+  generateImage?(model: string, request: ImagePassthrough, signal: AbortSignal): Promise<{ status: number; body: unknown }>;
   generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   listModels(options?: { force?: boolean }): Promise<ModelInfo[]>;
   status(): ProviderStatus;

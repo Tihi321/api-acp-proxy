@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync } from "node:fs";
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import OpenAI from "openai";
 import type { ProxyConfig } from "../src/config.js";
+import type { LocalModelCoordinator } from "../src/local-models.js";
 import { createLogger } from "../src/logger.js";
+import type { GufoProfile } from "../src/settings.js";
 import { LocalOpenAiProvider } from "../src/providers/local-openai.js";
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
@@ -135,5 +137,81 @@ describe("LocalOpenAiProvider", () => {
     const res = await fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "strata/any", messages: [{ role: "user", content: "hi" }] }) });
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ error: { code: "local_server_not_running", message: "Strata is not running — start it from the app." } });
+  });
+
+  const profile = (id: string, kind: "llm" | "image", vision = false, extra: Partial<GufoProfile> = {}): GufoProfile => ({ id, label: id, model: id, kind, vision, args: "", ...extra });
+  const profiles = [{ ...profile("qwen27-q4", "llm"), model: "Qwen3.8-27B" }, profile("flash-next-q4", "llm", true), profile("deepseek4", "llm"), profile("qwen-image-2.1", "image"), profile("qwen-image-2.1-turbo", "image")];
+  const image = { type: "image" as const, mimeType: "image/png", data: "QUJD" };
+  const withImage = [{ role: "user" as const, parts: [{ type: "text" as const, text: "what is this?" }, image] }];
+  const abort = new AbortController().signal;
+
+  /** A Gufo provider over a fake upstream that records chat and image bodies; the coordinator counts acquires. */
+  async function gufo(handler?: (request: IncomingMessage, response: ServerResponse, body: string) => void): Promise<{ provider: LocalOpenAiProvider; router: ProviderRouter; bodies: string[]; acquired: string[] }> {
+    const bodies: string[] = []; const acquired: string[] = [];
+    const upstream = createServer((request, response) => {
+      let raw = ""; request.on("data", (part) => { raw += part; });
+      request.on("end", () => {
+        if (request.method === "GET") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ data: [] })); return; }
+        bodies.push(raw);
+        if (handler) { handler(request, response, raw); return; }
+        response.setHeader("content-type", "text/event-stream");
+        response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] })}\n\n`); response.end("data: [DONE]\n\n");
+      });
+    });
+    const port = await listen(upstream);
+    const coordinator = { acquire: async (id: string) => { acquired.push(id); return { release: () => undefined }; } } as unknown as LocalModelCoordinator;
+    const provider = new LocalOpenAiProvider({ id: "gufo", displayName: "Gufo", baseUrl: `http://127.0.0.1:${port}/v1`, logger, profiles, coordinator });
+    return { provider, router: new ProviderRouter({ providers: [provider] }), bodies, acquired };
+  }
+
+  it("sends image parts to a vision profile only, refuses them elsewhere before any switch, and lists every profile with kind and vision", async () => {
+    const { router, bodies, acquired } = await gufo();
+    const lease = await router.prepareModel("gufo/flash-next-q4", withImage, abort);
+    expect(acquired).toEqual(["flash-next-q4"]);
+    lease?.release();
+    await router.generate("gufo/flash-next-q4", withImage);
+    expect(JSON.parse(bodies[0]!).messages[0].content).toEqual([{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } }]);
+    await router.generate("gufo/deepseek4", [{ role: "user", parts: [{ type: "text", text: "hi" }] }]);
+    expect(JSON.parse(bodies[1]!).messages[0].content).toBe("hi");
+
+    expect(router.acceptsImages("gufo/flash-next-q4")).toBe(true);
+    expect(router.acceptsImages("gufo/deepseek4")).toBe(false);
+    await expect(router.prepareModel("gufo/deepseek4", withImage, abort)).rejects.toMatchObject({ status: 400, code: "unsupported_content" });
+    const strata = new LocalOpenAiProvider({ id: "strata", displayName: "Strata", baseUrl: "http://127.0.0.1:1/v1", logger });
+    await expect(new ProviderRouter({ providers: [strata] }).prepareModel("strata/x", withImage, abort)).rejects.toMatchObject({ status: 400, code: "unsupported_content" });
+    expect(acquired).toEqual(["flash-next-q4"]);
+
+    // Listed while the upstream is down too: the profiles, not the server, decide.
+    const down = createServer(); const port = await listen(down); await new Promise<void>((resolve) => down.close(() => resolve()));
+    const offline = new ProviderRouter({ providers: [new LocalOpenAiProvider({ id: "gufo", displayName: "Gufo", baseUrl: `http://127.0.0.1:${port}/v1`, logger, profiles })] });
+    const listed = await offline.listModels({ waitMs: 2000 });
+    expect(listed.map((model) => [model.id, model.kind, model.vision])).toEqual([["gufo/Qwen3.8-27B", "llm", false], ["gufo/flash-next-q4", "llm", true], ["gufo/deepseek4", "llm", false], ["gufo/qwen-image-2.1", "image", false], ["gufo/qwen-image-2.1-turbo", "image", false]]);
+  });
+
+  it("answers 400 model_not_capable for chat to an image profile and for images from an llm profile, before any switch", async () => {
+    const { router, acquired } = await gufo();
+    await expect(router.prepareModel("gufo/qwen-image-2.1", [{ role: "user", parts: [{ type: "text", text: "hi" }] }], abort)).rejects.toMatchObject({ status: 400, code: "model_not_capable" });
+    await expect(router.prepareModel("gufo/deepseek4", undefined, abort)).rejects.toMatchObject({ status: 400, code: "model_not_capable" });
+    expect(router.canGenerateImages("gufo/deepseek4")).toBe(false);
+    expect(router.canGenerateImages("gufo/qwen-image-2.1")).toBe(true);
+    expect(router.imagePassthrough("gufo/qwen-image-2.1")).toBe(true);
+    await expect(router.generateImage("gufo/deepseek4", { kind: "generations", fields: { prompt: "a cat" } }, abort)).rejects.toMatchObject({ status: 400, code: "model_not_capable" });
+    expect(acquired).toEqual([]);
+  });
+
+  it("forwards generations fields exactly with the profile model, wraps the result as png, and relays an upstream 400", async () => {
+    let status = 200;
+    const { router, bodies } = await gufo((_request, response) => {
+      response.statusCode = status; response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(status === 200 ? { data: [{ b64_json: "AAAA" }] } : { error: { message: "steps must be between 1 and 8" } }));
+    });
+    const fields = { model: "gufo/qwen-image-2.1-turbo", prompt: "a cat", size: "1024x768", steps: 4, seed: 7, negative_prompt: "blur", guidance_scale: 1.5, ignored: "x" };
+    const result = await router.generateImage("gufo/qwen-image-2.1-turbo", { kind: "generations", fields }, abort);
+    expect(JSON.parse(bodies[0]!)).toEqual({ model: "qwen-image-2.1-turbo", prompt: "a cat", size: "1024x768", steps: 4, seed: 7, negative_prompt: "blur", guidance_scale: 1.5 });
+    expect(result.body).toMatchObject({ data: [{ b64_json: "AAAA" }], output_format: "png", created: expect.any(Number) });
+    expect(router.requestTimeoutMs("gufo/qwen-image-2.1-turbo")).toBe(15 * 60 * 1000);
+    await expect(router.generateImage("gufo/qwen-image-2.1", { kind: "generations", fields: { prompt: "x", response_format: "url" } }, abort)).rejects.toMatchObject({ status: 400 });
+    status = 400;
+    await expect(router.generateImage("gufo/qwen-image-2.1", { kind: "generations", fields: { prompt: "x", steps: 99 } }, abort)).rejects.toMatchObject({ status: 400, code: "invalid_request", message: "steps must be between 1 and 8" });
   });
 });
