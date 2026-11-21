@@ -1,6 +1,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { DownloadError, downloadResumable, ensureFreeSpace, guardedFetch, safeEntryPath, type HostPolicy } from "./download.js";
+import { SHARD, ggufKind, isMainline, quantOf } from "./shared/gguf-names.js";
 import type { LlamaProgressView } from "./shared/ipc.js";
 
 export const HF_POLICY: HostPolicy = { hosts: ["huggingface.co", "hf.co"], suffixes: [".huggingface.co", ".hf.co"] };
@@ -51,28 +52,17 @@ export interface HfFile { path: string; size: number; sha256?: string; saveAs: s
 export interface HfFileGroup { kind: "model" | "mmproj" | "draft"; label: string; quant?: string; files: HfFile[]; totalSize: number; split: boolean; selectable: boolean }
 type TreeEntry = { type: string; path: string; size?: number; lfs?: { oid?: string; size?: number } };
 
-const QUANT = /(?:^|[-_./])((?:UD-)?(?:I?Q\d(?:_[A-Z0-9]+)*|BF16|F16|F32|MXFP4(?:_MOE)?))(?=[-_./]|$)/i;
-const SHARD = /-(\d{5})-of-(\d{5})\.gguf$/i;
-const DRAFT_NAME = /^(dspark|mtp|dflash|eagle3?)[-_]/i;
-const DRAFT_DIR = /^(dspark|mtp)$/i;
-
-function quantOf(file: string): string | undefined {
-  const stripped = file.replace(/\.gguf(?:_file)?$/i, "").replace(/-\d{5}-of-\d{5}$/i, "");
-  const base = stripped.slice(stripped.lastIndexOf("/") + 1);
-  return QUANT.exec(base)?.[1] ?? QUANT.exec(stripped)?.[1];
-}
-
 export function groupGgufFiles(tree: TreeEntry[]): HfFileGroup[] {
   const groups: HfFileGroup[] = [];
   const shardSets = new Map<string, { kind: HfFileGroup["kind"]; mainline: boolean; total: number; shards: Map<number, HfFile>; quant: string | undefined; dir: string }>();
   for (const entry of tree) {
-    if (entry.type !== "file" || !/\.gguf(?:_file)?$/i.test(entry.path)) continue;
+    if (entry.type !== "file") continue;
+    const kind = ggufKind(entry.path);
+    if (!kind) continue;
     const parts = entry.path.split("/");
     const name = parts[parts.length - 1] ?? entry.path;
-    if (/^imatrix/i.test(name)) continue;
     const dirs = parts.slice(0, -1);
-    const kind: HfFileGroup["kind"] = /^mmproj/i.test(name) ? "mmproj" : DRAFT_NAME.test(name) || dirs.some((dir) => DRAFT_DIR.test(dir)) ? "draft" : "model";
-    const mainline = dirs.some((dir) => dir.toLowerCase() === "mainline_support");
+    const mainline = isMainline(entry.path);
     const file: HfFile = {
       path: entry.path, size: entry.lfs?.size ?? entry.size ?? 0, saveAs: entry.path.replace(/\.gguf_file$/i, ".gguf"),
       ...(entry.lfs?.oid ? { sha256: entry.lfs.oid } : {}),

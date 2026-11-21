@@ -25,12 +25,12 @@ import { installLlama, probeLlamaVersion } from "../llama-install.js";
 import { HF_POLICY, downloadHfFiles, listHfFiles, parseHfLink } from "../hf-models.js";
 import type { HfFile, HfFileGroup } from "../hf-models.js";
 import { buildLlamaArgs, checkBuild, checkLlamaFiles } from "../llama-args.js";
-import { autoMmproj, customExePatch, installPatch, profileFilesPatch } from "../llama-jobs.js";
-import type { ProfileFiles } from "../llama-jobs.js";
+import { customExePatch, installPatch } from "../llama-jobs.js";
+import { scanModelsDir } from "../llama-scan.js";
 import { antigravityRegistration, installAntigravity, readInstallInfo } from "./antigravity.js";
 import { SettingsWindow } from "./settings-window.js";
 import { TrayController } from "./tray.js";
-import type { ActionResult, ActivityView, FieldError, Failure, GufoProfileView, HfDownloadResult, HfListResult, InstallInfoView, InstallResult, LlamaCheckResult, LlamaInstallResult, LlamaProfileView, LlamaProgressView, LlamaReleasesResult, LlamaStatusView, LocalServerId, OpenTarget, PickResult, ProfileModelsResult, SaveResult, StateView, UsageView } from "../shared/ipc.js";
+import type { ActionResult, ActivityView, FieldError, Failure, GufoProfileView, HfDownloadResult, HfListResult, InstallInfoView, InstallResult, LlamaCheckResult, LlamaInstallResult, LlamaProfileView, LlamaProgressView, LlamaReleasesResult, LlamaScanResult, LlamaStatusView, LocalServerId, OpenTarget, PickResult, SaveResult, StateView, UsageView } from "../shared/ipc.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(here, "..", "..");
@@ -143,7 +143,7 @@ async function main(): Promise<void> {
         const gate = checkBuild(target.profile, { source: binary.source, ...(binary.build !== undefined ? { build: binary.build } : {}) });
         if (gate.ok === false) throw new Error(gate.message);
         const missing = checkLlamaFiles(target.profile, llama.modelsDir);
-        if (missing.length > 0) throw new Error(`File not found: ${missing[0]} (download the model files on the Llama.cpp page)`);
+        if (missing.length > 0) throw new Error(`File not found: ${missing[0]} (put it in the models folder or download it, then pick it on the Llama.cpp page)`);
         return { id: "llama", command: binary.command, args: buildLlamaArgs(target.profile, llama.modelsDir), cwd: path.dirname(binary.command), port: llama.port, profile: target.profile.id, startTimeoutMs: target.profile.startTimeoutMs };
       }
       const settings = gufoSettings;
@@ -361,7 +361,6 @@ async function main(): Promise<void> {
   };
   const hfToken = (): string | undefined => llamaSettings?.hfToken || undefined;
   const releasesCache = new Map<LlamaSource, { at: number; releases: LlamaReleaseView[] }>();
-  const llamaProfileView = (id: string): LlamaProfileView | undefined => llamaSettings?.profiles.find((profile) => profile.id === id) as LlamaProfileView | undefined;
 
   handle("proxy:pickDirectory", async (title: unknown, defaultPath?: unknown): Promise<PickResult> => {
     if (typeof title !== "string" || title.length === 0 || title.length > 100) return {};
@@ -444,42 +443,27 @@ async function main(): Promise<void> {
     });
     return outcome.ok ? { ok: true, paths: outcome.value } : outcome;
   });
-  handle("proxy:downloadProfileModels", async (profileId: unknown): Promise<ProfileModelsResult> => {
-    if (!shortString(profileId, 200)) return { ok: false, message: "Invalid profile" };
-    await refreshLocalSettings();
-    const profile = llamaSettings!.profiles.find((candidate) => candidate.id === profileId);
-    if (!profile) return { ok: false, message: `Unknown profile '${profileId}'.` };
-    const hf = profile.hf;
-    if (!hf) return { ok: false, message: "This profile has no Hugging Face source." };
-    const modelsDir = llamaSettings!.modelsDir;
-    const token = hfToken();
-    const outcome = await runLlamaJob("model", async (signal) => {
-      const listing = await listHfFiles({ repo: hf.repo, revision: hf.revision }, { fetch: fetch as typeof fetch, policy: HF_POLICY, signal, ...(token ? { token } : {}) });
-      const wantedQuant = hf.quant.toLowerCase();
-      const candidates = listing.groups.filter((group) => group.kind === "model" && group.selectable && group.quant?.toLowerCase() === wantedQuant);
-      const model = candidates.find((group) => !group.label.endsWith("(mainline)")) ?? candidates[0];
-      if (!model) throw new DownloadError("hf_not_found", `No ${hf.quant} quant found in ${hf.repo}.`);
-      const byName = (kind: "mmproj" | "draft", name: string): HfFile => {
-        const found = listing.groups.filter((group) => group.kind === kind).flatMap((group) => group.files).find((file) => file.path.split("/").pop() === name || file.saveAs.split("/").pop() === name);
-        if (!found) throw new DownloadError("hf_not_found", `File not found in ${hf.repo}: ${name}`);
-        return found;
-      };
-      // A profile without an mmproj gets the repository's one too (vision is turned on only if it was downloaded and the profile still has none).
-      const picked = hf.mmproj ? undefined : autoMmproj(profile, listing.groups);
-      const mmproj = hf.mmproj ? byName("mmproj", hf.mmproj) : picked;
-      const draft = hf.draft ? byName("draft", hf.draft) : undefined;
-      const files = [...model.files, ...(mmproj ? [mmproj] : []), ...(draft ? [draft] : [])];
-      const paths = await downloadHfFiles({ repo: hf.repo, revision: hf.revision, files, modelsDir, fetch: fetch as typeof fetch, signal, onProgress: llamaProgress, ...(token ? { token } : {}) });
-      return { modelFile: paths[0]!, ...(mmproj ? { mmprojFile: paths[model.files.length]!, ...(picked ? { autoMmproj: true } : {}) } : {}), ...(draft ? { draftFile: paths[paths.length - 1]! } : {}) } satisfies ProfileFiles;
-    });
-    if (!outcome.ok) return outcome;
+  handle("proxy:llamaScanModels", async (): Promise<LlamaScanResult> => {
     try {
-      await proxy.persistSettings((current) => profileFilesPatch(current.providers.llama, profileId, outcome.value));
       await refreshLocalSettings();
-      pushState();
-      const view = llamaProfileView(profileId);
-      return view ? { ok: true, profile: view } : { ok: false, message: `Profile '${profileId}' was removed during the download.` };
+      const modelsDir = llamaSettings!.modelsDir;
+      const scan = await scanModelsDir(modelsDir);
+      return { ok: true, modelsDir, ...(scan.missingDir ? { missingDir: true } : {}), ...(scan.truncated ? { truncated: true } : {}), files: scan.files };
     } catch (error) { return llamaFailure(error); }
+  });
+  handle("proxy:pickModelFile", async (): Promise<PickResult> => {
+    await refreshLocalSettings();
+    const modelsDir = llamaSettings!.modelsDir;
+    const parent = win.browserWindow;
+    const options: Electron.OpenDialogOptions = {
+      title: "Select a model file", ...(modelsDir && fs.existsSync(modelsDir) ? { defaultPath: modelsDir } : {}), properties: ["openFile"],
+      filters: [{ name: "GGUF", extensions: ["gguf"] }, { name: "All files", extensions: ["*"] }],
+    };
+    const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+    const picked = result.canceled ? undefined : result.filePaths[0];
+    if (!picked) return {};
+    const relative = modelsDir ? path.relative(path.resolve(modelsDir), picked) : "";
+    return { path: relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative.split(path.sep).join("/") : picked };
   });
   handle("proxy:cancelLlamaDownload", (job: unknown): void => { if (job === "binary" || job === "model") llamaJobs[job]?.abort(); });
   handle("proxy:llamaStatus", async (): Promise<LlamaStatusView> => {

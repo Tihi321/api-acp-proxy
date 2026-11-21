@@ -226,7 +226,23 @@ export type LlamaInstallResult = { ok: true; info: LlamaInstallInfoView } | Fail
 export type LlamaCheckResult = { ok: true; build?: number; version: string } | Failure;
 export type HfListResult = { ok: true; repo: string; revision: string; quant?: string; groups: HfFileGroupView[] } | Failure;
 export type HfDownloadResult = { ok: true; paths: string[] } | Failure;
-export type ProfileModelsResult = { ok: true; profile: LlamaProfileView } | Failure;
+export interface LlamaLocalFileView {
+  kind: "model" | "mmproj" | "draft";
+  /** Relative to the models folder, "/" separators; shard 1 for a split model. */
+  path: string;
+  /** Path without the file name ("" at the root). */
+  folder: string;
+  name: string;
+  quant?: string;
+  /** Bytes, all present shards. */
+  size: number;
+  /** Total shard count of a split model. */
+  shards?: number;
+  /** false for a split model with a missing shard. */
+  complete: boolean;
+  mainline?: boolean;
+}
+export type LlamaScanResult = { ok: true; modelsDir: string; missingDir?: boolean; truncated?: boolean; files: LlamaLocalFileView[] } | Failure;
 
 export interface ProxyApi {
   getState(): Promise<StateView>;
@@ -276,8 +292,10 @@ export interface ProxyApi {
   hfListFiles(link: string): Promise<HfListResult>;
   /** `files` are paths from the listing; main re-lists to get sizes and checksums. */
   hfDownload(request: { repo: string; revision: string; files: string[] }): Promise<HfDownloadResult>;
-  /** Downloads the files of `profile.hf` and writes the real relative paths back into the stored profile. */
-  downloadProfileModels(profileId: string): Promise<ProfileModelsResult>;
+  /** Scans the saved models folder (no argument) for .gguf files. */
+  llamaScanModels(): Promise<LlamaScanResult>;
+  /** Opens a .gguf file dialog in the saved models folder; the path is relative ("/") when inside it, absolute otherwise. */
+  pickModelFile(): Promise<PickResult>;
   cancelLlamaDownload(job: "binary" | "model"): Promise<void>;
   /** `profiles` plus the built-in llama presets whose id and model are absent (pure). */
   restoreLlamaPresets(profiles: LlamaProfileView[]): Promise<LlamaProfileView[]>;
