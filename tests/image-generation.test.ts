@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
@@ -17,13 +17,15 @@ import { createLogger } from "../src/logger.js";
 import type { LocalModelCoordinator } from "../src/local-models.js";
 import type { GufoProfile } from "../src/settings.js";
 import { createProxyServer } from "../src/server.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 // Every Antigravity provider start runs the Windows orphan sweep, which is slow.
 vi.setConfig({ testTimeout: 30_000 });
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
 // One folder per run: Windows reuses pids, and a log or folder left by an earlier run with the same pid would be appended to or found again.
-const root = path.resolve(".claude/temp/image-generation-tests", `${process.pid}-${Date.now().toString(36)}`);
+const root = tempRoot("image-generation");
+afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 const PLAIN_PREAMBLE = "This is an API request. Do not use your own environment: no shell commands, no file access, no web access, no permission requests. If the conversation describes actions, functions or a JSON format for you to produce, produce them as text exactly as asked: the calling application executes them. Respond with the answer only.";
 const JPEG_START = "/9j/";
 const PNG_START = "iVBORw0KGgo";

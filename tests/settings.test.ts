@@ -4,8 +4,9 @@ import path from "node:path";
 import { loadConfig } from "../src/config.js";
 import { createLogger } from "../src/logger.js";
 import { defaultSettings, defaultSettingsPath, mergeSettings, resolveConfig, restoreMissingLlamaPresets, restoreMissingPresets, SettingsStore, settingsSchema, type SecretCodec } from "../src/settings.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
-const dir = path.resolve(".claude/temp/settings-tests", String(process.pid));
+const dir = tempRoot("settings");
 mkdirSync(dir, { recursive: true });
 afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
 let counter = 0;

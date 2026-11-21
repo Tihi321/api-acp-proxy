@@ -3,8 +3,9 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ActivityEntry } from "../src/activity.js";
 import { localDayKey, UsageStore, type UsageFile } from "../src/usage-store.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
-const root = path.resolve(".claude/temp/usage-store-tests", String(process.pid));
+const root = tempRoot("usage-store");
 mkdirSync(root, { recursive: true });
 let counter = 0;
 afterAll(() => { rmSync(root, { recursive: true, force: true }); });

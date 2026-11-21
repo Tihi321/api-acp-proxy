@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,12 +6,14 @@ import { AcpProvider } from "../src/acp-provider.js";
 import { ApiError, serializePrompt, textMessage } from "../src/api.js";
 import { antigravityDescriptor, antigravityRegistration, purgeRecordedSessions, recordSession, resolveAntigravityExecutable, type AntigravityOptions } from "../src/providers/antigravity.js";
 import { ProviderAuthRequiredError, ProviderNotInstalledError, ProviderTermsRequiredError, defaultRuntimeContext, type ProviderStatus, type RuntimeContext } from "../src/provider.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 // Every provider start runs the Windows orphan sweep (a PowerShell Get-CimInstance call), which alone can take several seconds on a cold CI runner.
 vi.setConfig({ testTimeout: 30_000 });
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/antigravity-tests", String(process.pid));
+const root = tempRoot("antigravity");
+afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 const user = [textMessage("user", "hello")];
 const providers: AcpProvider[] = [];
 let counter = 0;

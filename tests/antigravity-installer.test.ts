@@ -1,13 +1,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import http from "node:http";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { zipSync } from "fflate";
 import { installAntigravity, platformKeys, readInstallInfo, resolveRegistryEntry, safeEntryPath, type InstallProgress } from "../src/providers/antigravity-installer.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
-const root = path.resolve(".claude/temp/installer-tests", String(process.pid));
+const root = tempRoot("installer");
+afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 let counter = 0;
 const newDir = () => { const dir = path.join(root, `d${++counter}`); mkdirSync(dir, { recursive: true }); return dir; };
 

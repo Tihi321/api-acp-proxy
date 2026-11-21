@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,10 +7,12 @@ import { textMessage } from "../src/api.js";
 import { defaultRuntimeContext } from "../src/provider.js";
 import { codexDescriptor } from "../src/providers/codex.js";
 import { ProviderRouter } from "../src/router.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 // The Codex model list comes from the agent's `model` option; the ids here are test data served by the fake agent.
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/codex-models-tests", String(process.pid));
+const root = tempRoot("codex-models");
+afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 const AGENT_MODELS = ["model-one", "model-two"];
 
 let counter = 0;

@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
@@ -15,11 +15,13 @@ import type { ProxyConfig } from "../src/config.js";
 import { UsageStore } from "../src/usage-store.js";
 import { ActivityLog, type ActivityEntry } from "../src/activity.js";
 import { couldBeAntigravityNotice, exhaustedUntil, matchAntigravityUsageLimit, matchCodexUsageLimit, matchPattern, parseResetTime } from "../src/usage-limit.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/usage-limit-tests", String(process.pid));
+const root = tempRoot("usage-limit");
+afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 const config: ProxyConfig = { host: "127.0.0.1", port: 0, maxBodyBytes: 4 * 1024 * 1024, timeoutMs: 20000, workRoot: path.join(root, "work"), acpArgs: [] };
 const providers: Array<{ close(): Promise<void> }> = [];
 const servers: ReturnType<typeof createProxyServer>[] = [];

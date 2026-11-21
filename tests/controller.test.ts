@@ -8,9 +8,10 @@ import { createLogger } from "../src/logger.js";
 import type { Provider } from "../src/provider.js";
 import { codexRegistration } from "../src/providers/codex.js";
 import { defaultSettings, mergeSettings, type SettingsPatch } from "../src/settings.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/controller-tests", String(process.pid));
+const root = tempRoot("controller");
 mkdirSync(root, { recursive: true });
 let counter = 0;
 const controllers: ProxyController[] = [];

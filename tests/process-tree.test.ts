@@ -1,15 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { sweepOrphans } from "../src/process-tree.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
+const dirs: string[] = [];
+afterAll(() => { for (const d of dirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* the killed image can stay locked for a moment */ } } });
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 describe.skipIf(process.platform !== "win32")("sweepOrphans", () => {
   it("kills an orphaned agent image under the given directory and leaves other processes alone", async () => {
-    const dir = path.resolve(".claude/temp/sweep-test", String(process.pid));
-    mkdirSync(dir, { recursive: true });
+    const dir = tempRoot("process-tree"); dirs.push(dir);
     const image = path.join(dir, "agy_acp_server.exe");
     copyFileSync(process.execPath, image);
     // The parent starts the image and exits, which leaves the image without a live parent.
