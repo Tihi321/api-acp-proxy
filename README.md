@@ -44,7 +44,7 @@ After a log-out the provider shows needs login, kept and warm agent sessions are
 
 **Plan limits.** The Usage page also shows how much of each account plan is used. Codex is asked through its `/status` command and Claude through `/usage`, sent in a throwaway agent session, only when you press **Refresh** (or open the Usage page, for a provider that is ready and whose value is older than a minute); never on a timer. The probe takes a slot of the provider's [concurrency cap](#concurrency-cap), is not listed in Recent requests, is not counted in the totals, and does not run while the provider needs login. Codex reports "% left", shown here as used. Claude also pushes rate-limit hints after requests, shown under its card. Antigravity: not available. A custom `PROXY_ACP_COMMAND` Codex adapter: not available. API key logins have no plan limits. The account email and the session cost in these answers are never logged or shown; when an answer cannot be read, it is shown as sent with those parts removed. The wording of the answers is not a stable contract of the adapters (codex-acp 2.3.0, claude-agent-acp 0.91.0), so a new adapter version may need a parser update.
 
-**Settings window:** a sidebar with the pages Overview, Usage, Requests, Server, Codex, Claude, Antigravity and, under Local models, Gufo and Strata; the logs folder button, the settings path and the secrets note are at the bottom of the sidebar. A dot next to a page means it has unsaved changes. The window follows Windows light or dark mode. The Server page has the host, port, API key with a generator, timeouts, max body size, models wait, the tool result wait and launch at login; each provider page has the enable switch, state, discovered models, auth method and Login. The Antigravity page also has the executable path (Browse), a "Download from registry" button with progress, and the optional `GEMINI_API_KEY` / `GEMINI_HOME`. Fields forced by an environment variable are shown disabled. Saving restarts the server (in-flight requests get up to 5 s to finish). API keys are stored encrypted with Electron `safeStorage` (the file value starts with `enc:`).
+**Settings window:** a sidebar with the pages Overview, Usage, Requests, Server, Codex, Claude, Antigravity and, under Local models, Gufo, Strata and Llama.cpp; the logs folder button, the settings path and the secrets note are at the bottom of the sidebar. A dot next to a page means it has unsaved changes. The window follows Windows light or dark mode. The Server page has the host, port, API key with a generator, timeouts, max body size, models wait, the tool result wait and launch at login; each provider page has the enable switch, state, discovered models, auth method and Login. The Antigravity page also has the executable path (Browse), a "Download from registry" button with progress, and the optional `GEMINI_API_KEY` / `GEMINI_HOME`. Fields forced by an environment variable are shown disabled. Saving restarts the server (in-flight requests get up to 5 s to finish). API keys are stored encrypted with Electron `safeStorage` (the file value starts with `enc:`).
 
 **Files** (`%APPDATA%\api-acp-proxy\`, or the folder of `PROXY_SETTINGS_FILE`):
 
@@ -78,7 +78,7 @@ Model ids are namespaced as `<provider>/<id>`, for example `codex/gpt-6-luna`, `
 - Codex models are discovered at runtime from the agent, like the others, and are also exposed **unprefixed** (`gpt-6-luna` and `codex/gpt-6-luna` both work), so existing clients keep working. The list depends on your ChatGPT plan and on the bundled codex-acp version (with codex-acp 2.3.0 a ChatGPT Go account gets `gpt-6-luna`, `gpt-5.6-terra` and `gpt-5.6-luna`; `gpt-5.6-sol` is gone), so check `GET /v1/models` instead of assuming ids. Until the first discovery has finished (a first start, with no models cache yet) an unprefixed id is passed to Codex as it is.
 - Claude models are only available prefixed (`claude/<id>`), and are discovered at runtime from the agent.
 - Antigravity models are only available prefixed, and are discovered at runtime from the agent (the list depends on your plan and on the server version).
-- Gufo and Strata (local model servers on this PC) are only available prefixed (`gufo/<model>`, `strata/<id>`), and are enabled by default. They are plain OpenAI-compatible upstreams: a request with tools, MCP servers or web search is answered 400 `model_not_capable`; image input only reaches Gufo vision profiles (see Local model servers). While the server is not running, a request answers 503 `local_server_not_running` ("Gufo is not running — start it from the app."). See [Local model servers (Gufo, Strata)](#local-model-servers-gufo-strata).
+- Gufo, Strata and Llama.cpp (local model servers on this PC) are only available prefixed (`gufo/<model>`, `strata/<id>`, `llama/<model>`), and are enabled by default. They are plain OpenAI-compatible upstreams: a request with tools, MCP servers or web search is answered 400 `model_not_capable`; image input only reaches Gufo vision profiles (see Local model servers). While the server is not running, a request answers 503 `local_server_not_running` ("Gufo is not running — start it from the app."). See [Local model servers (Gufo, Strata, Llama.cpp)](#local-model-servers-gufo-strata-llamacpp).
 - **Collision rule:** if an unprefixed id would be claimed by two providers, the first provider keeps it and the later one is listed only with its prefix; a warning is logged.
 - Only enabled providers are listed. An unknown id returns 404 `model_not_found`.
 - `/v1/models` waits up to `PROXY_MODELS_WAIT_MS` for providers that have not finished discovery; a slow provider is omitted from that response. `owned_by` reflects the provider.
@@ -116,9 +116,9 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 | `PROXY_ANTIGRAVITY_ACCEPT_TERMS` | unset | Set to `1` to acknowledge the Antigravity terms headlessly |
 | `GEMINI_API_KEY`, `GEMINI_HOME` | unset | Passed through to the Antigravity server |
 
-## Local model servers (Gufo, Strata)
+## Local model servers (Gufo, Strata, Llama.cpp)
 
-Gufo and Strata are local model servers that run on this PC and speak the OpenAI API. The proxy forwards `gufo/*` and `strata/*` requests to `http://127.0.0.1:<port>/v1`; the desktop app can also start and stop them (pages **Gufo** and **Strata** under "Local models" in the settings window, with Start/Stop, the state and the last 50 log lines; the app keeps the last 200).
+Gufo, Strata and Llama.cpp are local model servers that run on this PC and speak the OpenAI API. The proxy forwards `gufo/*`, `strata/*` and `llama/*` requests to `http://127.0.0.1:<port>/v1`; the desktop app can also start and stop them (pages **Gufo**, **Strata** and **Llama.cpp** under "Local models" in the settings window, with Start/Stop, the state and the last 50 log lines; the app keeps the last 200).
 
 Settings (`providers.gufo`, `providers.strata`; no environment variables):
 
@@ -162,6 +162,51 @@ The flags of the new presets are inferred from `gufo.exe`, not run: edit them pe
 - **Images.** `POST /v1/images/generations` (JSON: `model, prompt, size` as `WxH, steps, seed, negative_prompt, guidance_scale, n, response_format` = `b64_json`) and `POST /v1/images/edits` (multipart, 1 to 10 `image` files, no `mask`) go to Gufo image profiles; the response carries `data[].b64_json`, `created` and `output_format: "png"`. A chat to an image model, or an image request to an llm model, is 400 `model_not_capable`. Image routes accept up to 64 MiB. Image profiles time out after 15 minutes by default (`requestTimeoutMs` per profile). Codex/Claude image generation is unchanged.
 - **Playground.** Picking an image model shows an image panel (prompt, negative prompt, size, steps, seed, guidance scale, reference images); blank fields are left out of the request. Results are kept in the tab only.
 - **Memory.** One process at a time: deepseek4 (about 93 GB) and flash-next-q4 (about 115 GB) are far above 63 GiB of RAM; the preset contexts are capped, raise them knowingly. Qwen-Image weights have a non-commercial licence.
+
+### Llama.cpp (AAP-38)
+
+Llama.cpp runs `llama-server.exe` on this PC, one model profile at a time, and the app can download both the build and the models. Live behaviour (real downloads, a real llama-server, ROCm on Strix Halo) is **UNTESTED**; the file names, zip layouts and flags below are inferred.
+
+- **One server at a time, across all three.** Gufo, Strata and Llama.cpp never run together; a request for a model of another server (or another profile) stops the running one and starts the needed one, once it has no request in flight. Requests queue in FIFO order; a wait longer than `providers.llama.switchWaitMs` (default 30 min; the Settings field is in minutes) gets 503 `local_model_busy`. Each Llama.cpp profile is listed as `llama/<model>` in `/v1/models` whether or not it runs, with `vision`. A request with tools, MCP servers or web search is 400 `model_not_capable`; images on a profile without `vision` are 400 before any switch. Coordinator keys are `llama:<id>`, so a Gufo and a Llama.cpp profile may share an id.
+- **Settings** (`providers.llama`): `enabled` `true`, `port` `8082` (always passed as `--port`, host is `127.0.0.1`), `maxConcurrent` `1`, `switchWaitMs`, `modelsDir` `D:\LlamaCpp\models`, `hfToken` (encrypted like the API keys), `binary` and `profiles`. The working directory is the folder of `llama-server.exe`.
+- **Build (`binary`).** Mode `managed` (the app downloads it) or `custom` (your own `llama-server.exe`: **Check** runs `--version` and keeps the detected build; an unparsable output is "build unknown", a warning only). Managed: `source` `ggml-org` (default; official releases of `ggml-org/llama.cpp`) or `unsloth` (the `unslothai/llama.cpp` fork), `backend` (default `rocm`, for Strix Halo gfx1151; choose `vulkan` if ROCm fails to load; the Settings page picks `rocm-gfx1151` for the Unsloth source), `arch` `x64`, `dir` `D:\LlamaCpp\bin`. The version list is read from the GitHub releases (20 newest, drafts skipped, cached 10 minutes, **Refresh versions** reads again); `/releases/latest` is not used because it points at a stale non-build release. The backends offered are the Windows zips of the chosen release (ggml-org: cpu, vulkan, rocm, cuda-12/13, sycl, openvino, opencl-adreno). A CUDA build also downloads the matching `cudart` runtime zip of the same CUDA major.
+- **Install.** The zip is downloaded (resumable), its SHA-256 must equal the digest GitHub publishes for the asset (the Unsloth list `llama-prebuilt-sha256.json` is used when the asset has none); with no digest, or a mismatch, nothing is installed. It is extracted (8 GiB cap, zip-slip guarded) into `<dir>/<source>-<tag>-<backend>/` (for example `D:\LlamaCpp\bin\ggml-org-b12607-rocm\`), `llama-server.exe` is searched up to 3 folder levels deep (`llama_server_missing` otherwise), and a failed install leaves no partial folder. Free space is checked before (3 times the zip size plus 1 GiB). Old builds stay on disk.
+- **Models.** Files live under `modelsDir` as `<owner>/<repo>/<file>`. In **Models** paste a Hugging Face link: `https://huggingface.co/<owner>/<repo>`, `.../tree/<rev>`, `.../blob/<rev>/<file>`, `.../resolve/<rev>/<file>` (or `hf.co`), `<owner>/<repo>` and `<owner>/<repo>:<QUANT>` (the quant is preselected). **List files** shows a table of the GGUF groups: model quants (UD-, IQ, Q, BF16, F16, F32, MXFP4), `mmproj` files, drafters (`dspark`, `mtp`, `dflash`, `eagle` names or folders) and `mainline_support` variants (marked "(mainline)"); `imatrix` files are skipped, `.gguf_file` is saved as `.gguf`. A split model (`-00001-of-0000N.gguf`) is one row with all shards; one with a missing shard is "(incomplete)" and cannot be chosen. **Download** is sequential and resumable (`.partial` files, Range; Cancel keeps the partial), checks the SHA-256 Hugging Face lists and the free space (plus 1 GiB), and **Create profile from this** fills a profile. Signed CDN links expire: retry resumes. HTTP 401 / 403 / 404 are shown as a token needed, terms to accept, or not found.
+- **Hugging Face token.** Optional, for gated models. It is sent only to `huggingface.co`, never to the CDN redirect, and is stored encrypted.
+- **Allowed download hosts.** HTTPS only, every redirect hop is checked: GitHub `api.github.com`, `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`; Hugging Face `huggingface.co`, `hf.co` and their subdomains. Another host fails with `download_host_not_allowed` naming it.
+
+Profile fields (`providers.llama.profiles[]`); the app builds the llama-server command line from them (paths in double quotes; a `"` or `%` in a path is refused):
+
+| Field | Default | Generated flag |
+| --- | --- | --- |
+| `id`, `label` | - | - (`id`: a-z, 0-9, `.`, `_`, `-`) |
+| `model` | - | `--alias <model>`, exposed as `llama/<model>` |
+| `modelFile` | - | `-m "<path>"` (relative to `modelsDir`; the first shard of a split model, every shard is checked) |
+| `vision`, `mmprojFile` | `false` | `--mmproj "<path>"` only with `vision`; `vision` needs `mmprojFile` |
+| `ctxSize` | model default | `-c <n>` |
+| `gpuLayers` | `auto` | `-ngl auto\|all\|<n>` |
+| `flashAttn` | `auto` | `-fa auto\|on\|off` |
+| `specType` | `none` | `--spec-type <type>` (none, draft-simple, draft-eagle3, draft-mtp, draft-dflash, draft-dspark, draft-dflash2, draft-lilicorr, ngram-simple, ngram-map-k, ngram-map-k4v, ngram-mod, ngram-cache) |
+| `draftFile` | - | `--spec-draft-model "<path>"` (only with a `specType`) |
+| `draftNMax`, `draftNMin` | - | `--spec-draft-n-max`, `--spec-draft-n-min` |
+| `draftGpuLayers` | - | `--spec-draft-ngl <auto\|all\|n>` |
+| `extraArgs` | empty | appended as written; the place for anything else (sampling flags, a renamed flag of another build) |
+| `startTimeoutMs`, `requestTimeoutMs` | 10 min / server default | - |
+| `hf` | - | where **Download model files** fetches from: `repo`, `revision`, `quant`, optional `mmproj` and `draft` file names |
+| `requires` | - | build gate: `minBuild`, `sources` |
+
+Start refuses a profile with a missing file (the error names the first; the profile card lists all) or a build gate that fails; an unknown build only warns. The gate passes when the installed source is in `requires.sources` or the build number is at least `requires.minBuild`.
+
+Presets (editable; "Restore missing presets" appends absent ones). Both use `-ngl all`, context 32768 and the Inkling sampling flags in `extraArgs` (`--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0`):
+
+| id / model | Files | Build | Notes |
+| --- | --- | --- | --- |
+| `inkling-2-mini` | `ggml-org/Inkling-2-Mini-GGUF`, Q8_0 (about 28 GB) + `mmproj-Inkling-2-Mini-BF16.gguf` (about 0.6 GB) | ggml-org b12607 or newer, or the Unsloth build | vision; no MTP/DSpark |
+| `inkling-2-mini-dspark` | `unsloth/Inkling-2-Mini-GGUF`, UD-Q8_K_XL + `mmproj-F16.gguf` + `dspark-Inkling-2-Mini-Q8_0.gguf` | Unsloth build only | vision; `--spec-type draft-dspark`, draft max 3, draft `-ngl 99` |
+
+An older build answers "<profile> needs a newer build: b12607 or newer from ggml-org, or the Unsloth build" and does not start. DSpark is only known to work on the Unsloth fork, and whether that build loads the ggml-org Q8_0 is unverified. The exact file names are inferred: **Download model files** lists the repository and corrects them.
+
+To free disk space delete old build folders under `binary.dir` and model folders under `modelsDir` in Explorer; the app does not delete them yet.
 
 ## Concurrency cap
 
