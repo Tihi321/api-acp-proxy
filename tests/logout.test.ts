@@ -10,7 +10,8 @@ import { ProviderAuthRequiredError, defaultRuntimeContext, type ProviderDescript
 
 // Log out and sign-in status with the fake agent. The real agents are never logged out here: nothing in these tests reads or touches ~/.codex, ~/.claude, ~/.gemini or ~/.agents.
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/logout-tests", String(process.pid));
+// One folder per run: Windows reuses pids, and a log or folder left by an earlier run with the same pid would be appended to or found again.
+const root = path.resolve(".claude/temp/logout-tests", `${process.pid}-${Date.now().toString(36)}`);
 const user = [textMessage("user", "hello")];
 const providers: AcpProvider[] = [];
 let counter = 0;

@@ -21,7 +21,8 @@ import { ToolBridgeHub } from "../src/tool-bridge.js";
 vi.setConfig({ testTimeout: 30_000 });
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/tool-calling-tests", String(process.pid));
+// One folder per run: Windows reuses pids, and a log or folder left by an earlier run with the same pid would be appended to or found again.
+const root = path.resolve(".claude/temp/tool-calling-tests", `${process.pid}-${Date.now().toString(36)}`);
 
 let counter = 0;
 const servers: Server[] = [];

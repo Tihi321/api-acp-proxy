@@ -22,7 +22,8 @@ import { createProxyServer } from "../src/server.js";
 vi.setConfig({ testTimeout: 30_000 });
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const root = path.resolve(".claude/temp/image-generation-tests", String(process.pid));
+// One folder per run: Windows reuses pids, and a log or folder left by an earlier run with the same pid would be appended to or found again.
+const root = path.resolve(".claude/temp/image-generation-tests", `${process.pid}-${Date.now().toString(36)}`);
 const PLAIN_PREAMBLE = "This is an API request. Do not use your own environment: no shell commands, no file access, no web access, no permission requests. If the conversation describes actions, functions or a JSON format for you to produce, produce them as text exactly as asked: the calling application executes them. Respond with the answer only.";
 const JPEG_START = "/9j/";
 const PNG_START = "iVBORw0KGgo";
