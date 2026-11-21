@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 request: REQ-0007
 repos: [api-acp-proxy]
 branch: AAP-38_llama-cpp-provider
