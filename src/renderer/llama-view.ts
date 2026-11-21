@@ -1,9 +1,11 @@
 import type {
-  Failure, HfFileGroupView, HfListResult, LlamaBinarySettingsView, LlamaLayersView, LlamaProfileView, LlamaProgressView, LlamaProviderSettingsView,
-  LlamaReleaseView, LlamaSourceView, LlamaStatusView, LocalServerStatusView, ProxyApi,
+  Failure, HfFileGroupView, HfListResult, LlamaBinarySettingsView, LlamaLayersView, LlamaLocalFileView, LlamaProfileView, LlamaProgressView,
+  LlamaProviderSettingsView, LlamaReleaseView, LlamaScanResult, LlamaSourceView, LlamaStatusView, LocalServerStatusView, ProxyApi,
 } from "../shared/ipc.js";
+import { applyFix, foundFileFixes, profileFromFile, specTypeForDraft, usedBy } from "./llama-models.js";
+import type { FileField } from "./llama-models.js";
 
-/** Page logic of the Llama.cpp settings page (build install, Hugging Face downloads, profiles). The shared save/dirty plumbing stays in settings.ts. */
+/** Page logic of the Llama.cpp settings page (build install, models on disk, profiles, Hugging Face downloads). The shared save/dirty plumbing stays in settings.ts. */
 export interface LlamaViewDeps {
   api: ProxyApi;
   markDirty(value: boolean): void;
@@ -44,7 +46,7 @@ const flash = (node: HTMLElement, text: string, bad = false): void => { node.tex
 const gb = (bytes: number): string => `${(bytes / 1e9).toFixed(2)} GB`;
 const bytesText = (bytes: number): string => bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${(bytes / 1048576).toFixed(1)} MB`;
 const minutesText = (ms: number | undefined): string => ms === undefined ? "" : String(Math.round(ms / 6000) / 10);
-const slug = (text: string): string => text.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "model";
+const norm = (path: string): string => path.replace(/\\/g, "/").toLowerCase();
 const baseName = (path: string): string => path.split(/[\\/]/).pop() ?? path;
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
@@ -73,7 +75,6 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   /** True while this page itself runs the job (the status poll must not reset the flag then). */
   let ownBinary = false;
   let ownModel = false;
-  let profileJob: string | undefined;
   let loadToken = 0;
   const startingProfiles = new Set<string>();
 
@@ -209,15 +210,100 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     if (progress.phase === "download" && progress.total) { bar.max = progress.total; bar.value = progress.received ?? 0; } else bar.removeAttribute("value");
     const line = progressLine(progress);
     el(binaryJob ? "llama-install-text" : "llama-hf-text").textContent = line;
-    if (!binaryJob && profileJob) flash(el("llama-profiles-msg"), `${profileJob}: ${line}`, progress.phase === "error");
   }
 
-  // ---- Models card ---------------------------------------------------------------------------------------------------------
+  // ---- Models on disk card -----------------------------------------------------------------------------------------------
+
+  let scanFiles: LlamaLocalFileView[] = [];
+  let scanning = false;
+  let scanAgain = false;
+  /** The saved models folder at the start of the last scan; a different saved folder (after a Save) triggers a scan. */
+  let scannedFor: string | undefined;
+  let savedModelsDir = "";
+  /** Paths returned by the last successful download; the matching rows are marked "new". */
+  let newPaths: string[] = [];
+  const pickerRebuilds: Array<() => void> = [];
+
+  const isNew = (file: LlamaLocalFileView): boolean => {
+    const wanted = norm(file.path);
+    return newPaths.some((path) => { const have = norm(path); return have === wanted || have.endsWith(`/${wanted}`); });
+  };
+
+  function renderScanTable(): void {
+    el("llama-scan-wrap").hidden = scanFiles.length === 0;
+    el("llama-scan-body").replaceChildren(...scanFiles.map((file) => {
+      const row = make("tr");
+      const name = make("td", "mono", file.shards ? `${file.path} (${file.shards} files)` : file.path);
+      if (isNew(file)) name.append(" ", make("span", "badge info", "new"));
+      const action = make("td");
+      if (!file.complete) action.append(make("span", "muted", "(incomplete)"));
+      else if (file.kind === "model") {
+        const create = make("button", "small", "Create profile"); create.type = "button";
+        create.onclick = () => createFromFile(file);
+        action.append(create);
+      }
+      const kind = file.kind === "mmproj" ? "vision (mmproj)" : file.kind;
+      row.append(name, make("td", "", kind), make("td", "", file.quant ?? ""), make("td", "num", bytesText(file.size)), make("td", "mono", usedBy(file.path, profiles).join(", ")), action);
+      return row;
+    }));
+  }
+
+  /** Everything that shows the scan or the profiles' files: the table, the pickers and the per-card fixes, in place. */
+  function refreshFileViews(): void {
+    renderScanTable();
+    for (const rebuild of pickerRebuilds) rebuild();
+    updateProfileButtons();
+  }
+
+  function createFromFile(file: LlamaLocalFileView): void {
+    const taken = new Set(profiles.flatMap((profile) => [profile.id, profile.model]));
+    const profile = profileFromFile(file, scanFiles, taken);
+    profiles.push(profile);
+    dirty(); renderProfiles();
+    el("llama-profiles").lastElementChild?.scrollIntoView({ block: "center", behavior: "smooth" });
+    flash(el("llama-profiles-msg"), `Added profile "${profile.label}". Save to keep it.`);
+  }
+
+  function applyScan(result: LlamaScanResult): void {
+    const status = el("llama-scan-status");
+    if (!result.ok) { flash(status, failureText(result), true); return; }
+    scanFiles = result.files;
+    const text = result.missingDir ? "Folder does not exist yet."
+      : result.files.length === 0 ? `No .gguf files found in ${result.modelsDir}.`
+      : result.truncated ? `Stopped after ${result.files.length} files (limit reached) in ${result.modelsDir}.`
+      : `Scanned ${result.modelsDir}: ${result.files.length} file${result.files.length === 1 ? "" : "s"}`;
+    flash(status, text, false);
+    refreshFileViews();
+  }
+
+  /** Scans the saved models folder. A scan already running is not started twice: one more runs after it, so the newest result wins. */
+  async function scan(): Promise<void> {
+    if (scanning) { scanAgain = true; return; }
+    scanning = true;
+    try {
+      do {
+        scanAgain = false;
+        scannedFor = savedModelsDir;
+        el<HTMLButtonElement>("llama-scan").disabled = true;
+        flash(el("llama-scan-status"), "Scanning…");
+        let result: LlamaScanResult;
+        try { result = await api.llamaScanModels(); } catch (error) { result = { ok: false, message: errorText(error) }; }
+        if (!scanAgain) applyScan(result);
+      } while (scanAgain);
+    } finally { scanning = false; el<HTMLButtonElement>("llama-scan").disabled = false; }
+  }
+
+  /** Rescan: the scan reads the saved folder, so unsaved edits (the folder field) are saved first. */
+  async function rescan(): Promise<void> {
+    if (deps.isDirty() && !await deps.save()) return;
+    await scan();
+  }
+
+  // ---- Download from Hugging Face card -----------------------------------------------------------------------------------------
 
   let listing: { repo: string; revision: string; quant?: string; groups: HfFileGroupView[] } | undefined;
   let modelGroup: number | undefined;
   const extraGroups = new Set<number>();
-  let downloaded: { paths: string[]; groups: HfFileGroupView[] } | undefined;
 
   const chosenGroups = (): HfFileGroupView[] => {
     if (!listing) return [];
@@ -229,13 +315,11 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
 
   function updateModelButtons(): void {
     el<HTMLButtonElement>("llama-hf-download").disabled = modelBusy || chosenGroups().length === 0;
-    // Any model job (a listing download or a profile's "Download model files") shows its progress and Cancel here, with or without a listing.
+    // A model job (also one started elsewhere) shows its progress and Cancel here, with or without a listing.
     el("llama-hf-actions").hidden = !listing && !modelBusy;
     el("llama-hf-download").hidden = !listing;
     el("llama-hf-cancel").hidden = !modelBusy;
     el<HTMLButtonElement>("llama-hf-list").disabled = modelBusy;
-    el("llama-hf-create").hidden = !downloaded || !downloaded.groups.some((group) => group.kind === "model");
-    updateProfileButtons();
   }
 
   function renderListing(): void {
@@ -269,7 +353,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     let result: HfListResult;
     try { result = await api.hfListFiles(link); } catch (error) { result = { ok: false, message: errorText(error) }; }
     el<HTMLButtonElement>("llama-hf-list").disabled = modelBusy;
-    downloaded = undefined; extraGroups.clear(); modelGroup = undefined; listing = undefined;
+    extraGroups.clear(); modelGroup = undefined; listing = undefined;
     if (!result.ok) { showError(el("llama-hf-error"), failureText(result)); renderListing(); updateModelButtons(); return; }
     listing = result;
     const wanted = result.groups.findIndex((group) => group.kind === "model" && group.selectable && result.quant !== undefined && group.quant === result.quant);
@@ -284,44 +368,27 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     if (!listing || !groups.length || modelBusy) return;
     const request = { repo: listing.repo, revision: listing.revision, files: groups.flatMap((group) => group.files.map((file) => file.path)) };
     showError(el("llama-hf-error"), undefined);
-    modelBusy = true; ownModel = true; downloaded = undefined; updateModelButtons();
+    modelBusy = true; ownModel = true; newPaths = []; updateModelButtons();
     try {
       if (deps.isDirty() && !await deps.save()) return;
       el("llama-hf-text").textContent = "Starting…";
       const result = await api.hfDownload(request);
-      if (result.ok) { downloaded = { paths: result.paths, groups }; el("llama-hf-text").textContent = `Downloaded ${result.paths.length} file${result.paths.length === 1 ? "" : "s"}.`; }
-      else { el("llama-hf-text").textContent = ""; showError(el("llama-hf-error"), failureText(result)); }
+      if (result.ok) {
+        newPaths = result.paths;
+        el("llama-hf-text").textContent = `Downloaded ${result.paths.length} file${result.paths.length === 1 ? "" : "s"}. Create a profile from them under Models on disk.`;
+        void scan();
+      } else { el("llama-hf-text").textContent = ""; showError(el("llama-hf-error"), failureText(result)); }
     } catch (error) { showError(el("llama-hf-error"), errorText(error)); }
     finally { modelBusy = false; ownModel = false; el<HTMLProgressElement>("llama-hf-progress").hidden = true; updateModelButtons(); void refreshStatus(); }
   }
 
-  /** The stored path of a downloaded group's first file: the returned path that ends with its `saveAs`, else `saveAs` itself. */
-  function storedPath(group: HfFileGroupView): string {
-    const first = group.files.find((file) => /-0*1-of-\d+/.test(file.saveAs)) ?? group.files[0];
-    if (!first || !downloaded) return "";
-    const norm = (path: string): string => path.replace(/\\/g, "/");
-    return downloaded.paths.find((path) => norm(path).endsWith(norm(first.saveAs))) ?? first.saveAs;
-  }
-
-  function createProfile(): void {
-    if (!downloaded || !listing) return;
-    const model = downloaded.groups.find((group) => group.kind === "model");
-    if (!model) return;
-    const mmproj = downloaded.groups.find((group) => group.kind === "mmproj");
-    const draft = downloaded.groups.find((group) => group.kind === "draft");
-    const base = slug(model.label.replace(/\.gguf$/i, ""));
-    const taken = new Set(profiles.flatMap((profile) => [profile.id, profile.model]));
-    let id = base; let n = 2;
-    while (taken.has(id)) id = `${base.slice(0, 44)}-${n++}`;
-    const profile: LlamaProfileView = {
-      id, label: model.label, model: id, vision: mmproj !== undefined, modelFile: storedPath(model), gpuLayers: "auto", flashAttn: "auto", specType: "none", extraArgs: "",
-    };
-    if (mmproj) profile.mmprojFile = storedPath(mmproj);
-    if (draft) { profile.draftFile = storedPath(draft); profile.specType = "draft-simple"; }
-    if (model.quant) profile.hf = { repo: listing.repo, revision: listing.revision, quant: model.quant, ...(mmproj ? { mmproj: baseName(mmproj.files[0]!.path) } : {}), ...(draft ? { draft: baseName(draft.files[0]!.path) } : {}) };
-    profiles.push(profile);
-    dirty(); renderProfiles();
-    flash(el("llama-profiles-msg"), `Added profile "${profile.label}". Save to keep it.`);
+  /** "Find on Hugging Face": fills the download card's link from the profile's `hf` source and lists the files. Nothing is downloaded. */
+  function findOnHuggingFace(profile: LlamaProfileView): void {
+    const hf = profile.hf;
+    if (!hf) return;
+    el<HTMLInputElement>("llama-hf-link").value = hf.revision === "main" ? `${hf.repo}:${hf.quant}` : `https://huggingface.co/${hf.repo}/tree/${hf.revision}`;
+    el("llama-hf-card").scrollIntoView({ block: "start", behavior: "smooth" });
+    void listFiles();
   }
 
   // ---- Profiles ------------------------------------------------------------------------------------------------------------
@@ -364,6 +431,71 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     return row;
   }
 
+  const optionText = (file: LlamaLocalFileView): string =>
+    `${file.path}${file.quant ? ` - ${file.quant}` : ""} - ${bytesText(file.size)}${file.complete ? "" : " (incomplete)"}`;
+  const CUSTOM = "\u0000custom";
+
+  /** A file field as a select (scanned files, "(none)", "Custom path…") with a text input and Browse…; rebuilt in place by the scan. */
+  function filePicker(profile: LlamaProfileView, key: FileField, labelText: string, onPicked: (key: FileField, value: string, had: boolean) => void): HTMLElement {
+    const select = make("select");
+    const custom = make("input"); custom.type = "text"; custom.autocomplete = "off"; custom.spellcheck = false;
+    custom.placeholder = "Path relative to the models folder, or absolute";
+    const browse = make("button", "small", "Browse…"); browse.type = "button";
+    const customRow = make("div", "row"); customRow.append(custom, browse);
+    let customMode = false;
+    const current = (): string => profile[key] ?? "";
+    const set = (value: string): void => {
+      if (key === "modelFile") profile.modelFile = value; else if (value) profile[key] = value; else delete profile[key];
+    };
+    const option = (file: LlamaLocalFileView): HTMLOptionElement => {
+      const item = new Option(optionText(file), file.path); item.disabled = !file.complete; return item;
+    };
+    const rebuild = (): void => {
+      const value = current();
+      const kind = key === "modelFile" ? "model" : key === "mmprojFile" ? "mmproj" : "draft";
+      const entries = scanFiles.filter((file) => file.kind === kind);
+      select.replaceChildren();
+      if (key !== "modelFile") select.append(new Option("(none)", ""));
+      else if (!value) select.append(new Option("(choose a file)", ""));
+      select.append(...entries.map(option));
+      if (key === "draftFile") {
+        const others = scanFiles.filter((file) => file.kind === "model");
+        if (others.length) {
+          const group = make("optgroup"); group.label = "Other models";
+          group.append(...others.map(option));
+          select.append(group);
+        }
+      }
+      const known = value && scanFiles.find((file) => file.complete && norm(file.path) === norm(value));
+      if (value && !known) select.append(new Option(`${value} (not found)`, value));
+      select.append(new Option("Custom path…", CUSTOM));
+      select.value = customMode ? CUSTOM : known ? known.path : value;
+      if (select.value !== (customMode ? CUSTOM : known ? known.path : value)) select.value = "";
+      customRow.hidden = !customMode;
+      if (document.activeElement !== custom) custom.value = value;
+    };
+    select.addEventListener("change", () => {
+      if (select.value === CUSTOM) { customMode = true; customRow.hidden = false; custom.value = current(); custom.focus(); return; }
+      customMode = false; customRow.hidden = true;
+      const had = current() !== "";
+      set(select.value); dirty(); onPicked(key, select.value, had);
+      rebuild();
+    });
+    custom.addEventListener("input", () => { set(custom.value); dirty(); });
+    browse.onclick = async () => {
+      const result = await api.pickModelFile();
+      if (!result.path) return;
+      const had = current() !== "";
+      customMode = false; set(result.path); dirty(); onPicked(key, result.path, had);
+      rebuild();
+    };
+    rebuild();
+    pickerRebuilds.push(rebuild);
+    const wrap = make("div", "field");
+    wrap.append(make("span", "", labelText), select, customRow);
+    return wrap;
+  }
+
   function profileCard(profile: LlamaProfileView, index: number): HTMLElement {
     const card = make("div", "profile");
     card.dataset.index = String(index);
@@ -372,13 +504,9 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     const badge = make("span", "badge"); badge.dataset.role = "profile-badge";
     const start = make("button", "primary small", "Start"); start.type = "button"; start.dataset.role = "profile-start";
     start.onclick = () => void startProfile(profile.id);
-    const download = make("button", "small", "Download model files"); download.type = "button"; download.dataset.role = "profile-download";
-    download.title = "Downloads the files listed under this profile's Hugging Face source";
-    download.onclick = () => void downloadProfile(profile.id);
-    download.hidden = !profile.hf;
     const remove = make("button", "small", "Remove"); remove.type = "button";
     remove.onclick = () => { profiles.splice(index, 1); dirty(); renderProfiles(); };
-    head.append(badge, start, download, remove);
+    head.append(badge, start, remove);
 
     const warnings = make("div"); warnings.dataset.role = "profile-warnings";
 
@@ -399,18 +527,30 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     const extra = make("textarea"); extra.rows = 2; extra.spellcheck = false; extra.value = profile.extraArgs;
     extra.addEventListener("input", () => { profile.extraArgs = extra.value; dirty(); });
 
+    /** A file was chosen in a picker: mmproj switches vision on (it was empty) or off (none), a draft sets the spec type when it was none. */
+    const picked = (key: FileField, value: string, had: boolean): void => {
+      if (key === "mmprojFile") {
+        if (value && !had) vision.checked = true; else if (!value) vision.checked = false;
+        profile.vision = vision.checked;
+      } else if (key === "draftFile" && value && profile.specType === "none") {
+        profile.specType = specTypeForDraft(baseName(value));
+        spec.value = SPEC_TYPES.includes(profile.specType as typeof SPEC_TYPES[number]) ? profile.specType : "none";
+      }
+      renderScanTable();
+    };
+
     const grid = make("div", "grid");
     grid.append(
       field("Label", textInput(profile.label, (value) => { profile.label = value; })),
       field("Profile id (a-z, 0-9, . _ -)", textInput(profile.id, (value) => { profile.id = value; })),
       field("Model id (exposed as llama/<model>)", textInput(profile.model, (value) => { profile.model = value; })),
-      field("Model file (relative to the models folder, first shard if split)", textInput(profile.modelFile, (value) => { profile.modelFile = value; })),
-      field("mmproj file (vision)", textInput(profile.mmprojFile ?? "", (value) => { profile.mmprojFile = value; })),
+      filePicker(profile, "modelFile", "Model file (first shard if split)", picked),
+      filePicker(profile, "mmprojFile", "mmproj file (vision)", picked),
       field("Context size (empty = model default)", numberInput(profile.ctxSize, (value) => { profile.ctxSize = value; })),
       field("GPU layers", layersControl(profile.gpuLayers, false, (value) => { profile.gpuLayers = value ?? "auto"; })),
       field("Flash attention", flash2),
       field("Speculative decoding type", spec),
-      field("Draft file", textInput(profile.draftFile ?? "", (value) => { profile.draftFile = value; })),
+      filePicker(profile, "draftFile", "Draft file", picked),
       field("Draft tokens max", numberInput(profile.draftNMax, (value) => { profile.draftNMax = value; })),
       field("Draft tokens min", numberInput(profile.draftNMin, (value) => { profile.draftNMin = value; })),
       field("Draft GPU layers", layersControl(profile.draftGpuLayers, true, (value) => { profile.draftGpuLayers = value; })),
@@ -422,12 +562,41 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     return card;
   }
 
+  /** "Use found files" (one button when every missing field has exactly one candidate) or one "Use <name>" button per candidate. */
+  function fixButtons(profile: LlamaProfileView): HTMLElement[] {
+    const fixes = foundFileFixes(profile, scanFiles);
+    if (!fixes.length) return [];
+    const apply = (picks: Array<[FileField, LlamaLocalFileView]>): void => {
+      let next = profile;
+      for (const [field, file] of picks) next = applyFix(next, field, file);
+      Object.assign(profile, next);
+      dirty(); renderProfiles();
+      flash(el("llama-profiles-msg"), "Files replaced. Save to keep them (Start saves too).");
+    };
+    const row = make("div", "row fix-row");
+    if (fixes.every((fix) => fix.candidates.length === 1)) {
+      const button = make("button", "small", `Use found files: ${fixes.map((fix) => fix.candidates[0]!.name).join(", ")}`); button.type = "button";
+      button.onclick = () => apply(fixes.map((fix) => [fix.field, fix.candidates[0]!] as [FileField, LlamaLocalFileView]));
+      row.append(button);
+    } else {
+      for (const fix of fixes) for (const file of fix.candidates) {
+        const button = make("button", "small", `Use ${file.name}`); button.type = "button";
+        button.title = `Replaces ${fix.current}`;
+        button.onclick = () => apply([[fix.field, file]]);
+        row.append(button);
+      }
+    }
+    return [row];
+  }
+
   function renderProfiles(): void {
+    pickerRebuilds.length = 0;
     el("llama-profiles").replaceChildren(...(profiles.length ? profiles.map(profileCard) : [make("p", "note", "No profiles. Add one or restore the presets.")]));
+    renderScanTable();
     updateProfileButtons();
   }
 
-  /** Start / Switch / Download buttons and the warnings of each card, from the launcher and the status (in place, so typing is not interrupted). */
+  /** Start / Switch buttons, the warnings and the "Use found files" fixes of each card, from the launcher and the status (in place, so typing is not interrupted). */
   function updateProfileButtons(): void {
     const anyRunning = launcher !== undefined && (launcher.state === "starting" || launcher.state === "ready");
     for (const node of document.querySelectorAll<HTMLElement>("#llama-profiles .profile")) {
@@ -441,17 +610,20 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       const badge = node.querySelector<HTMLElement>('[data-role="profile-badge"]')!;
       badge.hidden = !mine;
       if (mine && launcher) deps.setBadge(badge, launcher.state);
-      const download = node.querySelector<HTMLButtonElement>('[data-role="profile-download"]')!;
-      const active = profileJob === profile.id && modelBusy;
-      download.disabled = modelBusy && !active;
-      download.textContent = active ? "Cancel download" : "Download model files";
       const lines: string[] = [];
       const entry = status?.profiles[profile.id];
       if (entry?.build === "too_old") lines.push(`Needs a newer build${entry.buildMessage ? `: ${entry.buildMessage}` : "."}`);
       else if (entry?.build === "unknown") lines.push("Build unknown.");
       if (entry?.missingFiles.length) lines.push(`Missing: ${entry.missingFiles.join(", ")}`);
       const host = node.querySelector<HTMLElement>('[data-role="profile-warnings"]')!;
-      host.replaceChildren(...lines.map((line) => make("p", "profile-warn", line)));
+      const warnings: HTMLElement[] = lines.map((line) => make("p", "profile-warn", line));
+      if (entry?.missingFiles.length && profile.hf) {
+        const find = make("button", "small", "Find on Hugging Face"); find.type = "button";
+        find.title = "Fills the link in Download from Hugging Face and lists the files; nothing is downloaded";
+        find.onclick = () => findOnHuggingFace(profile);
+        warnings.push(find);
+      }
+      host.replaceChildren(...warnings, ...fixButtons(profile));
     }
   }
 
@@ -466,36 +638,6 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       flash(msg, result.ok ? "" : result.message, !result.ok);
     } catch (error) { flash(msg, errorText(error), true); }
     finally { startingProfiles.delete(profileId); updateProfileButtons(); }
-  }
-
-  async function downloadProfile(profileId: string): Promise<void> {
-    const msg = el("llama-profiles-msg");
-    if (modelBusy && profileJob === profileId) { void api.cancelLlamaDownload("model"); return; }
-    if (modelBusy) return;
-    flash(msg, "");
-    modelBusy = true; ownModel = true; profileJob = profileId; updateModelButtons();
-    try {
-      if (deps.isDirty() && !await deps.save()) return;
-      flash(msg, `${profileId}: starting…`);
-      const result = await api.downloadProfileModels(profileId);
-      if (result.ok) {
-        const target = profiles.find((profile) => profile.id === profileId);
-        if (target) {
-          target.modelFile = result.profile.modelFile;
-          // An mmproj the app picked (the profile named none) fills an empty field only, and brings vision with it.
-          const auto = !target.hf?.mmproj;
-          if (result.profile.mmprojFile !== undefined && (!auto || !target.mmprojFile?.trim())) {
-            target.mmprojFile = result.profile.mmprojFile;
-            if (auto && result.profile.vision) target.vision = true;
-          }
-          if (result.profile.draftFile !== undefined) target.draftFile = result.profile.draftFile;
-        }
-        renderProfiles();
-        flash(msg, `${profileId}: model files downloaded.`);
-        await deps.refresh();
-      } else flash(msg, failureText(result), true);
-    } catch (error) { flash(msg, errorText(error), true); }
-    finally { modelBusy = false; ownModel = false; profileJob = undefined; updateModelButtons(); void refreshStatus(); }
   }
 
   async function refreshStatus(): Promise<void> {
@@ -542,7 +684,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   el<HTMLInputElement>("llama-hf-link").addEventListener("keydown", (event) => { if (event.key === "Enter") void listFiles(); });
   el("llama-hf-download").onclick = () => void downloadChosen();
   el("llama-hf-cancel").onclick = () => void api.cancelLlamaDownload("model");
-  el("llama-hf-create").onclick = createProfile;
+  el("llama-scan").onclick = () => void rescan();
   el("llama-switch-wait").addEventListener("input", dirty);
   el("llama-add-profile").onclick = () => {
     const taken = new Set(profiles.flatMap((profile) => [profile.id, profile.model]));
@@ -567,9 +709,11 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     shown(): void {
       if (!releases && !releasesLoading) void loadReleases();
       void refreshStatus();
+      void scan();
     },
     load(settings: LlamaProviderSettingsView): void {
       binary = { ...settings.binary };
+      savedModelsDir = settings.modelsDir;
       profiles = settings.profiles.map((profile) => ({ ...profile }));
       el<HTMLInputElement>("llama-switch-wait").value = String(Math.round(settings.switchWaitMs / 60000));
       modeInput(binary.mode).checked = true;
@@ -584,6 +728,8 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       fillVersions();
       renderProfiles();
       updateModelButtons();
+      // A Save that changed the models folder: scan the new one (only once the page has scanned before; shown() does the first scan).
+      if (scannedFor !== undefined && scannedFor !== savedModelsDir) void scan();
     },
     collect(): LlamaViewCollected {
       const errors: LlamaViewCollected["errors"] = [];

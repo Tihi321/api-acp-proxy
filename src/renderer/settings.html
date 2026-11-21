@@ -530,11 +530,26 @@
           </section>
 
           <section class="card">
-            <div class="card-head"><h2>Models</h2></div>
-            <div class="grid">
-              <label class="field"><span>Models folder</span><div class="row"><input id="providers.llama.modelsDir" type="text" autocomplete="off" spellcheck="false"><button type="button" class="small" id="llama-models-browse">Browse…</button></div><small data-note-for="providers.llama.modelsDir"></small><small class="error" data-error-for="providers.llama.modelsDir"></small></label>
-              <label class="field"><span>Hugging Face token <em class="muted">(optional; for gated models)</em></span><div class="row"><input id="providers.llama.hfToken" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="llama-token-show">Show</button></div><small data-note-for="providers.llama.hfToken"></small><small class="error" data-error-for="providers.llama.hfToken"></small></label>
+            <div class="card-head"><h2>Models on disk</h2><button type="button" class="small push" id="llama-scan">Rescan</button></div>
+            <p class="note">1. Put .gguf files in the models folder (subfolders up to 4 levels deep are found), or download them with a link in Download from Hugging Face below. 2. Create a profile from a model here, or pick the files in an existing profile. 3. Start.</p>
+            <label class="field"><span>Models folder</span><div class="row"><input id="providers.llama.modelsDir" type="text" autocomplete="off" spellcheck="false"><button type="button" class="small" id="llama-models-browse">Browse…</button></div><small>Rescan saves unsaved edits first, then scans the saved folder.</small><small data-note-for="providers.llama.modelsDir"></small><small class="error" data-error-for="providers.llama.modelsDir"></small></label>
+            <p class="muted small-text" id="llama-scan-status" role="status"></p>
+            <div class="table-wrap" id="llama-scan-wrap" hidden>
+              <table class="table"><thead><tr><th>File</th><th>Kind</th><th>Quant</th><th class="num">Size</th><th>Used by</th><th></th></tr></thead><tbody id="llama-scan-body"></tbody></table>
             </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Profiles</h2><button type="button" class="small push" id="llama-add-profile">Add profile</button><button type="button" class="small" id="llama-restore-presets">Restore missing presets</button></div>
+            <p class="note">One model per profile, exposed as <code>llama/&lt;model id&gt;</code>. Starting a large model can take many minutes. Start saves unsaved edits for you.</p>
+            <div id="llama-profiles"></div>
+            <p class="msg" id="llama-profiles-msg" role="status"></p>
+          </section>
+
+          <section class="card" id="llama-hf-card">
+            <div class="card-head"><h2>Download from Hugging Face</h2></div>
+            <p class="note">Paste a link, list the files, pick what you want and download. Downloaded files appear under Models on disk.</p>
+            <label class="field"><span>Hugging Face token <em class="muted">(optional; for gated models)</em></span><div class="row"><input id="providers.llama.hfToken" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="llama-token-show">Show</button></div><small data-note-for="providers.llama.hfToken"></small><small class="error" data-error-for="providers.llama.hfToken"></small></label>
             <label class="field wide"><span>Hugging Face link</span><div class="row"><input id="llama-hf-link" type="text" autocomplete="off" spellcheck="false" placeholder="https://huggingface.co/owner/repo-GGUF  (or owner/repo:Q8_0)"><button type="button" class="small" id="llama-hf-list">List files</button></div></label>
             <p class="error" id="llama-hf-error" hidden></p>
             <div class="table-wrap" id="llama-hf-wrap" hidden>
@@ -545,15 +560,7 @@
               <button type="button" class="small" id="llama-hf-cancel" hidden>Cancel</button>
               <progress id="llama-hf-progress" max="100" hidden></progress>
               <span class="muted" id="llama-hf-text"></span>
-              <button type="button" id="llama-hf-create" hidden>Create profile from this</button>
             </div>
-          </section>
-
-          <section class="card">
-            <div class="card-head"><h2>Profiles</h2><button type="button" class="small push" id="llama-add-profile">Add profile</button><button type="button" class="small" id="llama-restore-presets">Restore missing presets</button></div>
-            <p class="note">One model per profile, exposed as <code>llama/&lt;model id&gt;</code>. Starting a large model can take many minutes. Start saves unsaved edits for you.</p>
-            <div id="llama-profiles"></div>
-            <p class="msg" id="llama-profiles-msg" role="status"></p>
           </section>
 
           <section class="card models">
