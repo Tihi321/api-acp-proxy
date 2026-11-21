@@ -214,7 +214,7 @@ export interface LlamaAssetView {
 }
 export interface LlamaReleaseView { source: LlamaSourceView; tag: string; build?: number; publishedAt: string; assets: LlamaAssetView[] }
 export interface HfFileView { path: string; size: number; sha256?: string; saveAs: string }
-export interface HfFileGroupView { kind: "model" | "mmproj" | "draft"; label: string; quant?: string; files: HfFileView[]; totalSize: number; split: boolean }
+export interface HfFileGroupView { kind: "model" | "mmproj" | "draft"; label: string; quant?: string; files: HfFileView[]; totalSize: number; split: boolean; /** false for a split model with missing shards ("(incomplete)"). */ selectable: boolean }
 export interface LlamaStatusView {
   binary: { mode: "managed" | "custom"; command?: string; source: LlamaSourceView | "custom"; tag?: string; build?: number; backend?: string; exists: boolean };
   profiles: Record<string, { build: "ok" | "too_old" | "unknown"; buildMessage?: string; missingFiles: string[] }>;
