@@ -658,7 +658,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       status = await api.llamaStatus();
       if (!ownBinary) binaryBusy = status.jobs.binary;
       if (!ownModel) modelBusy = status.jobs.model;
-      updateBuildButtons(); updateModelButtons(); renderInstalled();
+      updateBuildButtons(); updateModelButtons(); renderInstalled(); updateProfileButtons();
     } catch { /* status is informational; the page works without it */ }
   }
 

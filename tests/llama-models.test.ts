@@ -37,5 +37,9 @@ describe("llama-models", () => {
     expect(draftMissingFiles({ ...preset, modelFile: model.path, vision: false }, [model], [])).toEqual([]);
     expect(draftMissingFiles({ ...preset, modelFile: "x/gone.gguf", vision: false }, [model], [])).toEqual(["x/gone.gguf"]);
     expect(draftMissingFiles({ ...preset, modelFile: "D:/m/a.gguf", vision: false }, [], ["d:/m/a.gguf"])).toEqual(["D:/m/a.gguf"]);
+    const scan = [file("model", "Inkling-2-Mini-IQ4_NL.gguf", "IQ4_NL"), file("mmproj", "mmproj-Inkling-2-Mini-Q8_0.gguf", "Q8_0")];
+    expect(draftMissingFiles(preset, scan, [])).toEqual([preset.modelFile, preset.mmprojFile]);
+    const fixedBoth = applyFix(applyFix(preset, "modelFile", scan[0]), "mmprojFile", scan[1]);
+    expect(draftMissingFiles(fixedBoth, scan, [])).toEqual([]);
   });
 });
