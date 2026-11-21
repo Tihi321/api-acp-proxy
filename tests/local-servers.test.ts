@@ -87,4 +87,42 @@ describe("LocalServerManager", () => {
     expect(spawned).toEqual(["gufo"]);
     expect(manager.list().every((s) => s.state === "stopped")).toBe(true);
   });
+
+  it("switches gufo profiles (stop, wait for the port, start), ignores the same profile and prechecks model files", async () => {
+    const events: string[] = [];
+    const answering = { count: 0 }; // polls left in which the port still answers after a kill
+    let up = false;
+    const manager = new LocalServerManager({
+      pollMs: 10,
+      releasePollMs: 10,
+      spawn: (spec) => {
+        events.push(`spawn:${spec.profile}`);
+        const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+        children.push(child);
+        up = true;
+        return child;
+      },
+      kill: async (child) => { events.push("kill"); up = false; answering.count = 3; child.kill(); },
+      probe: async () => { if (answering.count > 0) { answering.count--; events.push("probe-busy"); return true; } return up; },
+    });
+    const view = () => manager.list().find((s) => s.id === "gufo")!;
+    const waitReady = async () => { const deadline = Date.now() + 10_000; while (view().state !== "ready") { if (Date.now() > deadline) throw new Error(`stayed ${view().state}`); await new Promise((r) => setTimeout(r, 10)); } };
+    const spec = (profile: string, args = "--port {port}"): LocalServerSpec => ({ id: "gufo", command: process.execPath, args, cwd: path.resolve("."), port: 18081, profile });
+
+    await manager.start(spec("A"));
+    await waitReady();
+    await manager.start(spec("A"));
+    expect(events).toEqual(["spawn:A"]);
+
+    await manager.start(spec("B"));
+    await waitReady();
+    expect(view().profile).toBe("B");
+    expect(events).toEqual(["spawn:A", "kill", "probe-busy", "probe-busy", "probe-busy", "spawn:B"]);
+    expect(children[0].exitCode !== null || children[0].signalCode !== null).toBe(true);
+
+    const missing = path.resolve("definitely-missing", "model.gguf");
+    await expect(manager.start(spec("C", `--model "${missing}" --port {port}`))).rejects.toThrow("File not found");
+    expect(view().profile).toBe("B");
+    await manager.stopAll();
+  });
 });

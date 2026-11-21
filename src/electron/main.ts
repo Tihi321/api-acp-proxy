@@ -252,7 +252,7 @@ async function main(): Promise<void> {
       const profile = id === "gufo" ? providers.gufo.profiles.find((candidate) => candidate.kind === "llm") ?? providers.gufo.profiles[0] : undefined;
       const args = id === "gufo" ? profile?.args : providers.strata.args;
       if (args === undefined) throw new Error("No Gufo profile is configured.");
-      const spec: LocalServerSpec = { id, command: settings.command, args, cwd: settings.cwd, port: settings.port };
+      const spec: LocalServerSpec = { id, command: settings.command, args, cwd: settings.cwd, port: settings.port, profile: profile?.id, startTimeoutMs: profile?.startTimeoutMs };
       await servers.start(spec);
     });
   });
