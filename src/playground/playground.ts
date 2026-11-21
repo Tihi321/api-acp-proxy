@@ -1,9 +1,16 @@
-import { chatTitle, curlFor, decodeRate, estimateTokens, formatMs, formatRate, groupModels, isHttpUrl, parseSseLines, previewDocument, splitBlocks, tokensPerSecond } from "./lib.js";
+import { chatTitle, curlFor, decodeRate, formatMs, formatRate, groupModels, isHttpUrl, outputTokensEstimate, parseSseLines, previewDocument, splitBlocks, tokensPerSecond } from "./lib.js";
+import { highlight, parseMarkdown, type Inline, type ListBlock, type MdBlock } from "./markdown.js";
 
-// The playground page served by the proxy at /playground: pick a model, chat, keep a history in this browser. Text is always rendered as text.
+// The playground page served by the proxy at /playground: pick a model, chat, keep a history in this browser. Model text is rendered only through DOM nodes (textContent), never as HTML.
 
 interface Meta { model: string; stream: boolean; firstMs?: number; totalMs: number; inputTokens?: number; outputTokens?: number; finish?: string }
-interface Msg { role: "user" | "assistant"; content: string; images?: string[]; citations?: Array<{ url: string; title: string }>; meta?: Meta; error?: string; request?: unknown }
+interface Msg { role: "user" | "assistant"; content: string; images?: string[]; citations?: Array<{ url: string; title: string }>; meta?: Meta; error?: string; request?: unknown;
+  /** Thinking text, shown in the accordion; never resent (requestBody sends only `content`). */
+  reasoning?: string;
+  /** ms from the first reasoning delta to the first content delta (or to the end when no content came); absent for non-streamed answers. */
+  thoughtMs?: number;
+  /** The user's (or the auto-collapse's) open state of the accordion; undefined = default (open while pending or when content is empty, else closed). Persisted. */
+  thinkingOpen?: boolean }
 interface Chat { id: string; title: string; model: string; system: string; updated: number; messages: Msg[] }
 
 const API = `${location.origin}/v1`;
@@ -34,7 +41,7 @@ function loadChats(): Chat[] {
 function saveChats(): void {
   const list = chats.slice(0, MAX_CHATS);
   if (storage.set(local, HISTORY_KEY, JSON.stringify(list))) return;
-  const slim = list.map((chat) => ({ ...chat, messages: chat.messages.map(({ images: _images, ...message }) => message) }));
+  const slim = list.map((chat) => ({ ...chat, messages: chat.messages.map(({ images: _images, reasoning: _reasoning, thoughtMs: _thoughtMs, ...message }) => message) }));
   if (!storage.set(local, HISTORY_KEY, JSON.stringify(slim))) notice("The history could not be saved in this browser.");
 }
 
@@ -114,25 +121,119 @@ function renderMessages(): void {
   box.scrollTop = box.scrollHeight;
 }
 
+const isPending = (message: Msg): boolean => message.role === "assistant" && !message.meta && !message.error;
+
+function inlineNodes(list: readonly Inline[]): Node[] {
+  return list.map((item): Node => {
+    switch (item.type) {
+      case "text": return document.createTextNode(item.text);
+      case "br": return document.createElement("br");
+      case "code": return make("code", "", item.text);
+      case "strong": { const node = make("strong"); node.append(...inlineNodes(item.children)); return node; }
+      case "em": { const node = make("em"); node.append(...inlineNodes(item.children)); return node; }
+      case "link": { const node = Object.assign(make("a"), { href: item.href, target: "_blank", rel: "noopener noreferrer" }); node.append(...inlineNodes(item.children)); return node; }
+    }
+  });
+}
+
+function listNode(list: ListBlock): HTMLElement {
+  const node = make(list.ordered ? "ol" : "ul");
+  if (list.ordered && list.start !== undefined && list.start !== 1) (node as HTMLOListElement).start = list.start;
+  for (const item of list.items) {
+    const li = make("li");
+    li.append(...inlineNodes(item.children));
+    if (item.sub) li.append(listNode(item.sub));
+    node.append(li);
+  }
+  return node;
+}
+
+/** DOM for markdown blocks: createElement + textContent only, never innerHTML with model text. */
+function markdownNodes(blocks: readonly MdBlock[]): Node[] {
+  return blocks.map((block): Node => {
+    switch (block.type) {
+      case "heading": { const node = make(`h${block.level}` as "h1"); node.append(...inlineNodes(block.children)); return node; }
+      case "paragraph": { const node = make("p"); node.append(...inlineNodes(block.children)); return node; }
+      case "list": return listNode(block);
+      case "blockquote": { const node = make("blockquote"); node.append(...markdownNodes(block.children)); return node; }
+      case "hr": return make("hr");
+      case "code": return codeFigure(block.lang, block.code);
+      case "table": {
+        const cell = (tag: "th" | "td", content: readonly Inline[], index: number) => {
+          const node = make(tag);
+          const align = block.align[index];
+          if (align) node.style.textAlign = align;
+          node.append(...inlineNodes(content));
+          return node;
+        };
+        const headRow = make("tr");
+        block.head.forEach((content, index) => headRow.append(cell("th", content, index)));
+        const thead = make("thead");
+        thead.append(headRow);
+        const tbody = make("tbody");
+        for (const row of block.rows) {
+          const tr = make("tr");
+          row.forEach((content, index) => tr.append(cell("td", content, index)));
+          tbody.append(tr);
+        }
+        const table = make("table");
+        table.append(thead, tbody);
+        const wrap = make("div", "table-wrap");
+        wrap.append(table);
+        return wrap;
+      }
+    }
+  });
+}
+
+/** <figure class="code"><figcaption>lang <button class="copy">Copy</button></figcaption><pre><code>highlighted spans</code></pre></figure> */
+function codeFigure(lang: string, code: string): HTMLElement {
+  const figure = make("figure", "code");
+  const caption = make("figcaption");
+  const copy = make("button", "copy", "Copy");
+  copy.type = "button";
+  const label = (text: string) => { copy.textContent = text; setTimeout(() => { copy.textContent = "Copy"; }, 1500); };
+  copy.onclick = () => void navigator.clipboard.writeText(code).then(() => label("Copied"), () => label("Copy failed"));
+  caption.append(make("span", "lang", lang), copy);
+  const codeNode = make("code");
+  codeNode.append(...highlight(code, lang).map((token) => token.cls ? make("span", `tok-${token.cls}`, token.text) : document.createTextNode(token.text)));
+  const pre = make("pre");
+  pre.append(codeNode);
+  figure.append(caption, pre);
+  return figure;
+}
+
+const thinkingSummary = (message: Msg): string => message.thoughtMs !== undefined ? `Thought for ${formatMs(message.thoughtMs)}` : isPending(message) && !message.content ? "Thinking…" : "Thoughts";
+
+/** The collapsible thinking accordion of one answer; its open state is kept on the message (and saved with the history). */
+function thinkingNode(message: Msg): HTMLDetailsElement {
+  const details = make("details", "thinking");
+  const summary = make("summary", isPending(message) && !message.content ? "pending" : "", thinkingSummary(message));
+  details.append(summary, make("div", "thinking-text", message.reasoning ?? ""));
+  details.open = message.thinkingOpen ?? (isPending(message) || !message.content);
+  let last = details.open;
+  details.addEventListener("toggle", () => {
+    if (details.open === last) return;
+    last = details.open;
+    message.thinkingOpen = details.open;
+    if (!running) saveChats();
+  });
+  return details;
+}
+
 function renderMessage(message: Msg): HTMLElement {
   const node = make("div", `msg ${message.role}`);
   node.append(make("div", "who", message.role === "user" ? "You" : message.meta?.model ?? "Assistant"));
-  const blocks = message.role === "assistant" && message.meta ? splitBlocks(message.content) : [];
-  if (blocks.length) {
-    for (const block of blocks) {
-      if (block.type === "text") { node.append(make("div", "text", block.text)); continue; }
-      const figure = make("figure", "code");
-      if (block.lang) figure.append(make("figcaption", "", block.lang));
-      const pre = make("pre");
-      pre.append(make("code", "", block.code));
-      figure.append(pre);
-      node.append(figure);
-    }
-  } else {
-    const text = make("div", "text", message.content);
-    if (message.role === "assistant" && !message.meta && !message.error) text.classList.add("pending");
-    if (message.content || !message.error) node.append(text);
+  const assistant = message.role === "assistant";
+  const pending = isPending(message);
+  if (assistant && message.reasoning) node.append(thinkingNode(message));
+  if (!assistant) node.append(make("div", "text", message.content));
+  else if (pending || message.content || (!message.error && !message.reasoning)) {
+    const body = make("div", pending ? "body pending" : "body");
+    body.append(...markdownNodes(parseMarkdown(message.content)));
+    node.append(body);
   }
+  const blocks = assistant && message.meta ? splitBlocks(message.content) : [];
   for (const url of message.images ?? []) if (url.startsWith("data:image/")) node.append(Object.assign(make("img"), { src: url, alt: "Generated image" }));
   if (message.citations?.length) {
     const list = make("ol", "cites");
@@ -263,9 +364,10 @@ async function send(): Promise<void> {
     if (!response.ok) { const payload = await response.json().catch(() => undefined); throw new Error(errorText(payload, response.status)); }
     if (stream && response.body) await readStream(response.body, answer, meta, started);
     else {
-      const payload = await response.json() as { model?: string; choices?: Array<{ message?: { content?: string | null; annotations?: Citation[]; images?: Array<{ image_url?: { url?: string } }> }; finish_reason?: string }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+      const payload = await response.json() as { model?: string; choices?: Array<{ message?: { content?: string | null; reasoning_content?: unknown; annotations?: Citation[]; images?: Array<{ image_url?: { url?: string } }> }; finish_reason?: string }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
       const choice = payload.choices?.[0];
       answer.content = choice?.message?.content ?? "";
+      if (typeof choice?.message?.reasoning_content === "string" && choice.message.reasoning_content) answer.reasoning = choice.message.reasoning_content;
       answer.citations = citationsOf(choice?.message?.annotations);
       answer.images = imagesOf(choice?.message?.images);
       meta.finish = choice?.finish_reason;
@@ -277,7 +379,7 @@ async function send(): Promise<void> {
   } finally {
     meta.totalMs = performance.now() - started;
     if (!answer.error) answer.meta = meta;
-    else if (answer.content) answer.meta = meta;
+    else if (answer.content || answer.reasoning) answer.meta = meta;
     current.updated = Date.now();
     chats = [current, ...chats.filter((chat) => chat !== current)];
     setRunning(undefined);
@@ -291,41 +393,86 @@ async function readStream(body: ReadableStream<Uint8Array>, answer: Msg, meta: M
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let textNode: HTMLElement | undefined;
+  const messages = el("messages");
+  const node = [...messages.querySelectorAll<HTMLElement>(".msg.assistant")].at(-1);
+  const bodyNode = node?.querySelector<HTMLElement>(":scope > .body");
+  let details: HTMLDetailsElement | undefined;
   let rateNode: HTMLElement | undefined;
   let rateAt = 0;
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    const { events, rest } = parseSseLines(buffer + decoder.decode(value, { stream: true }));
-    buffer = rest;
-    for (const data of events) {
-      if (data === "[DONE]") continue;
-      let chunk: { error?: unknown; choices?: Array<{ delta?: { content?: string; annotations?: Citation[]; images?: Array<{ image_url?: { url?: string } }> }; finish_reason?: string | null }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
-      try { chunk = JSON.parse(data); } catch { continue; }
-      if (chunk.error) throw new Error(errorText(chunk));
-      const choice = chunk.choices?.[0];
-      const delta = choice?.delta;
-      if (delta?.content) {
-        if (meta.firstMs === undefined) meta.firstMs = performance.now() - started;
-        answer.content += delta.content;
-        textNode ??= [...el("messages").querySelectorAll<HTMLElement>(".msg.assistant .text")].at(-1);
-        if (textNode) { textNode.textContent = answer.content; el("messages").scrollTop = el("messages").scrollHeight; }
-        const now = performance.now();
-        if (now - rateAt >= 250) {
-          const live = tokensPerSecond(estimateTokens(answer.content), now - started - meta.firstMs);
-          if (live !== undefined) {
-            rateAt = now;
-            rateNode ??= textNode?.parentElement?.appendChild(make("span", "rate"));
-            if (rateNode) rateNode.textContent = `~${formatRate(live)}`;
+  let thinkStart: number | undefined;
+  // Live render: one trailing timer; the interval grows with the measured render time so a huge answer stays responsive.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let interval = 100;
+  const render = () => {
+    timer = undefined;
+    const t0 = performance.now();
+    if (bodyNode) bodyNode.replaceChildren(...markdownNodes(parseMarkdown(answer.content)));
+    const thinking = details?.querySelector<HTMLElement>(".thinking-text");
+    if (thinking) { thinking.textContent = answer.reasoning ?? ""; thinking.scrollTop = thinking.scrollHeight; }
+    messages.scrollTop = messages.scrollHeight;
+    interval = Math.max(100, 4 * (performance.now() - t0));
+  };
+  const schedule = () => { timer ??= setTimeout(render, interval); };
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const { events, rest } = parseSseLines(buffer + decoder.decode(value, { stream: true }));
+      buffer = rest;
+      for (const data of events) {
+        if (data === "[DONE]") continue;
+        let chunk: { error?: unknown; choices?: Array<{ delta?: { content?: string; reasoning_content?: unknown; reasoning?: unknown; annotations?: Citation[]; images?: Array<{ image_url?: { url?: string } }> }; finish_reason?: string | null }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+        try { chunk = JSON.parse(data); } catch { continue; }
+        if (chunk.error) throw new Error(errorText(chunk));
+        const choice = chunk.choices?.[0];
+        const delta = choice?.delta;
+        const thought = delta?.reasoning_content ?? delta?.reasoning;
+        let token = false;
+        if (typeof thought === "string" && thought) {
+          token = true;
+          const now = performance.now();
+          meta.firstMs ??= now - started;
+          thinkStart ??= now;
+          answer.reasoning = (answer.reasoning ?? "") + thought;
+          if (!details && bodyNode) { details = thinkingNode(answer); bodyNode.before(details); }
+          schedule();
+        }
+        if (delta?.content) {
+          token = true;
+          const now = performance.now();
+          meta.firstMs ??= now - started;
+          if (thinkStart !== undefined && answer.thoughtMs === undefined) {
+            answer.thoughtMs = now - thinkStart;
+            answer.thinkingOpen = false;
+            if (details) {
+              details.open = false;
+              const summary = details.querySelector("summary");
+              if (summary) { summary.textContent = thinkingSummary(answer); summary.classList.remove("pending"); }
+            }
+          }
+          answer.content += delta.content;
+          schedule();
+        }
+        if (token && meta.firstMs !== undefined) {
+          const now = performance.now();
+          if (now - rateAt >= 250) {
+            const live = tokensPerSecond(outputTokensEstimate(answer.content, answer.reasoning), now - started - meta.firstMs);
+            if (live !== undefined) {
+              rateAt = now;
+              if (!rateNode && bodyNode) { rateNode = make("span", "rate"); bodyNode.after(rateNode); }
+              if (rateNode) rateNode.textContent = `~${formatRate(live)}`;
+            }
           }
         }
+        if (delta?.annotations) answer.citations = [...(answer.citations ?? []), ...citationsOf(delta.annotations)];
+        if (delta?.images) answer.images = [...(answer.images ?? []), ...imagesOf(delta.images)];
+        if (choice?.finish_reason) meta.finish = choice.finish_reason;
+        if (chunk.usage) { meta.inputTokens = chunk.usage.prompt_tokens; meta.outputTokens = chunk.usage.completion_tokens; }
       }
-      if (delta?.annotations) answer.citations = [...(answer.citations ?? []), ...citationsOf(delta.annotations)];
-      if (delta?.images) answer.images = [...(answer.images ?? []), ...imagesOf(delta.images)];
-      if (choice?.finish_reason) meta.finish = choice.finish_reason;
-      if (chunk.usage) { meta.inputTokens = chunk.usage.prompt_tokens; meta.outputTokens = chunk.usage.completion_tokens; }
     }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (thinkStart !== undefined && answer.thoughtMs === undefined) answer.thoughtMs = performance.now() - thinkStart;
   }
 }
 

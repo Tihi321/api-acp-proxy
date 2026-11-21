@@ -2,9 +2,11 @@
   color-scheme: light dark;
   --bg: #f5f6f8; --card: #ffffff; --fg: #1d2330; --muted: #667085; --border: #dfe3ea; --input: #ffffff;
   --accent: #2563eb; --accent-fg: #ffffff; --err: #dc2626; --chip: #eef1f6; --user: #e8effd;
+  --tok-kw: #8250df; --tok-str: #0a7a3d; --tok-com: #6e7781; --tok-num: #b35900; --tok-tag: #1f6feb; --tok-attr: #953800; --tok-lit: #0b7285;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #14171c; --card: #1c2027; --fg: #e6e9ef; --muted: #9aa3b2; --border: #2c323c; --input: #12151a; --accent: #4c8dff; --accent-fg: #0b1220; --err: #f87171; --chip: #262c36; --user: #1f2a3d; }
+  :root { --bg: #14171c; --card: #1c2027; --fg: #e6e9ef; --muted: #9aa3b2; --border: #2c323c; --input: #12151a; --accent: #4c8dff; --accent-fg: #0b1220; --err: #f87171; --chip: #262c36; --user: #1f2a3d;
+    --tok-kw: #c792ea; --tok-str: #8bd49c; --tok-com: #8b949e; --tok-num: #f2a65a; --tok-tag: #7cb7ff; --tok-attr: #ffa657; --tok-lit: #5ccfe6; }
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -48,7 +50,7 @@ button.link:hover { color: var(--err); }
 .msg.user { background: var(--user); align-self: flex-end; max-width: 75%; }
 .msg .who { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 2px; }
 .msg .text { white-space: pre-wrap; word-wrap: break-word; }
-.msg .text.pending::after { content: "▍"; animation: blink 1s steps(2) infinite; }
+.msg .body.pending::after { content: "▍"; animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 .msg .error { color: var(--err); white-space: pre-wrap; }
 .msg .meta { font-size: 11px; color: var(--muted); margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -80,3 +82,32 @@ button.link:hover { color: var(--err); }
 .preview-holder { display: grid; gap: 4px; justify-items: start; }
 .preview-holder:empty { display: none; }
 iframe.preview { width: 100%; height: 360px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+
+.msg figure.code figcaption { display: flex; justify-content: space-between; align-items: center; }
+.msg button.copy { padding: 0 8px; font-size: 11px; color: var(--muted); }
+
+.msg .thinking { margin: 4px 0 8px; padding-left: 10px; border-left: 3px solid var(--border); color: var(--muted); font-size: 12px; }
+.msg .thinking summary { cursor: pointer; }
+.msg .thinking summary.pending::after { content: "▍"; animation: blink 1s steps(2) infinite; }
+.msg .thinking-text { white-space: pre-wrap; word-wrap: break-word; max-height: 320px; overflow-y: auto; margin-top: 4px; }
+
+.msg .body > :first-child { margin-top: 0; }
+.msg .body > :last-child { margin-bottom: 0; }
+.msg .body { word-wrap: break-word; }
+.msg .body h1, .msg .body h2, .msg .body h3, .msg .body h4, .msg .body h5, .msg .body h6 { margin: 12px 0 6px; line-height: 1.3; }
+.msg .body h1 { font-size: 1.5em; } .msg .body h2 { font-size: 1.3em; } .msg .body h3 { font-size: 1.15em; }
+.msg .body h4, .msg .body h5, .msg .body h6 { font-size: 1em; }
+.msg .body p { margin: 6px 0; }
+.msg .body ul, .msg .body ol { margin: 6px 0; padding-left: 22px; }
+.msg .body li > ul, .msg .body li > ol { margin: 2px 0; }
+.msg .body blockquote { margin: 6px 0; padding: 0 10px; border-left: 3px solid var(--border); color: var(--muted); }
+.msg .body hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+.msg .body a { color: var(--accent); }
+.msg .body :not(pre) > code { background: var(--chip); border-radius: 4px; padding: 1px 4px; font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
+.msg .table-wrap { overflow-x: auto; margin: 6px 0; }
+.msg .body table { border-collapse: collapse; font-size: 13px; }
+.msg .body th, .msg .body td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+.msg .body th { background: var(--chip); }
+
+.tok-kw { color: var(--tok-kw); } .tok-str { color: var(--tok-str); } .tok-com { color: var(--tok-com); font-style: italic; }
+.tok-num { color: var(--tok-num); } .tok-tag { color: var(--tok-tag); } .tok-attr { color: var(--tok-attr); } .tok-lit { color: var(--tok-lit); }

@@ -7,7 +7,7 @@ import { ActivityLog } from "../src/activity.js";
 import type { AcpLike } from "../src/acp.js";
 import type { ProxyConfig } from "../src/config.js";
 import { PLAYGROUND_CSP, PREVIEW_CSP, servePlayground } from "../src/playground-files.js";
-import { chatTitle, curlFor, decodeRate, estimateTokens, formatMs, groupModels, isHttpUrl, parseSseLines, previewDocument, splitBlocks, tokensPerSecond } from "../src/playground/lib.js";
+import { chatTitle, curlFor, decodeRate, estimateTokens, formatMs, groupModels, isHttpUrl, outputTokensEstimate, parseSseLines, previewDocument, splitBlocks, tokensPerSecond } from "../src/playground/lib.js";
 import { highlight, parseMarkdown, safeHref } from "../src/playground/markdown.js";
 import { createProxyServer } from "../src/server.js";
 
@@ -74,6 +74,8 @@ describe("playground helpers", () => {
     expect(decodeRate({ outputTokens: 100, totalMs: 2000 })).toBe(50);
     expect(decodeRate({ totalMs: 2000 })).toBeUndefined();
     expect(tokensPerSecond(estimateTokens("x".repeat(400)), 2000)).toBe(50);
+    expect(outputTokensEstimate("x".repeat(200), "y".repeat(200))).toBe(100);
+    expect(outputTokensEstimate("x".repeat(400))).toBe(100);
   });
 
   it("parses markdown into an AST: inline marks, safe links, raw html as text, tables, nested lists, quotes, hr and an unclosed fence", () => {
