@@ -1,0 +1,3 @@
+- 2026-11-21 implementer: GenerationResult doc comment ("images is set only when...") sits above McpCallResult/WebSearchResult instead of above GenerationResult (src/provider.ts:12) - suggested: move the comment
+- 2026-11-21 implementer: for Gufo/Strata the client limit now cuts twice (upstream max_tokens and the proxy's char budget); README Token limits paragraph mentions only the proxy cut (README.md:239) - suggested: confirm intended and mention it there
+- 2026-11-21 implementer: Responses reasoning param still rejected as unsupported while Chat now forwards reasoning (README.md:237) - suggested: point to the roadmap follow-up
