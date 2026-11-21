@@ -8,67 +8,207 @@
   <script type="module" src="/playground/playground.js"></script>
 </head>
 <body>
-  <header class="top">
-    <div class="brand"><strong>ACP Proxy</strong> <span class="muted">playground</span></div>
-    <label class="model"><span>Model</span>
-      <select id="model"><option value="">Loading models…</option></select>
-    </label>
-    <button id="refresh" type="button" title="Reload the model list">Refresh</button>
-    <label class="key"><span>API key</span>
-      <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Only if the proxy has one" title="Kept in this tab only (sessionStorage)">
-    </label>
-  </header>
-  <div class="layout">
-    <aside class="side">
-      <button id="new-chat" class="primary" type="button">New chat</button>
-      <h2>History</h2>
-      <ul id="history" class="history"></ul>
-      <p class="muted small">Chats are kept in this browser only.</p>
+  <!-- Icon sprite: same-document <use href="#i-NAME">. Stroke icons; colour and width come from .icon in the CSS. -->
+  <svg width="0" height="0" class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3z"/></symbol>
+    <symbol id="i-pin-off" viewBox="0 0 24 24"><path d="M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3zM3 3l18 18"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></symbol>
+    <symbol id="i-attach" viewBox="0 0 24 24"><path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L14 7"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h8M18 6h2M4 12h2M12 12h8M4 18h10M20 18h0"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m21 16-5-5-9 9"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+    <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/></symbol>
+  </svg>
+
+  <div class="app">
+    <aside id="sidebar" class="sidebar" aria-label="Chats">
+      <div class="side-head">
+        <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="Hide sidebar" title="Hide sidebar (Ctrl+Shift+S)"><svg class="icon" aria-hidden="true"><use href="#i-menu"/></svg></button>
+        <div class="brand"><strong>ACP Proxy</strong> <span class="muted">playground</span></div>
+        <button id="new-chat" class="icon-btn" type="button" aria-label="New chat" title="New chat (Ctrl+Shift+O)"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+      </div>
+      <div class="side-search">
+        <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+        <input id="history-search" type="search" autocomplete="off" spellcheck="false" placeholder="Search chats" aria-label="Search chats" title="Search chats (Ctrl+K)">
+      </div>
+      <div id="history" class="history" role="list"></div>
+      <div class="side-foot">
+        <button id="settings-button" class="side-btn" type="button" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-gear"/></svg><span>Settings</span></button>
+        <p class="muted small">Chats are kept in this browser only.</p>
+      </div>
     </aside>
-    <main class="chat">
-      <details id="system-box" class="system">
-        <summary>System prompt</summary>
-        <textarea id="system" rows="3" placeholder="Optional instructions for this chat"></textarea>
-      </details>
-      <div id="messages" class="messages" aria-live="polite"></div>
-      <p id="notice" class="notice" hidden></p>
-      <form id="composer" class="composer">
-        <textarea id="input" rows="3" placeholder="Message (Ctrl+Enter to send)"></textarea>
-        <div id="image-panel" class="image-panel" hidden>
-          <label>Negative prompt <input id="img-negative" type="text" autocomplete="off" placeholder="model default"></label>
-          <div class="row">
-            <label>Size
-              <select id="img-size">
-                <option value="1024x1024">1024x1024</option>
-                <option value="768x768">768x768</option>
-                <option value="1024x1536">1024x1536</option>
-                <option value="1536x1024">1536x1024</option>
-                <option value="custom">Custom</option>
-              </select>
+
+    <div id="sidebar-resize" class="handle" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-valuemin="200" aria-valuemax="420" aria-valuenow="264" tabindex="0"></div>
+
+    <main id="main" class="main">
+      <header class="chat-head">
+        <button id="sidebar-open" class="icon-btn open-sidebar" type="button" aria-label="Show sidebar" title="Show sidebar (Ctrl+Shift+S)"><svg class="icon" aria-hidden="true"><use href="#i-menu"/></svg></button>
+        <h1 id="chat-title" class="chat-title" tabindex="0" title="Double-click to rename (F2)">New chat</h1>
+        <input id="chat-title-input" class="chat-title-input" type="text" autocomplete="off" spellcheck="false" aria-label="Chat title" hidden>
+        <span class="spacer"></span>
+        <div class="pop-anchor">
+          <button id="chat-settings-button" class="icon-btn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="chat-settings-pop" aria-label="Chat settings" title="Chat settings"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg></button>
+          <div id="chat-settings-pop" class="pop down right chat-settings-pop" role="dialog" aria-label="Chat settings" hidden>
+            <label class="field">System prompt
+              <textarea id="system" rows="5" placeholder="Optional instructions for this chat"></textarea>
             </label>
-            <span id="img-custom" class="row" hidden>
-              <label>W <input id="img-width" type="number" min="32" max="4096" step="32" placeholder="1024"></label>
-              <label>H <input id="img-height" type="number" min="32" max="4096" step="32" placeholder="1024"></label>
-            </span>
-            <label>Steps <input id="img-steps" type="number" min="2" max="100" step="1" placeholder="model default"></label>
-            <label>Seed <input id="img-seed" type="number" step="1" placeholder="model default"></label>
-            <label>Guidance scale <input id="img-guidance" type="number" step="any" placeholder="model default"></label>
+            <p class="muted small">Used for this chat only.</p>
           </div>
-          <label>Reference images (optional, max 10; sent to the edits endpoint)
-            <input id="img-files" type="file" accept="image/*" multiple>
-          </label>
+        </div>
+      </header>
+
+      <div class="stage">
+        <div id="empty" class="empty-state">
+          <h2 class="greeting">What should we try?</h2>
+          <p class="muted empty-sub">Pick a model below, then type or choose a starter. Each answer shows its timing, tokens and the exact request.</p>
+          <div id="starters" class="chips">
+            <button class="chip" type="button" data-prompt="Explain how a hash map works, with a short example.">Explain how a hash map works</button>
+            <button class="chip" type="button" data-prompt="Write a Python script that renames all files in a folder to lowercase.">Script to lowercase file names</button>
+            <button class="chip" type="button" data-prompt="Build a single-file HTML page with a bouncing ball animation.">A bouncing ball in HTML</button>
+          </div>
+        </div>
+        <div id="messages" class="messages" aria-live="polite" hidden></div>
+      </div>
+
+      <div class="composer-wrap">
+        <div id="notice" class="notice" role="alert" hidden>
+          <span id="notice-text"></span>
+          <button id="notice-action" class="btn-sm" type="button" hidden></button>
+        </div>
+        <form id="composer" class="composer">
           <div id="img-thumbs" class="thumbs"></div>
-        </div>
-        <div class="composer-bar">
-          <label class="check"><input id="stream" type="checkbox" checked> Stream</label>
-          <label class="check" title="Lets the agent search the web (web_search_options)"><input id="search" type="checkbox"> Web search</label>
-          <label class="check" title="Asks the agent to generate images (modalities: text, image)"><input id="images" type="checkbox"> Generate images</label>
-          <span class="spacer"></span>
-          <button id="stop" type="button" hidden>Stop</button>
-          <button id="send" class="primary" type="submit">Send</button>
-        </div>
-      </form>
+          <textarea id="input" rows="1" placeholder="Message (Enter to send, Shift+Enter for a new line)" aria-label="Message"></textarea>
+          <div class="composer-bar">
+            <input id="img-files" type="file" accept="image/*" multiple hidden>
+            <button id="attach" class="icon-btn" type="button" aria-label="Attach images" title="Attach images"><svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg></button>
+
+            <div class="pop-anchor" id="tools-anchor">
+              <button id="tools-button" class="icon-btn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="tools-pop" aria-label="Tools" title="Tools"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg></button>
+              <div id="tools-pop" class="pop tools-pop" role="dialog" aria-label="Tools" hidden>
+                <label class="switch-row"><span class="switch-text">Stream</span><input id="stream" class="switch" type="checkbox" role="switch" checked></label>
+                <label class="switch-row" title="Lets the agent search the web (web_search_options)"><span class="switch-text"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg>Web search</span><input id="search" class="switch" type="checkbox" role="switch"></label>
+                <label class="switch-row" title="Asks the agent to generate images (modalities: text, image)"><span class="switch-text"><svg class="icon" aria-hidden="true"><use href="#i-image"/></svg>Generate images</span><input id="images" class="switch" type="checkbox" role="switch"></label>
+              </div>
+            </div>
+
+            <div class="pop-anchor" id="image-settings-anchor" hidden>
+              <button id="image-settings-button" class="icon-btn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="image-settings-pop" aria-label="Image settings" title="Image settings"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg><span id="image-settings-dot" class="dot" hidden></span></button>
+              <div id="image-settings-pop" class="pop image-settings-pop" role="dialog" aria-label="Image settings" hidden>
+                <div class="img-form">
+                  <label class="field">Negative prompt <input id="img-negative" type="text" autocomplete="off" placeholder="model default"></label>
+                  <div class="field-row">
+                    <label class="field">Size
+                      <select id="img-size">
+                        <option value="1024x1024">1024x1024</option>
+                        <option value="768x768">768x768</option>
+                        <option value="1024x1536">1024x1536</option>
+                        <option value="1536x1024">1536x1024</option>
+                        <option value="custom">Custom</option>
+                      </select>
+                    </label>
+                    <span id="img-custom" class="field-row" hidden>
+                      <label class="field">W <input id="img-width" type="number" min="32" max="4096" step="32" placeholder="1024"></label>
+                      <label class="field">H <input id="img-height" type="number" min="32" max="4096" step="32" placeholder="1024"></label>
+                    </span>
+                  </div>
+                  <div class="field-row">
+                    <label class="field">Steps <input id="img-steps" type="number" min="2" max="100" step="1" placeholder="model default"></label>
+                    <label class="field">Seed <input id="img-seed" type="number" step="1" placeholder="model default"></label>
+                  </div>
+                  <label class="field">Guidance scale <input id="img-guidance" type="number" step="any" placeholder="model default"></label>
+                  <p class="muted small">Reference images (attach button, max 10) are sent to the edits endpoint.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="pop-anchor" id="model-anchor">
+              <button id="model-button" class="pill" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-pop" title="Choose a model"><span id="model-label" class="pill-label">Loading models…</span><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>
+              <div id="model-pop" class="pop model-pop" hidden>
+                <div class="model-head">
+                  <input id="model-search" type="search" autocomplete="off" spellcheck="false" placeholder="Search models" aria-label="Search models" role="combobox" aria-expanded="false" aria-controls="model-list" aria-autocomplete="list">
+                  <button id="model-refresh" class="icon-btn" type="button" aria-label="Reload the model list" title="Reload the model list"><svg class="icon" aria-hidden="true"><use href="#i-retry"/></svg></button>
+                </div>
+                <div id="model-list" class="model-list" role="listbox" aria-label="Models"></div>
+              </div>
+            </div>
+
+            <span class="spacer"></span>
+            <button id="stop" class="send stop" type="button" aria-label="Stop" title="Stop (Esc)" hidden><svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg></button>
+            <button id="send" class="send" type="submit" aria-label="Send" title="Send (Enter)"><svg class="icon" aria-hidden="true"><use href="#i-send"/></svg></button>
+          </div>
+        </form>
+      </div>
+      <div id="drop-overlay" class="drop-overlay" hidden><div class="drop-card"><svg class="icon" aria-hidden="true"><use href="#i-image"/></svg><span>Drop images to attach</span></div></div>
     </main>
+
+    <div id="preview-resize" class="handle" role="separator" aria-orientation="vertical" aria-label="Resize preview" aria-valuemin="320" aria-valuemax="1200" aria-valuenow="0" tabindex="0" hidden></div>
+
+    <aside id="preview-pane" class="preview-pane" aria-label="Preview" hidden>
+      <header class="pane-head">
+        <span id="preview-title" class="pane-title">Preview</span>
+        <button id="preview-reload" class="icon-btn" type="button" aria-label="Reload preview" title="Reload"><svg class="icon" aria-hidden="true"><use href="#i-retry"/></svg></button>
+        <button id="preview-tab" class="icon-btn" type="button" aria-label="Open in new tab" title="Open in new tab"><svg class="icon" aria-hidden="true"><use href="#i-external"/></svg></button>
+        <button id="preview-close" class="icon-btn" type="button" aria-label="Close preview" title="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+      </header>
+      <div id="preview-body" class="pane-body"></div>
+    </aside>
+
+    <div id="scrim" class="scrim"></div>
   </div>
+
+  <dialog id="settings" class="dialog" aria-labelledby="settings-title">
+    <header class="dialog-head">
+      <h2 id="settings-title">Settings</h2>
+      <button id="settings-close" class="icon-btn" type="button" aria-label="Close settings" title="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+    </header>
+    <div class="dialog-body">
+      <label class="field">API key
+        <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Only if the proxy has one" title="Kept in this tab only (sessionStorage)">
+      </label>
+      <p class="muted small">Kept in this tab only (sessionStorage).</p>
+      <div class="field-row">
+        <button id="refresh-models" class="btn" type="button">Refresh models</button>
+      </div>
+      <p class="muted small">The system prompt is per chat: use the Chat settings button in the chat header.</p>
+      <h3 class="dialog-h">Keyboard shortcuts</h3>
+      <table class="shortcuts">
+        <tbody>
+          <tr><td><kbd>Ctrl/Cmd</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd></td><td>New chat</td></tr>
+          <tr><td><kbd>Ctrl/Cmd</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd></td><td>Toggle sidebar</td></tr>
+          <tr><td><kbd>Ctrl/Cmd</kbd> + <kbd>K</kbd></td><td>Search chats</td></tr>
+          <tr><td><kbd>Shift</kbd> + <kbd>Esc</kbd></td><td>Focus the composer</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>Stop the request (in the composer), or close the open popover, dialog or drawer</td></tr>
+          <tr><td><kbd>Enter</kbd> / <kbd>Shift</kbd> + <kbd>Enter</kbd></td><td>Send / new line</td></tr>
+          <tr><td><kbd>Alt</kbd> + <kbd>Up</kbd> / <kbd>Down</kbd></td><td>Move the focused chat</td></tr>
+          <tr><td><kbd>F2</kbd></td><td>Rename the focused chat</td></tr>
+          <tr><td><kbd>Delete</kbd></td><td>Delete the focused chat (with Undo)</td></tr>
+          <tr><td><kbd>Ctrl/Cmd</kbd> + <kbd>/</kbd></td><td>Open this list</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </dialog>
+
+  <dialog id="lightbox" class="lightbox" aria-label="Image">
+    <button id="lightbox-close" class="icon-btn lightbox-close" type="button" aria-label="Close image" title="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+    <img id="lightbox-img" alt="Generated image">
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
