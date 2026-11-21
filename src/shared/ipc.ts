@@ -207,8 +207,10 @@ export interface ProxyApi {
   refreshPlanLimits(providerId: string, force?: boolean): Promise<PlanLimitsView>;
   /** Both local servers, in the order gufo, strata. */
   getLocalServers(): Promise<LocalServerStatusView[]>;
-  /** Resolves once the process is spawned (not when ready); readiness arrives through `onLocalServers`. */
-  startLocalServer(id: LocalServerId): Promise<ActionResult>;
+  /** Gufo: switches to `profileId` (default: the running or first llm profile) through the coordinator, so it may queue behind a busy model; resolves when the model is ready (can take many minutes) or fails with the reason. Progress arrives through `onLocalServers`. Strata: resolves once spawned. */
+  startLocalServer(id: LocalServerId, profileId?: string): Promise<ActionResult>;
+  /** `profiles` plus the built-in presets whose id is absent (pure; the renderer cannot import the settings module). */
+  restoreGufoPresets(profiles: GufoProfileView[]): Promise<GufoProfileView[]>;
   stopLocalServer(id: LocalServerId): Promise<ActionResult>;
   onLocalServers(callback: (servers: LocalServerStatusView[]) => void): () => void;
 }

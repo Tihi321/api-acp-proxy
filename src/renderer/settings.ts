@@ -1,7 +1,7 @@
 import { nextExpiryDelay, usageLimitLine } from "./usage-limit-line.js";
 import { mcpAddCommand, mcpEndpointUrl } from "./mcp-command.js";
 import { initUsageView } from "./usage-view.js";
-import type { ActivityView, InstallProgressView, LocalServerId, LocalServerStatusView, ProviderStatusView, SaveResult, SettingsPatchView, StateView } from "../shared/ipc.js";
+import type { ActivityView, GufoProfileView, InstallProgressView, LocalServerId, LocalServerStatusView, ProviderStatusView, SaveResult, SettingsPatchView, StateView } from "../shared/ipc.js";
 
 type Scope = "server" | "codex" | "antigravity" | "claude" | "gufo" | "strata";
 interface FieldSpec { path: string; kind: "text" | "number" | "bool" | "select"; scope: Scope; optional?: boolean }
@@ -68,7 +68,6 @@ const fields: FieldSpec[] = [
   { path: "providers.gufo.enabled", kind: "bool", scope: "gufo" },
   { path: "providers.gufo.port", kind: "number", scope: "gufo" },
   { path: "providers.gufo.command", kind: "text", scope: "gufo" },
-  { path: "providers.gufo.args", kind: "text", scope: "gufo" },
   { path: "providers.gufo.cwd", kind: "text", scope: "gufo" },
   { path: "providers.gufo.apiKey", kind: "text", scope: "gufo", optional: true },
   { path: "providers.gufo.maxConcurrent", kind: "number", scope: "gufo", optional: true },
@@ -244,6 +243,12 @@ function renderProvider(provider: string, current: StateView): void {
 /** Fields, provider badge and models of a local model server page (no login or terms parts). */
 function renderLocal(id: LocalServerId, current: StateView): void {
   const root = card(id);
+  if (id === "gufo" && !dirty.gufo) {
+    const gufo = current.settings.providers.gufo;
+    gufoDraft = gufo.profiles.map((profile) => ({ ...profile }));
+    el<HTMLInputElement>("gufo-switch-wait").value = String(Math.round(gufo.switchWaitMs / 60000));
+    renderProfiles();
+  }
   const status = current.status.providers.find((entry) => entry.id === id);
   const providerState = status?.state ?? "disabled";
   setBadge(role(root, "badge"), providerState);
@@ -263,7 +268,13 @@ function renderLocalServers(list: LocalServerStatusView[]): void {
   for (const server of list) {
     const root = card(server.id);
     setBadge(role(root, "server-badge"), server.state);
-    role<HTMLButtonElement>(root, "start").disabled = server.state === "starting" || server.state === "ready";
+    const startButton = root.querySelector<HTMLButtonElement>('[data-role="start"]');
+    if (startButton) startButton.disabled = server.state === "starting" || server.state === "ready";
+    if (server.id === "gufo") {
+      const label = server.profile ? gufoDraft.find((profile) => profile.id === server.profile)?.label ?? server.profile : undefined;
+      if (label && server.state !== "stopped") role<HTMLElement>(root, "server-badge").textContent = server.state === "ready" ? `Gufo: ${label}` : `Gufo: ${label} (${server.state})`;
+      updateProfileButtons();
+    }
     role<HTMLButtonElement>(root, "stop").disabled = server.state === "stopped";
     showError(role(root, "error"), server.state === "error" ? server.error : undefined);
     const info = [
@@ -278,6 +289,110 @@ function renderLocalServers(list: LocalServerStatusView[]): void {
     if (atBottom) log.scrollTop = log.scrollHeight;
   }
   for (const id of localOrder) setNavDot(id, localDotState(id));
+}
+
+/** The profiles being edited on the Gufo page (a copy of the saved ones until the user saves). */
+let gufoDraft: GufoProfileView[] = [];
+/** Profiles whose Start/Switch request is still waiting for the coordinator (a switch can queue or take minutes). */
+const startingProfiles = new Set<string>();
+
+const minutesText = (ms: number | undefined): string => ms === undefined ? "" : String(Math.round(ms / 6000) / 10);
+
+function profileField(labelText: string, input: HTMLElement): HTMLLabelElement {
+  const label = make("label", "field");
+  label.append(make("span", "", labelText), input);
+  return label;
+}
+
+function profileCard(profile: GufoProfileView, index: number): HTMLElement {
+  const root = make("div", "profile");
+  root.dataset.index = String(index);
+  const edited = (apply: (value: string) => void) => (event: Event): void => { apply((event.currentTarget as HTMLInputElement).value); markDirty("gufo", true); };
+  const text = (value: string, apply: (value: string) => void): HTMLInputElement => {
+    const input = make("input"); input.type = "text"; input.autocomplete = "off"; input.spellcheck = false; input.value = value;
+    input.addEventListener("input", edited(apply));
+    return input;
+  };
+  const minutes = (value: number | undefined, apply: (ms: number | undefined) => void): HTMLInputElement => {
+    const input = make("input"); input.type = "number"; input.min = "0"; input.step = "any"; input.value = minutesText(value);
+    input.addEventListener("input", edited((raw) => { const number = Number(raw); apply(raw.trim() === "" || !Number.isFinite(number) || number <= 0 ? undefined : Math.round(number * 60000)); }));
+    return input;
+  };
+
+  const head = make("div", "profile-head");
+  head.append(make("strong", "", profile.label || profile.id || "(new profile)"));
+  const badge = make("span", "badge"); badge.dataset.role = "profile-badge";
+  const start = make("button", "primary small", "Start"); start.type = "button"; start.dataset.role = "profile-start";
+  start.onclick = () => void startGufoProfile(profile.id);
+  const remove = make("button", "small", "Remove"); remove.type = "button";
+  remove.onclick = () => { gufoDraft.splice(index, 1); markDirty("gufo", true); renderProfiles(); };
+  head.append(badge, start, remove);
+
+  const kind = make("select");
+  for (const value of ["llm", "image"] as const) kind.append(Object.assign(document.createElement("option"), { value, textContent: value === "llm" ? "Chat (llm)" : "Image" }));
+  kind.value = profile.kind;
+  const vision = make("input"); vision.type = "checkbox"; vision.checked = profile.vision; vision.disabled = profile.kind === "image";
+  vision.addEventListener("change", () => { profile.vision = vision.checked; markDirty("gufo", true); });
+  kind.addEventListener("change", () => { profile.kind = kind.value as GufoProfileView["kind"]; if (profile.kind === "image") profile.vision = false; markDirty("gufo", true); renderProfiles(); });
+  const visionLabel = make("label", "switch"); visionLabel.append(vision, make("span", "", "Accepts images (vision)"));
+
+  const args = make("textarea"); args.rows = 3; args.spellcheck = false; args.value = profile.args;
+  args.addEventListener("input", edited((value) => { profile.args = value; }));
+
+  const grid = make("div", "grid");
+  grid.append(
+    profileField("Label", text(profile.label, (value) => { profile.label = value; })),
+    profileField("Profile id (a-z, 0-9, . _ -)", text(profile.id, (value) => { profile.id = value; })),
+    profileField("Model id (exposed as gufo/<model>)", text(profile.model, (value) => { profile.model = value; })),
+    profileField("Kind", kind),
+    profileField("Start timeout (minutes, empty = 30)", minutes(profile.startTimeoutMs, (ms) => { profile.startTimeoutMs = ms; })),
+    profileField(`Request timeout (minutes, empty = ${profile.kind === "image" ? "15" : "server default"})`, minutes(profile.requestTimeoutMs, (ms) => { profile.requestTimeoutMs = ms; })),
+  );
+  const argsField = profileField("Arguments", args);
+  argsField.classList.add("wide");
+  root.append(head, grid, visionLabel, argsField);
+  return root;
+}
+
+function renderProfiles(): void {
+  const host = el("gufo-profiles");
+  host.replaceChildren(...(gufoDraft.length ? gufoDraft.map(profileCard) : [make("p", "note", "No profiles. Add one or restore the presets.")]));
+  updateProfileButtons();
+}
+
+/** Start / Switch buttons and the running marker of each profile card, from the launcher state. */
+function updateProfileButtons(): void {
+  const server = localServers.find((entry) => entry.id === "gufo");
+  const anyRunning = server !== undefined && (server.state === "starting" || server.state === "ready");
+  for (const node of document.querySelectorAll<HTMLElement>("#gufo-profiles .profile")) {
+    const profile = gufoDraft[Number(node.dataset.index)];
+    if (!profile) continue;
+    const mine = server !== undefined && server.profile === profile.id && anyRunning;
+    const waiting = startingProfiles.has(profile.id);
+    const start = role<HTMLButtonElement>(node, "profile-start");
+    start.disabled = mine || waiting;
+    start.textContent = waiting && !mine ? "Waiting…" : anyRunning && !mine ? "Switch to this" : "Start";
+    const badge = role<HTMLElement>(node, "profile-badge");
+    badge.hidden = !mine;
+    if (mine && server) setBadge(badge, server.state);
+  }
+}
+
+/** Starts or switches to a Gufo profile through the coordinator; unsaved edits are saved first. */
+async function startGufoProfile(profileId: string): Promise<void> {
+  const msg = role<HTMLElement>(card("gufo"), "msg");
+  flash(msg, "");
+  if (dirty.gufo) {
+    await saveScope("gufo");
+    if (dirty.gufo) return; // the save failed; its message is shown
+  }
+  startingProfiles.add(profileId);
+  updateProfileButtons();
+  flash(msg, "Starting or switching… a large model can take many minutes.");
+  try {
+    const result = await api.startLocalServer("gufo", profileId);
+    flash(msg, result.ok ? "" : result.message, !result.ok);
+  } finally { startingProfiles.delete(profileId); updateProfileButtons(); }
 }
 
 /** The provider state of a local server, overridden by the launcher while it starts or failed. */
@@ -538,6 +653,13 @@ function collectPatch(scope: Scope): { patch?: SettingsPatchView; errors: Array<
     }
     setPath(patch, spec.path, value);
   }
+  if (scope === "gufo") {
+    const wait = el<HTMLInputElement>("gufo-switch-wait");
+    const waitMinutes = Number(wait.value);
+    if (wait.value.trim() === "" || !Number.isFinite(waitMinutes) || waitMinutes <= 0) errors.push({ path: "providers.gufo.switchWaitMs", message: "Enter the wait in minutes" });
+    else setPath(patch, "providers.gufo.switchWaitMs", Math.round(waitMinutes * 60000));
+    setPath(patch, "providers.gufo.profiles", gufoDraft.map((profile) => ({ ...profile, label: profile.label.trim(), id: profile.id.trim(), model: profile.model.trim(), vision: profile.kind === "llm" && profile.vision })));
+  }
   return { patch: patch as SettingsPatchView, errors };
 }
 
@@ -683,7 +805,8 @@ function wire(): void {
       const result = await api.refreshModels(id);
       if (!result.ok) flash(msg, result.message, true);
     };
-    role(root, "start").onclick = () => void startLocal(id);
+    const startButton = root.querySelector<HTMLButtonElement>('[data-role="start"]');
+    if (startButton) startButton.onclick = () => void startLocal(id);
     role(root, "stop").onclick = () => void stopLocal(id);
     el(`${id}-key-show`).onclick = () => {
       const input = field(`providers.${id}.apiKey`) as HTMLInputElement;
@@ -692,6 +815,23 @@ function wire(): void {
     };
   }
 
+  el("gufo-switch-wait").addEventListener("input", () => markDirty("gufo", true));
+  el("gufo-add-profile").onclick = () => {
+    const taken = new Set(gufoDraft.map((profile) => profile.id));
+    let n = gufoDraft.length + 1;
+    while (taken.has(`profile-${n}`)) n++;
+    gufoDraft.push({ id: `profile-${n}`, label: `Profile ${n}`, model: `profile-${n}`, kind: "llm", vision: false, args: "serve llm --model <id> --port {port}" });
+    markDirty("gufo", true);
+    renderProfiles();
+  };
+  el("gufo-restore-presets").onclick = async () => {
+    const restored = await api.restoreGufoPresets(gufoDraft);
+    const added = restored.length - gufoDraft.length;
+    gufoDraft = restored;
+    if (added > 0) markDirty("gufo", true);
+    renderProfiles();
+    flash(el("gufo-profiles-msg"), added > 0 ? `Added ${added} preset${added === 1 ? "" : "s"}. Save to keep them.` : "All presets are present.");
+  };
   el("browse-exe").onclick = async () => {
     const result = await api.pickExecutable();
     if (result.path) { (field("providers.antigravity.executablePath") as HTMLInputElement).value = result.path; markDirty("antigravity", true); }
