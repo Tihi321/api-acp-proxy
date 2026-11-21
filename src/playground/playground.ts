@@ -1,4 +1,4 @@
-import { chatTitle, curlFor, decodeRate, formatMs, formatRate, groupModels, isHttpUrl, outputTokensEstimate, parseSseLines, previewDocument, splitBlocks, tokensPerSecond } from "./lib.js";
+import { chatTitle, curlFor, decodeRate, formatMs, formatRate, groupModels, isHttpUrl, outputTokensEstimate, parseSseLines, previewDocument, splitBlocks, tokensPerSecond, validateImageForm } from "./lib.js";
 import { highlight, parseMarkdown, type Inline, type ListBlock, type MdBlock } from "./markdown.js";
 
 // The playground page served by the proxy at /playground: pick a model, chat, keep a history in this browser. Model text is rendered only through DOM nodes (textContent), never as HTML.
@@ -33,6 +33,13 @@ let chats: Chat[] = loadChats();
 let current: Chat = newChat();
 let running: AbortController | undefined;
 
+// Image mode: picking a model whose /v1/models `kind` is "image". Derived from the select, never stored. Results live in memory for this tab only (not in the history).
+interface ImageRun { model: string; prompt: string; edit: boolean; urls: string[]; error?: string; totalMs?: number; elapsedS: number; pending: boolean }
+const kinds = new Map<string, string>();
+const imageRuns: ImageRun[] = [];
+const refImages: Array<{ file: File; url: string }> = [];
+const imageMode = (): boolean => kinds.get(el<HTMLSelectElement>("model").value) === "image";
+
 function loadChats(): Chat[] {
   try { const parsed = JSON.parse(storage.get(local, HISTORY_KEY) ?? "[]") as unknown; return Array.isArray(parsed) ? (parsed as Chat[]).filter((chat) => chat && Array.isArray(chat.messages)) : []; } catch { return []; }
 }
@@ -49,9 +56,9 @@ function newChat(): Chat { return { id: `${Date.now().toString(36)}${Math.random
 
 function notice(text: string): void { const node = el("notice"); node.textContent = text; node.hidden = !text; }
 
-function headers(): Record<string, string> {
+function headers(json = true): Record<string, string> {
   const key = el<HTMLInputElement>("key").value.trim();
-  return { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) };
+  return { ...(json ? { "Content-Type": "application/json" } : {}), ...(key ? { Authorization: `Bearer ${key}` } : {}) };
 }
 
 /** The proxy's error message from an error response or an SSE error envelope. */
@@ -66,8 +73,10 @@ async function loadModels(): Promise<void> {
   const wanted = select.value || current.model;
   try {
     const response = await fetch(`${API}/models`, { headers: headers() });
-    const payload = await response.json().catch(() => undefined) as { data?: Array<{ id: string }> } | undefined;
+    const payload = await response.json().catch(() => undefined) as { data?: Array<{ id: string; kind?: string }> } | undefined;
     if (!response.ok) throw new Error(errorText(payload, response.status));
+    kinds.clear();
+    for (const model of payload?.data ?? []) if (model.kind) kinds.set(model.id, model.kind);
     const groups = groupModels((payload?.data ?? []).map((model) => model.id));
     select.replaceChildren(...groups.map((group) => {
       const optgroup = make("optgroup");
@@ -78,6 +87,7 @@ async function loadModels(): Promise<void> {
     if (!groups.length) select.append(Object.assign(make("option", "", "No models (log in to a provider in the app)"), { value: "" }));
     if (wanted && [...select.options].some((option) => option.value === wanted)) select.value = wanted;
     notice("");
+    applyMode();
   } catch (error) {
     select.replaceChildren(Object.assign(make("option", "", "Could not load models"), { value: "" }));
     notice(`Models: ${error instanceof Error ? error.message : String(error)}${/401|api_key/.test(String(error)) ? " Enter the proxy's API key above." : ""}`);
@@ -107,12 +117,17 @@ function showChat(): void {
   el<HTMLDetailsElement>("system-box").open = Boolean(current.system);
   const select = el<HTMLSelectElement>("model");
   if (current.model && [...select.options].some((option) => option.value === current.model)) select.value = current.model;
-  renderMessages();
+  applyMode();
   renderHistory();
 }
 
 function renderMessages(): void {
   const box = el("messages");
+  if (imageMode()) {
+    box.replaceChildren(...(imageRuns.length ? imageRuns.map(renderImageRun) : [make("p", "empty", "Write a prompt and send it. Reference images are optional. Results stay in this tab only.")]));
+    box.scrollTop = box.scrollHeight;
+    return;
+  }
   if (!current.messages.length) {
     box.replaceChildren(make("p", "empty", "Pick a model and send a message. Each answer shows the time, the tokens and the exact request, which you can copy as curl."));
     return;
@@ -279,6 +294,97 @@ function renderMessage(message: Msg): HTMLElement {
   return node;
 }
 
+function renderImageRun(run: ImageRun): HTMLElement {
+  const node = make("div", "msg assistant image-result");
+  node.append(make("div", "who", `${run.model}${run.edit ? " (edit)" : ""}`), make("div", "text", run.prompt));
+  if (run.pending) node.append(make("div", "elapsed muted", waitingText(run.elapsedS)));
+  run.urls.forEach((url, index) => {
+    if (!url.startsWith("data:image/")) return;
+    node.append(Object.assign(make("img"), { src: url, alt: "Generated image" }));
+    node.append(Object.assign(make("a", "", "Save"), { href: url, download: `image-${index + 1}.png` }));
+  });
+  if (run.error) node.append(make("div", "error", run.error));
+  if (run.totalMs !== undefined) node.append(make("div", "meta", `total ${formatMs(run.totalMs)}`));
+  return node;
+}
+
+const waitingText = (seconds: number): string => `Waiting for the model (it may be starting, this can take minutes)... ${seconds} s`;
+
+/** Shows or hides the chat-only controls and the image panel for the selected model. */
+function applyMode(): void {
+  const image = imageMode();
+  el("image-panel").hidden = !image;
+  el("system-box").hidden = image;
+  for (const id of ["stream", "search", "images"]) { const label = el(id).parentElement; if (label) label.hidden = image; }
+  el<HTMLTextAreaElement>("input").placeholder = image ? "Image prompt (Ctrl+Enter to send)" : "Message (Ctrl+Enter to send)";
+  renderMessages();
+}
+
+function renderThumbs(): void {
+  el("img-thumbs").replaceChildren(...refImages.map((ref) => {
+    const box = make("div", "thumb");
+    const remove = make("button", "", "x");
+    remove.type = "button";
+    remove.title = "Remove this image";
+    remove.onclick = () => { refImages.splice(refImages.indexOf(ref), 1); renderThumbs(); };
+    box.append(Object.assign(make("img"), { src: ref.url, alt: ref.file.name }), remove);
+    return box;
+  }));
+}
+
+/** Blank field = omitted. */
+const optionalNumber = (id: string): number | undefined => { const text = el<HTMLInputElement>(id).value.trim(); return text && Number.isFinite(Number(text)) ? Number(text) : undefined; };
+
+async function sendImage(): Promise<void> {
+  const input = el<HTMLTextAreaElement>("input");
+  const prompt = input.value.trim();
+  const model = el<HTMLSelectElement>("model").value;
+  if (!prompt || running) return;
+  const sizeChoice = el<HTMLSelectElement>("img-size").value;
+  const size = sizeChoice === "custom" ? `${el<HTMLInputElement>("img-width").value.trim()}x${el<HTMLInputElement>("img-height").value.trim()}` : sizeChoice;
+  const problem = validateImageForm({ size, steps: el<HTMLInputElement>("img-steps").value, files: refImages.length });
+  if (problem) { notice(problem); return; }
+  notice("");
+  const fields: Record<string, string | number> = { model, prompt, size };
+  const negative = el<HTMLInputElement>("img-negative").value.trim();
+  if (negative) fields.negative_prompt = negative;
+  for (const [name, id] of [["steps", "img-steps"], ["seed", "img-seed"], ["guidance_scale", "img-guidance"]] as const) { const value = optionalNumber(id); if (value !== undefined) fields[name] = value; }
+  const edit = refImages.length > 0;
+  const run: ImageRun = { model, prompt, edit, urls: [], elapsedS: 0, pending: true };
+  imageRuns.push(run);
+  renderMessages();
+  const controller = new AbortController();
+  setRunning(controller);
+  const started = performance.now();
+  const tick = setInterval(() => {
+    run.elapsedS = Math.round((performance.now() - started) / 1000);
+    const node = [...el("messages").querySelectorAll<HTMLElement>(".elapsed")].at(-1);
+    if (node) node.textContent = waitingText(run.elapsedS);
+  }, 1000);
+  try {
+    let response: Response;
+    if (edit) {
+      const form = new FormData();
+      for (const [name, value] of Object.entries(fields)) form.append(name, String(value));
+      for (const ref of refImages) form.append("image", ref.file, ref.file.name);
+      response = await fetch(`${API}/images/edits`, { method: "POST", headers: headers(false), body: form, signal: controller.signal });
+    } else response = await fetch(`${API}/images/generations`, { method: "POST", headers: headers(), body: JSON.stringify(fields), signal: controller.signal });
+    const payload = await response.json().catch(() => undefined) as { data?: Array<{ b64_json?: string }> } | undefined;
+    if (!response.ok) throw new Error(errorText(payload, response.status));
+    run.urls = (payload?.data ?? []).flatMap((item) => item.b64_json ? [`data:image/png;base64,${item.b64_json}`] : []);
+    if (!run.urls.length) run.error = "The server returned no image.";
+    else input.value = "";
+  } catch (error) {
+    run.error = controller.signal.aborted ? "Stopped." : error instanceof Error ? error.message : String(error);
+  } finally {
+    clearInterval(tick);
+    run.pending = false;
+    run.totalMs = performance.now() - started;
+    setRunning(undefined);
+    renderMessages();
+  }
+}
+
 // The preview page announces itself with a message; the window that sent it (iframe or tab) is answered with the document, once. Model code runs only after a click.
 const waiting = new Map<MessageEventSource, string>();
 window.addEventListener("message", (event) => {
@@ -339,6 +445,7 @@ const citationsOf = (annotations: Citation[] | undefined) => (annotations ?? [])
 const imagesOf = (images: Array<{ image_url?: { url?: string } }> | undefined) => (images ?? []).flatMap((image) => image.image_url?.url ? [image.image_url.url] : []);
 
 async function send(): Promise<void> {
+  if (imageMode()) return sendImage();
   const input = el<HTMLTextAreaElement>("input");
   const text = input.value.trim();
   const model = el<HTMLSelectElement>("model").value;
@@ -490,6 +597,17 @@ function init(): void {
   el("refresh").onclick = () => void loadModels();
   el("new-chat").onclick = () => { if (running) return; current = newChat(); showChat(); el("input").focus(); };
   el("stop").onclick = () => running?.abort();
+  el<HTMLSelectElement>("model").onchange = () => applyMode();
+  el<HTMLSelectElement>("img-size").onchange = () => { el("img-custom").hidden = el<HTMLSelectElement>("img-size").value !== "custom"; };
+  el<HTMLInputElement>("img-files").onchange = (event) => {
+    const input = event.target as HTMLInputElement;
+    for (const file of [...(input.files ?? [])]) {
+      const reader = new FileReader();
+      reader.onload = () => { if (typeof reader.result === "string") { refImages.push({ file, url: reader.result }); renderThumbs(); } };
+      reader.readAsDataURL(file);
+    }
+    input.value = "";
+  };
   el<HTMLFormElement>("composer").onsubmit = (event) => { event.preventDefault(); void send(); };
   el("input").onkeydown = (event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send(); } };
   el<HTMLTextAreaElement>("system").onchange = () => { current.system = el<HTMLTextAreaElement>("system").value; };

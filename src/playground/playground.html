@@ -34,6 +34,31 @@
       <p id="notice" class="notice" hidden></p>
       <form id="composer" class="composer">
         <textarea id="input" rows="3" placeholder="Message (Ctrl+Enter to send)"></textarea>
+        <div id="image-panel" class="image-panel" hidden>
+          <label>Negative prompt <input id="img-negative" type="text" autocomplete="off" placeholder="model default"></label>
+          <div class="row">
+            <label>Size
+              <select id="img-size">
+                <option value="1024x1024">1024x1024</option>
+                <option value="768x768">768x768</option>
+                <option value="1024x1536">1024x1536</option>
+                <option value="1536x1024">1536x1024</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            <span id="img-custom" class="row" hidden>
+              <label>W <input id="img-width" type="number" min="32" max="4096" step="32" placeholder="1024"></label>
+              <label>H <input id="img-height" type="number" min="32" max="4096" step="32" placeholder="1024"></label>
+            </span>
+            <label>Steps <input id="img-steps" type="number" min="2" max="100" step="1" placeholder="model default"></label>
+            <label>Seed <input id="img-seed" type="number" step="1" placeholder="model default"></label>
+            <label>Guidance scale <input id="img-guidance" type="number" step="any" placeholder="model default"></label>
+          </div>
+          <label>Reference images (optional, max 10; sent to the edits endpoint)
+            <input id="img-files" type="file" accept="image/*" multiple>
+          </label>
+          <div id="img-thumbs" class="thumbs"></div>
+        </div>
         <div class="composer-bar">
           <label class="check"><input id="stream" type="checkbox" checked> Stream</label>
           <label class="check" title="Lets the agent search the web (web_search_options)"><input id="search" type="checkbox"> Web search</label>

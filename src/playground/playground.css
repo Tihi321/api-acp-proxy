@@ -67,6 +67,16 @@ button.link:hover { color: var(--err); }
 .check { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; }
 .check input { width: auto; }
 .spacer { flex: 1; }
+[hidden] { display: none !important; }
+.image-panel { display: grid; gap: 8px; font-size: 13px; }
+.image-panel label { display: grid; gap: 3px; }
+.image-panel .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+.image-panel .row input[type="number"] { width: 130px; }
+.thumbs { display: flex; gap: 8px; flex-wrap: wrap; }
+.thumbs .thumb { position: relative; }
+.thumbs .thumb img { width: 72px; height: 72px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); display: block; }
+.thumbs .thumb button { position: absolute; top: 2px; right: 2px; padding: 0 5px; line-height: 16px; }
+.image-result { display: grid; gap: 6px; }
 
 @media (max-width: 720px) {
   .layout { flex-direction: column; }

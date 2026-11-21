@@ -134,3 +134,22 @@ export function decodeRate(meta: { outputTokens?: number; firstMs?: number; tota
 
 /** "45.3 tok/s" (one decimal under 100, none above). */
 export function formatRate(rate: number): string { return `${rate < 100 ? rate.toFixed(1) : Math.round(rate)} tok/s`; }
+
+export interface ImageFormFields { /** "WxH" (a preset or the custom inputs joined). */ size: string; /** Raw steps text; blank = not sent. */ steps: string; files: number }
+
+/** Client-side checks of the image form, only the rules that are certain (the server stays the authority): size in multiples of 32, <= 4096 per side, <= 4 megapixels; steps 2-100 when set; <= 10 reference images. undefined = fine. */
+export function validateImageForm(fields: ImageFormFields): string | undefined {
+  const size = /^(\d+)x(\d+)$/.exec(fields.size.trim());
+  if (!size) return "Size must be WIDTHxHEIGHT, for example 1024x1024.";
+  const width = Number(size[1]), height = Number(size[2]);
+  if (width < 32 || height < 32 || width % 32 !== 0 || height % 32 !== 0) return "Width and height must be multiples of 32.";
+  if (width > 4096 || height > 4096) return "Width and height can be at most 4096.";
+  if (width * height > 4 * 1024 * 1024) return "The image can have at most 4 megapixels.";
+  const steps = fields.steps.trim();
+  if (steps) {
+    const value = Number(steps);
+    if (!Number.isInteger(value) || value < 2 || value > 100) return "Steps must be a whole number from 2 to 100 (or blank).";
+  }
+  if (fields.files > 10) return "At most 10 reference images.";
+  return undefined;
+}
