@@ -78,7 +78,7 @@ Model ids are namespaced as `<provider>/<id>`, for example `codex/gpt-6-luna`, `
 - Codex models are discovered at runtime from the agent, like the others, and are also exposed **unprefixed** (`gpt-6-luna` and `codex/gpt-6-luna` both work), so existing clients keep working. The list depends on your ChatGPT plan and on the bundled codex-acp version (with codex-acp 2.3.0 a ChatGPT Go account gets `gpt-6-luna`, `gpt-5.6-terra` and `gpt-5.6-luna`; `gpt-5.6-sol` is gone), so check `GET /v1/models` instead of assuming ids. Until the first discovery has finished (a first start, with no models cache yet) an unprefixed id is passed to Codex as it is.
 - Claude models are only available prefixed (`claude/<id>`), and are discovered at runtime from the agent.
 - Antigravity models are only available prefixed, and are discovered at runtime from the agent (the list depends on your plan and on the server version).
-- Gufo and Strata (local model servers on this PC) are only available prefixed (`gufo/<id>`, `strata/<id>`), and are enabled by default. They are plain OpenAI-compatible upstreams, **text only**: a request with tools, MCP servers, web search or images is answered 400 `model_not_capable`. While the server is not running, a request answers 503 `local_server_not_running` ("Gufo is not running — start it from the app."). See [Local model servers (Gufo, Strata)](#local-model-servers-gufo-strata).
+- Gufo and Strata (local model servers on this PC) are only available prefixed (`gufo/<model>`, `strata/<id>`), and are enabled by default. They are plain OpenAI-compatible upstreams: a request with tools, MCP servers or web search is answered 400 `model_not_capable`; image input only reaches Gufo vision profiles (see Local model servers). While the server is not running, a request answers 503 `local_server_not_running` ("Gufo is not running — start it from the app."). See [Local model servers (Gufo, Strata)](#local-model-servers-gufo-strata).
 - **Collision rule:** if an unprefixed id would be claimed by two providers, the first provider keeps it and the later one is listed only with its prefix; a warning is logged.
 - Only enabled providers are listed. An unknown id returns 404 `model_not_found`.
 - `/v1/models` waits up to `PROXY_MODELS_WAIT_MS` for providers that have not finished discovery; a slow provider is omitted from that response. `owned_by` reflects the provider.
@@ -127,7 +127,9 @@ Settings (`providers.gufo`, `providers.strata`; no environment variables):
 | `enabled` | `true` | `true` |
 | `port` | `8081` | `8080` |
 | `command` | `D:\Gufo\gufo.cmd` | `D:\Strata\terminal\run-unsloth-ud-iq4_xs.bat` |
-| `args` | `serve llm --model qwen27-q4 --speculative dflash2 ... --port {port} --context 32768` | empty |
+| `profiles` | five presets, see below (replaces the old single `args`) | - |
+| `switchWaitMs` | `1800000` (30 min) | - |
+| `args` | - | empty |
 | `cwd` | `D:\Gufo` | `D:\Strata` |
 | `apiKey` | unset (sent as a bearer token when set; stored encrypted by the app) | unset |
 | `maxConcurrent` | `1` | `1` |
@@ -138,6 +140,27 @@ Settings (`providers.gufo`, `providers.strata`; no environment variables):
 - **Strata's `--open`.** The bat opens a browser tab. Point `command` at the venv python without `--open` to avoid it.
 - **Upstream.** The provider uses Node's `fetch`, not Electron's `net.fetch`, because Strata refuses a request that carries a browser `Origin` header.
 - **Token limit.** For these two the client's `max_tokens` / `max_completion_tokens` / `max_output_tokens` is also sent upstream as `max_tokens`, so the server stops itself (the proxy's own estimate-based cut still applies as described under Token limits).
+
+### Gufo profiles, auto-switch, vision and images (AAP-37)
+
+Gufo is a set of **profiles**, one model each (`providers.gufo.profiles[]`: `id`, `label`, `model`, `kind` `llm|image`, `args`, `vision`, optional `startTimeoutMs` and `requestTimeoutMs`). Each enabled profile is listed in `/v1/models` as `gufo/<model>` whether or not it runs, with the extra fields `kind` and `vision`. Presets (all editable in Settings, "Restore missing presets" appends absent ones; an old single `providers.gufo.args` is kept as the args of `qwen27-q4`):
+
+| id / model | kind | vision | notes |
+| --- | --- | --- | --- |
+| `qwen27-q4` / `Qwen3.8-27B` | llm | no | the previous default |
+| `flash-next-q4` / `flash-next-q4` | llm | yes | MTP + mmproj, context 32768 |
+| `deepseek4` / `deepseek4` | llm | no | DSpark, context 16384 |
+| `qwen-image-2.1` / `qwen-image-2.1` | image | - | `serve image` |
+| `qwen-image-2.1-turbo` / `qwen-image-2.1-turbo` | image | - | `serve image` |
+
+The flags of the new presets are inferred from `gufo.exe`, not run: edit them per profile. New presets use `--served-model-name` so Gufo's model name equals the exposed id.
+
+- **Auto-switch.** Only one Gufo process runs (and never together with Strata). A request that names a Gufo model other than the running one stops Gufo and starts the needed profile; this can take many minutes. The Settings page also has a Start / "Switch to this" button per profile.
+- **Queue.** Requests are served in FIFO order. A switch starts only when the running profile has no request in flight; requests for a model that is being started wait for it. A request that waits longer than `switchWaitMs` gets 503 `local_model_busy` with `Retry-After`; a failed start answers 503 `local_model_start_failed`. A client that disconnects while waiting leaves the queue; a start already under way is not cancelled. The wait is not part of the request timeout.
+- **Vision.** Image parts are sent upstream as `image_url` data URLs to profiles with `vision: true` (Flash-Next). Text-only profiles and Strata answer 400 `unsupported_content` before any switch.
+- **Images.** `POST /v1/images/generations` (JSON: `model, prompt, size` as `WxH, steps, seed, negative_prompt, guidance_scale, n, response_format` = `b64_json`) and `POST /v1/images/edits` (multipart, 1 to 10 `image` files, no `mask`) go to Gufo image profiles; the response carries `data[].b64_json`, `created` and `output_format: "png"`. A chat to an image model, or an image request to an llm model, is 400 `model_not_capable`. Image routes accept up to 64 MiB. Image profiles time out after 15 minutes by default (`requestTimeoutMs` per profile). Codex/Claude image generation is unchanged.
+- **Playground.** Picking an image model shows an image panel (prompt, negative prompt, size, steps, seed, guidance scale, reference images); blank fields are left out of the request. Results are kept in the tab only.
+- **Memory.** One process at a time: deepseek4 (about 93 GB) and flash-next-q4 (about 115 GB) are far above 63 GiB of RAM; the preset contexts are capped, raise them knowingly. Qwen-Image weights have a non-commercial licence.
 
 ## Concurrency cap
 
