@@ -10,6 +10,11 @@ const FILES: Record<string, string> = {
   "playground.js": "playground.js",
   "lib.js": "lib.js",
   "markdown.js": "markdown.js",
+  "history.js": "history.js",
+  "dom.js": "dom.js",
+  "messages.js": "messages.js",
+  "sidebar.js": "sidebar.js",
+  "composer.js": "composer.js",
   "playground.css": "playground.css",
   "preview": "preview.html",
 };

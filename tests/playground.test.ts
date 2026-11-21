@@ -7,7 +7,8 @@ import { ActivityLog } from "../src/activity.js";
 import type { AcpLike } from "../src/acp.js";
 import type { ProxyConfig } from "../src/config.js";
 import { PLAYGROUND_CSP, PREVIEW_CSP, servePlayground } from "../src/playground-files.js";
-import { chatTitle, curlFor, decodeRate, estimateTokens, formatMs, groupModels, isHttpUrl, outputTokensEstimate, parseSseLines, previewDocument, splitBlocks, tokensPerSecond, validateImageForm } from "../src/playground/lib.js";
+import { chatTitle, curlFor, decodeRate, elideDataUrls, estimateTokens, formatMs, groupModels, isHttpUrl, outputTokensEstimate, parseSseLines, parseUiPrefs, previewDocument, sendKey, splitBlocks, timingSegments, tokensPerSecond, userContent, validateImageForm } from "../src/playground/lib.js";
+import { dateGroup, historySections, moveChat, normalizeChats, setPinned, touchChat, trimChats, type ChatLike } from "../src/playground/history.js";
 import { highlight, parseMarkdown, safeHref } from "../src/playground/markdown.js";
 import { createProxyServer } from "../src/server.js";
 import { tempRoot } from "./helpers/temp-root.js";
@@ -126,6 +127,62 @@ describe("playground helpers", () => {
     expect(validateImageForm({ size: "1024x1024", steps: "", files: 11 })).toBeDefined();
   });
 
+  it("history: migrates old chats, sections pinned and date groups, moves, pins, trims", () => {
+    const now = new Date(2026, 5, 15, 12).getTime();
+    const day = (back: number, hour = 12) => new Date(2026, 5, 15 - back, hour).getTime();
+    const chat = (id: string, updated: number, extra: Partial<ChatLike> = {}): ChatLike => ({ id, title: id, updated, messages: [{ role: "user", content: `about ${id}` }], ...extra });
+    // an old array (most recent first, no pinned/order) keeps its visible order; bad entries are dropped
+    const old = normalizeChats<ChatLike>([chat("a", day(0)), { id: "bad", title: "x", updated: 1 }, chat("b", day(0, 9)), chat("c", day(1)), chat("d", day(8))]);
+    expect(old.map((c) => [c.id, c.pinned])).toEqual([["a", false], ["b", false], ["c", false], ["d", false]]);
+    expect(historySections(old, now).map((s) => [s.label, s.ids])).toEqual([["Today", ["a", "b"]], ["Yesterday", ["c"]], ["Older", ["d"]]]);
+    // date groups switch at local midnight: yesterday, day 7 and day 8
+    expect([dateGroup(now, now), dateGroup(day(1, 23), now), dateGroup(day(1, 0), now), dateGroup(day(2, 23), now), dateGroup(day(7, 0), now), dateGroup(day(8, 23), now)]).toEqual(["today", "yesterday", "yesterday", "week", "week", "older"]);
+    expect(historySections(old, now, "  ABOUT C ").map((s) => s.ids)).toEqual([["c"]]);
+    // pins: top of Pinned, a pinned chat keeps its place on activity, an unpinned one jumps to the top of Today
+    let chats = setPinned(setPinned(old, "c", true, now), "d", true, now);
+    expect(historySections(chats, now)[0]).toMatchObject({ key: "pinned", ids: ["d", "c"] });
+    const touched = touchChat(chats, "c", now + 1000);
+    expect(touched.find((c) => c.id === "c")).toMatchObject({ updated: now + 1000, order: chats.find((c) => c.id === "c")?.order });
+    expect(historySections(touchChat(chats, "b", now + 1000), now)[1].ids).toEqual(["b", "a"]);
+    // moves: within Pinned, a forbidden cross-bucket move leaves the input unchanged, a drop into Pinned pins
+    chats = moveChat(chats, "c", { section: "pinned", index: 0 }, now);
+    expect(historySections(chats, now)[0].ids).toEqual(["c", "d"]);
+    expect(moveChat(chats, "a", { section: "yesterday", index: 0 }, now)).toEqual(chats);
+    const pinned = moveChat(chats, "b", { section: "pinned", index: 1 }, now);
+    expect(historySections(pinned, now)[0].ids).toEqual(["c", "b", "d"]);
+    expect(pinned.find((c) => c.id === "b")?.pinned).toBe(true);
+    expect(historySections(moveChat(pinned, "c", { section: "today", index: 0 }, now), now).map((s) => s.ids)).toEqual([["b", "d"], ["a"], ["c"]]); // c lands in the bucket of its own date
+    expect(old.every((c) => c.pinned === false)).toBe(true); // input never mutated
+    // the cap keeps every pinned chat
+    const many = [...Array.from({ length: 5 }, (_, i) => chat(`n${i}`, now - i * 1000)), chat("old-pin", 1, { pinned: true })];
+    expect(trimChats(many, 3).map((c) => c.id)).toEqual(["n0", "n1", "old-pin"]);
+    expect(trimChats(many.map((c) => ({ ...c, pinned: true })), 3)).toHaveLength(6);
+  });
+
+  it("composer and request helpers: send key, content parts, elided data URLs, prefs, timing", () => {
+    const key = (over: Partial<Parameters<typeof sendKey>[0]>) => sendKey({ key: "Enter", shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, isComposing: false, ...over });
+    expect([key({}), key({ shiftKey: true }), key({ ctrlKey: true }), key({ metaKey: true }), key({ isComposing: true }), key({ key: "a" })]).toEqual([true, false, true, true, false, false]);
+    expect(userContent("hi", [])).toBe("hi");
+    expect(userContent("hi", ["data:image/png;base64,AAAA"])).toEqual([{ type: "text", text: "hi" }, { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }]);
+    const request = { model: "m", messages: [{ role: "user", content: userContent("see", ["data:image/png;base64," + "A".repeat(2048)]) }] };
+    const elided = JSON.stringify(elideDataUrls(request));
+    expect(elided).toContain("data:…(3 KB)");
+    expect(elided).not.toContain("AAAA");
+    expect(elided).toContain('"model":"m"');
+    expect(request.messages[0].content[1]).toMatchObject({ type: "image_url" }); // input untouched
+    const defaults = parseUiPrefs(null);
+    expect(defaults).toMatchObject({ sidebarOpen: true, sidebarWidth: 264, previewWidth: 0, stream: true, image: { size: "1024x1024", steps: "" } });
+    expect(parseUiPrefs("{not json")).toEqual(defaults);
+    expect(parseUiPrefs('{"sidebarWidth":9999,"previewWidth":-5,"stream":"yes","sidebarOpen":false,"image":{"steps":"20","seed":7}}')).toMatchObject({ sidebarWidth: 420, previewWidth: 0, stream: true, sidebarOpen: false, image: { steps: "20", seed: "" } });
+    expect(parseUiPrefs('{"sidebarWidth":5}').sidebarWidth).toBe(200);
+    for (const [meta, thought] of [[{ firstMs: 1000, totalMs: 8000 }, 3000], [{ firstMs: 1000, totalMs: 8000 }, undefined], [{ totalMs: 0 }, undefined]] as const) {
+      const s = timingSegments(meta, thought);
+      expect(s.wait + s.think + s.write).toBeCloseTo(1, 10);
+    }
+    expect(timingSegments({ firstMs: 4000, totalMs: 8000 }, 3000)).toEqual({ wait: 0.125, think: 0.375, write: 0.5 });
+    expect(timingSegments({ firstMs: 1000, totalMs: 4000 })).toEqual({ wait: 0.25, think: 0, write: 0.75 });
+  });
+
   it("highlights losslessly and classifies js tokens and html tags", () => {
     const js = 'const s = "x"; // c\nlet n = 42;';
     const tokens = highlight(js, "js");
@@ -164,7 +221,7 @@ describe("serving the playground", () => {
   it("serves the page and its fixed files with a strict CSP, and nothing else", async () => {
     const dir = path.join(root, "built");
     mkdirSync(dir, { recursive: true });
-    for (const [name, body] of [["playground.html", "<!doctype html>page"], ["playground.js", "js"], ["lib.js", "lib"], ["markdown.js", "md"], ["playground.css", "css"], ["preview.html", "<!doctype html>preview"], ["secret.txt", "no"]]) writeFileSync(path.join(dir, name), body);
+    for (const [name, body] of [["playground.html", "<!doctype html>page"], ["playground.js", "js"], ["lib.js", "lib"], ["markdown.js", "md"], ["history.js", "hist"], ["dom.js", "dom"], ["messages.js", "msg"], ["sidebar.js", "side"], ["composer.js", "comp"], ["playground.css", "css"], ["preview.html", "<!doctype html>preview"], ["secret.txt", "no"]]) writeFileSync(path.join(dir, name), body);
     const port = await listen(createServer((req, res) => { void servePlayground(req.method ?? "GET", new URL(req.url ?? "/", "http://x").pathname, res, dir).then((handled) => { if (!handled) { res.writeHead(418); res.end(); } }); }));
     const page = await get(port, "/playground");
     expect(page).toMatchObject({ status: 200, text: "<!doctype html>page" });
@@ -174,6 +231,7 @@ describe("serving the playground", () => {
     expect(page.headers["cache-control"]).toBe("no-store");
     expect(await get(port, "/playground/playground.js")).toMatchObject({ status: 200, text: "js" });
     expect(await get(port, "/playground/markdown.js")).toMatchObject({ status: 200, text: "md" });
+    expect(await get(port, "/playground/history.js")).toMatchObject({ status: 200, text: "hist" });
     expect((await get(port, "/playground/markdown.js")).headers["content-type"]).toBe("text/javascript; charset=utf-8");
     expect((await get(port, "/playground/playground.css")).headers["content-type"]).toBe("text/css; charset=utf-8");
     const preview = await get(port, "/playground/preview");

@@ -153,3 +153,61 @@ export function validateImageForm(fields: ImageFormFields): string | undefined {
   if (fields.files > 10) return "At most 10 reference images.";
   return undefined;
 }
+
+/** Enter sends; Shift+Enter is a newline; Ctrl/Cmd+Enter also sends; Alt+Enter and IME composition never send. */
+export function sendKey(e: { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey: boolean; isComposing: boolean }): boolean {
+  return e.key === "Enter" && !e.isComposing && !e.shiftKey && !e.altKey;
+}
+
+export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+
+/** The `content` of a user message: the plain text, or text plus one `image_url` part per attached data URL. */
+export function userContent(text: string, images: readonly string[]): string | ContentPart[] {
+  if (!images.length) return text;
+  return [{ type: "text", text }, ...images.map((url): ContentPart => ({ type: "image_url", image_url: { url } }))];
+}
+
+/** A deep copy where every string starting with "data:" becomes "data:…(N KB)". */
+export function elideDataUrls(value: unknown): unknown {
+  if (typeof value === "string") return value.startsWith("data:") ? `data:…(${Math.max(1, Math.ceil(value.length / 1024))} KB)` : value;
+  if (Array.isArray(value)) return value.map(elideDataUrls);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, elideDataUrls(entry)]));
+  return value;
+}
+
+/** Case-insensitive substring match on the model id; groups left empty are dropped. */
+export function filterModelGroups(groups: readonly ModelGroup[], query: string): ModelGroup[] {
+  const needle = query.trim().toLowerCase();
+  return groups
+    .map((group) => ({ provider: group.provider, models: group.models.filter((id) => id.toLowerCase().includes(needle)) }))
+    .filter((group) => group.models.length > 0);
+}
+
+export interface UiPrefs { sidebarOpen: boolean; sidebarWidth: number; previewWidth: number; stream: boolean; image: { negative: string; size: string; width: string; height: string; steps: string; seed: string; guidance: string } }
+
+export function clamp(value: number, min: number, max: number): number { return Math.min(max, Math.max(min, value)); }
+
+/** The saved page preferences with defaults for anything missing or of the wrong type; widths are clamped (sidebar 200..420, preview >= 0; 0 = 45 % at first open). */
+export function parseUiPrefs(raw: string | null): UiPrefs {
+  let data: Record<string, unknown> = {};
+  try { const parsed: unknown = raw ? JSON.parse(raw) : undefined; if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) data = parsed as Record<string, unknown>; } catch { /* junk: defaults */ }
+  const img = data.image && typeof data.image === "object" && !Array.isArray(data.image) ? data.image as Record<string, unknown> : {};
+  const text = (value: unknown, fallback: string) => (typeof value === "string" ? value : fallback);
+  const num = (value: unknown, fallback: number) => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
+  return {
+    sidebarOpen: typeof data.sidebarOpen === "boolean" ? data.sidebarOpen : true,
+    sidebarWidth: clamp(num(data.sidebarWidth, 264), 200, 420),
+    previewWidth: Math.max(0, num(data.previewWidth, 0)),
+    stream: typeof data.stream === "boolean" ? data.stream : true,
+    image: { negative: text(img.negative, ""), size: text(img.size, "1024x1024"), width: text(img.width, ""), height: text(img.height, ""), steps: text(img.steps, ""), seed: text(img.seed, ""), guidance: text(img.guidance, "") },
+  };
+}
+
+/** The proportional timing strip: `wait` (up to the first token, minus the thinking time), `think` and `write` (the rest), fractions that sum to 1. Without data it is all `write`. */
+export function timingSegments(meta: { firstMs?: number; totalMs: number }, thoughtMs?: number): { wait: number; think: number; write: number } {
+  const total = meta.totalMs;
+  if (!(total > 0)) return { wait: 0, think: 0, write: 1 };
+  const think = clamp(thoughtMs ?? 0, 0, total);
+  const wait = clamp((meta.firstMs ?? 0) - think, 0, total - think);
+  return { wait: wait / total, think: think / total, write: (total - wait - think) / total };
+}
