@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 request: REQ-0005
 repos: [api-acp-proxy]
 branch: AAP-36_local-stream-thinking
