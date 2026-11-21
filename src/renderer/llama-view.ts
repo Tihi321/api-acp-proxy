@@ -82,6 +82,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   const sourceSelect = el<HTMLSelectElement>("llama-source");
   const versionSelect = el<HTMLSelectElement>("llama-version");
   const backendSelect = el<HTMLSelectElement>("llama-backend");
+  const archSelect = el<HTMLSelectElement>("llama-arch");
   const dirInput = el<HTMLInputElement>("llama-dir");
   const exeInput = el<HTMLInputElement>("llama-exe");
 
@@ -228,6 +229,9 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
 
   function updateModelButtons(): void {
     el<HTMLButtonElement>("llama-hf-download").disabled = modelBusy || chosenGroups().length === 0;
+    // Any model job (a listing download or a profile's "Download model files") shows its progress and Cancel here, with or without a listing.
+    el("llama-hf-actions").hidden = !listing && !modelBusy;
+    el("llama-hf-download").hidden = !listing;
     el("llama-hf-cancel").hidden = !modelBusy;
     el<HTMLButtonElement>("llama-hf-list").disabled = modelBusy;
     el("llama-hf-create").hidden = !downloaded || !downloaded.groups.some((group) => group.kind === "model");
@@ -235,7 +239,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   }
 
   function renderListing(): void {
-    el("llama-hf-wrap").hidden = !listing; el("llama-hf-actions").hidden = !listing;
+    el("llama-hf-wrap").hidden = !listing;
     const body = el("llama-hf-body");
     if (!listing) { body.replaceChildren(); return; }
     const info = listing;
@@ -514,6 +518,8 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   });
   versionSelect.addEventListener("change", () => { selectedTag = versionSelect.value; fillBackends(); });
   backendSelect.addEventListener("change", () => { binary = { ...binary, backend: backendSelect.value }; dirty(); updateBuildButtons(); });
+  // The version and backend lists only offer assets of this architecture (assetsFor).
+  archSelect.addEventListener("change", () => { binary = { ...binary, arch: archSelect.value === "arm64" ? "arm64" : "x64" }; dirty(); fillVersions(); });
   dirInput.addEventListener("input", dirty);
   exeInput.addEventListener("input", () => { binary = { ...binary, customBuild: undefined }; dirty(); renderInstalled(); });
   el("llama-dir-browse").onclick = async () => { const result = await api.pickDirectory("Folder for the llama.cpp builds", dirInput.value || undefined); if (result.path) { dirInput.value = result.path; dirty(); } };
@@ -568,6 +574,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       el<HTMLInputElement>("llama-switch-wait").value = String(Math.round(settings.switchWaitMs / 60000));
       modeInput(binary.mode).checked = true;
       sourceSelect.value = binary.source;
+      archSelect.value = binary.arch;
       dirInput.value = binary.dir;
       exeInput.value = binary.customPath ?? "";
       backendSelect.replaceChildren(new Option(binary.backend, binary.backend)); backendSelect.value = binary.backend;
@@ -589,6 +596,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
         dir,
         source: sourceSelect.value as LlamaSourceView,
         backend: backendSelect.value || binary.backend,
+        arch: archSelect.value === "arm64" ? "arm64" : "x64",
       };
       if (customPath) out.customPath = customPath; else { delete out.customPath; delete out.customBuild; }
       const wait = Number(el<HTMLInputElement>("llama-switch-wait").value);

@@ -78,6 +78,7 @@ export function checkBuild(profile: LlamaProfile, binary: { source: LlamaSource 
   const unknown = (): BuildCheck => ({ ok: "unknown", message: `The llama-server build is unknown; ${profile.label} may need a newer build.` });
   if (requires.minBuild !== undefined) {
     if (binary.build === undefined) return unknown();
+    if (binary.source === "custom") return { ok: false, code: "llama_build_too_old", message: `${profile.label} needs a newer build: your llama-server.exe is b${binary.build}; b${requires.minBuild} or newer is needed, or the Unsloth build.` };
     return { ok: false, code: "llama_build_too_old", message: `${profile.label} needs a newer build: b${requires.minBuild} or newer from ggml-org, or the Unsloth build (installed: ${binary.source} b${binary.build}).` };
   }
   // Sources only: an own exe may be any fork, so it only warns.

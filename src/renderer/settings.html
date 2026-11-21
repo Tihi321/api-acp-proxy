@@ -509,6 +509,7 @@
                 <label class="field"><span>Source</span><select id="llama-source"><option value="ggml-org">ggml-org (official)</option><option value="unsloth">Unsloth (fork)</option></select></label>
                 <label class="field"><span>Version</span><select id="llama-version"></select></label>
                 <label class="field"><span>Backend</span><select id="llama-backend"></select><small>ROCm: Strix Halo (gfx1151) is supported. Choose Vulkan if ROCm fails to load.</small></label>
+                <label class="field"><span>Architecture</span><select id="llama-arch"><option value="x64">x64</option><option value="arm64">arm64</option></select><small>arm64 only for Windows on Arm; few backends have it.</small></label>
                 <label class="field"><span>Binaries folder</span><div class="row"><input id="llama-dir" type="text" autocomplete="off" spellcheck="false"><button type="button" class="small" id="llama-dir-browse">Browse…</button></div></label>
               </div>
               <div class="row install-row">
