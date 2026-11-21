@@ -18,6 +18,8 @@ export interface LlamaViewDeps {
 export interface LlamaViewCollected {
   binary: LlamaBinarySettingsView;
   profiles: LlamaProfileView[];
+  /** The model file of the embedding server (the other embedding fields are plain inputs read by settings.ts). */
+  embeddingModelFile: string;
   switchWaitMs?: number;
   errors: Array<{ path: string; message: string }>;
 }
@@ -28,6 +30,8 @@ export interface LlamaViewHandle {
   load(settings: LlamaProviderSettingsView): void;
   collect(): LlamaViewCollected;
   setLauncher(server: LocalServerStatusView): void;
+  /** The state of the embedding server (`embed`). */
+  setEmbedLauncher(server: LocalServerStatusView): void;
 }
 
 const SPEC_TYPES = ["none", "draft-simple", "draft-eagle3", "draft-mtp", "draft-dflash", "draft-dspark", "draft-dflash2",
@@ -66,6 +70,9 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   let profiles: LlamaProfileView[] = [];
   let status: LlamaStatusView | undefined;
   let launcher: LocalServerStatusView | undefined;
+  let embedLauncher: LocalServerStatusView | undefined;
+  /** The embedding model file being edited (picked like a profile's file). */
+  let embedDraft: Pick<LlamaProfileView, FileField> = { modelFile: "" };
   let releases: LlamaReleaseView[] | undefined;
   let releasesSource: LlamaSourceView | undefined;
   let releasesLoading = false;
@@ -438,7 +445,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   const CUSTOM = "\u0000custom";
 
   /** A file field as a select (scanned files, "(none)", "Custom path…") with a text input and Browse…; rebuilt in place by the scan. */
-  function filePicker(profile: LlamaProfileView, key: FileField, labelText: string, onPicked: (key: FileField, value: string, had: boolean) => void): HTMLElement {
+  function filePicker(profile: Pick<LlamaProfileView, FileField>, key: FileField, labelText: string, onPicked: (key: FileField, value: string, had: boolean) => void): HTMLElement {
     const select = make("select");
     const custom = make("input"); custom.type = "text"; custom.autocomplete = "off"; custom.spellcheck = false;
     custom.placeholder = "Path relative to the models folder, or absolute";
@@ -600,8 +607,41 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     return [row];
   }
 
+  // ---- Embeddings card ---------------------------------------------------------------------------------------------------
+
+  /** The model file picker of the Embeddings card; mounted again whenever the pickers are rebuilt. */
+  function mountEmbedPicker(): void {
+    el("llama-embed-file").replaceChildren(filePicker(embedDraft, "modelFile", "Model file (nomic-embed-text-v1.5 GGUF)", () => undefined));
+  }
+
+  function updateEmbedCard(): void {
+    const server = embedLauncher;
+    const running = server !== undefined && (server.state === "starting" || server.state === "ready");
+    deps.setBadge(el("llama-embed-badge"), server?.state ?? "stopped");
+    el<HTMLButtonElement>("llama-embed-start").disabled = running || embedStarting;
+    el<HTMLButtonElement>("llama-embed-stop").disabled = !running;
+    showError(el("llama-embed-error"), server?.state === "error" ? server.error : undefined);
+    const info = server ? [server.pid !== undefined ? `pid ${server.pid}` : "", server.port !== undefined ? `port ${server.port}` : ""].filter(Boolean).join(" · ") : "";
+    el("llama-embed-info").textContent = server?.commandLine ? `${info ? `${info} · ` : ""}${server.commandLine}` : info;
+    const missing = status?.embedding.missingFiles ?? [];
+    showError(el("llama-embed-warn"), missing.length ? `Missing: ${missing.join(", ")}` : undefined);
+  }
+
+  let embedStarting = false;
+  async function startEmbed(): Promise<void> {
+    flash(el("llama-profiles-msg"), "");
+    if (deps.isDirty() && !await deps.save()) return;
+    embedStarting = true; updateEmbedCard();
+    try {
+      const result = await api.startLocalServer("embed");
+      if (!result.ok) showError(el("llama-embed-error"), result.message);
+    } catch (error) { showError(el("llama-embed-error"), errorText(error)); }
+    finally { embedStarting = false; updateEmbedCard(); }
+  }
+
   function renderProfiles(): void {
     pickerRebuilds.length = 0;
+    mountEmbedPicker();
     el("llama-profiles").replaceChildren(...(profiles.length ? profiles.map(profileCard) : [make("p", "note", "No profiles. Add one or restore the presets.")]));
     renderScanTable();
     updateProfileButtons();
@@ -658,7 +698,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       status = await api.llamaStatus();
       if (!ownBinary) binaryBusy = status.jobs.binary;
       if (!ownModel) modelBusy = status.jobs.model;
-      updateBuildButtons(); updateModelButtons(); renderInstalled(); updateProfileButtons();
+      updateBuildButtons(); updateModelButtons(); renderInstalled(); updateProfileButtons(); updateEmbedCard();
     } catch { /* status is informational; the page works without it */ }
   }
 
@@ -699,6 +739,9 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   el("llama-hf-cancel").onclick = () => void api.cancelLlamaDownload("model");
   el("llama-scan").onclick = () => void rescan();
   el("llama-switch-wait").addEventListener("input", dirty);
+  el("llama-embed-start").onclick = () => void startEmbed();
+  el("llama-embed-stop").onclick = () => void api.stopLocalServer("embed");
+  for (const id of ["providers.llama.embedding.enabled", "providers.llama.embedding.port", "providers.llama.embedding.ctxSize"]) el(id).addEventListener(id.endsWith("enabled") ? "change" : "input", dirty);
   el("llama-add-profile").onclick = () => {
     const taken = new Set(profiles.flatMap((profile) => [profile.id, profile.model]));
     let n = profiles.length + 1;
@@ -728,6 +771,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       binary = { ...settings.binary };
       savedModelsDir = settings.modelsDir;
       profiles = settings.profiles.map((profile) => ({ ...profile }));
+      embedDraft = { modelFile: settings.embedding.modelFile };
       el<HTMLInputElement>("llama-switch-wait").value = String(Math.round(settings.switchWaitMs / 60000));
       modeInput(binary.mode).checked = true;
       sourceSelect.value = binary.source;
@@ -764,6 +808,8 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       let switchWaitMs: number | undefined;
       if (waitText === "" || !Number.isFinite(wait) || wait <= 0) errors.push({ path: "providers.llama.switchWaitMs", message: "Enter the wait in minutes" });
       else switchWaitMs = Math.round(wait * 60000);
+      const embeddingModelFile = embedDraft.modelFile.trim();
+      if (!embeddingModelFile) errors.push({ path: "providers.llama.embedding.modelFile", message: "Required" });
       const cleaned = profiles.map((profile) => {
         const copy: LlamaProfileView = { ...profile, label: profile.label.trim(), id: profile.id.trim(), model: profile.model.trim(), modelFile: profile.modelFile.trim(), extraArgs: profile.extraArgs.trim() };
         for (const key of ["mmprojFile", "draftFile"] as const) {
@@ -772,11 +818,15 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
         }
         return copy;
       });
-      return { binary: out, profiles: cleaned, ...(switchWaitMs !== undefined ? { switchWaitMs } : {}), errors };
+      return { binary: out, profiles: cleaned, embeddingModelFile, ...(switchWaitMs !== undefined ? { switchWaitMs } : {}), errors };
     },
     setLauncher(server: LocalServerStatusView): void {
       launcher = server;
       updateProfileButtons();
+    },
+    setEmbedLauncher(server: LocalServerStatusView): void {
+      embedLauncher = server;
+      updateEmbedCard();
     },
   };
 }

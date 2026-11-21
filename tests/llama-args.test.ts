@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildLlamaArgs, checkBuild, checkLlamaFiles } from "../src/llama-args.js";
-import { LLAMA_PRESETS, type LlamaProfile } from "../src/settings.js";
+import { buildEmbeddingArgs, buildLlamaArgs, checkBuild, checkEmbeddingFiles, checkLlamaFiles } from "../src/llama-args.js";
+import { LLAMA_PRESETS, defaultSettings, type LlamaProfile } from "../src/settings.js";
 
 const [mini, dspark] = LLAMA_PRESETS as [LlamaProfile, LlamaProfile];
 
@@ -17,6 +17,11 @@ describe("llama args", () => {
     expect(plain).toContain("--mmproj");
     expect(plain).not.toContain("--spec-");
     expect(() => buildLlamaArgs({ ...mini, modelFile: "a%PATH%.gguf" }, dir)).toThrow("Unsupported character in modelFile");
+    const embedding = defaultSettings().providers.llama.embedding;
+    expect(buildEmbeddingArgs({ ...embedding, extraArgs: "--verbose" }, dir)).toBe(
+      `-m "${dir}\\nomic-ai\\nomic-embed-text-v1.5-GGUF\\nomic-embed-text-v1.5.Q4_K_M.gguf" --host 127.0.0.1 --port {port} --alias nomic-embed-text-v1.5 --embedding --pooling mean`
+      + " -c 8192 -b 2048 -ub 2048 -ngl all -np 4 --verbose");
+    expect(checkEmbeddingFiles(embedding, dir, () => false)).toHaveLength(1);
 
     const sharded = { ...mini, vision: false, modelFile: "m/x-00001-of-00003.gguf" };
     const present = (p: string) => !p.endsWith("x-00002-of-00003.gguf");

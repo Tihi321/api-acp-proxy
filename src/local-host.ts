@@ -1,4 +1,4 @@
-import { LOCAL_SERVER_IDS, LOCAL_SERVER_NAMES, type LocalServerManager, type LocalServerSpec } from "./local-servers.js";
+import { EXCLUSIVE_SERVER_IDS, LOCAL_SERVER_NAMES, type LocalServerManager, type LocalServerSpec } from "./local-servers.js";
 import { targetKey, type LocalModelHost, type LocalModelTarget } from "./local-models.js";
 import type { LocalServerId } from "./shared/ipc.js";
 
@@ -21,9 +21,10 @@ export function createLocalModelHost(manager: LocalServerManager, specs: LocalSp
   return {
     current: () => {
       const list = manager.list();
-      const active = LOCAL_SERVER_IDS.map((id) => list.find((entry) => entry.id === id)).find((entry) => entry && (entry.state === "starting" || entry.state === "ready"));
+      // The embedding server is not a coordinator target: it never counts as the active or failed server.
+      const active = EXCLUSIVE_SERVER_IDS.map((id) => list.find((entry) => entry.id === id)).find((entry) => entry && (entry.state === "starting" || entry.state === "ready"));
       if (active) return { key: targetKey(active.id, active.profile), state: active.state as "starting" | "ready" };
-      const failed = list.filter((entry) => entry.state === "error").sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0];
+      const failed = list.filter((entry) => entry.state === "error" && entry.id !== "embed").sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0];
       if (failed) return { key: targetKey(failed.id, failed.profile), state: "error", error: failed.error };
       return { state: "stopped" };
     },

@@ -172,6 +172,25 @@ const llamaInstallInfoSchema = z.object({
 });
 export type LlamaInstallInfo = z.infer<typeof llamaInstallInfoSchema>;
 
+/** The embedding server (nomic-embed-text-v1.5 by default): its own small llama-server beside the chat model, started on the first `POST /v1/embeddings`. */
+const llamaEmbeddingSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** 127.0.0.1:<port>; must differ from the Gufo, Strata and Llama.cpp ports. */
+  port: z.number().int().min(1).max(65535).default(8083),
+  /** The id exposed as `llama/<model>` and passed as `--alias`. */
+  model: z.string().min(1).default("nomic-embed-text-v1.5"),
+  /** Relative to `modelsDir` or absolute. */
+  modelFile: z.string().min(1).default("nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"),
+  /** Context per request in tokens; the server gets `-c` = ctxSize x maxConcurrent (llama-server splits `-c` across the `-np` slots). */
+  ctxSize: positive(2048),
+  gpuLayers: layers.default("all"),
+  /** Requests that run at once (`-np`); more wait in a FIFO queue. */
+  maxConcurrent: positive(4),
+  /** Appended verbatim after the generated flags. */
+  extraArgs: z.string().default(""),
+}).default({});
+export type LlamaEmbedding = z.infer<typeof llamaEmbeddingSchema>;
+
 const llamaProviderSchema = z.preprocess((input) => {
   const raw = isPlain(input) ? input : {};
   return Array.isArray(raw.profiles) ? raw : { ...raw, profiles: cloneLlamaPresets() };
@@ -197,6 +216,7 @@ const llamaProviderSchema = z.preprocess((input) => {
     customBuild: z.number().int().optional(),
     installed: llamaInstallInfoSchema.optional(),
   }).default({}),
+  embedding: llamaEmbeddingSchema,
   profiles: z.array(llamaProfileSchema).default([]).superRefine((profiles, ctx) => {
     for (const key of ["id", "model"] as const) {
       const seen = new Set<string>();
@@ -312,6 +332,11 @@ export const settingsSchema = z.object({
   }).default({}),
   /** MCP servers a Responses request may name by `server_label` (JSON only, no settings-window editor). Headers and env are stored as written. */
   mcpServers: z.record(mcpLabel, mcpServerSchema).default({}),
+}).superRefine((settings, ctx) => {
+  const { gufo, strata, llama } = settings.providers;
+  const taken = new Map<number, string>([[gufo.port, "Gufo"], [strata.port, "Strata"], [llama.port, "Llama.cpp"]]);
+  const clash = llama.embedding.enabled ? taken.get(llama.embedding.port) : undefined;
+  if (clash) ctx.addIssue({ code: "custom", path: ["providers", "llama", "embedding", "port"], message: `The embedding port ${llama.embedding.port} is already the ${clash} port.` });
 });
 
 export type Settings = z.infer<typeof settingsSchema>;

@@ -3,8 +3,9 @@ import { ApiError, messageText, type Message } from "../api.js";
 import type { ProviderRegistration } from "../controller.js";
 import { STRATA_PROFILE_ID, targetKey, type LocalModelCoordinator } from "../local-models.js";
 import type { Logger } from "../logger.js";
-import { AcpUnavailableError, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type ImagePassthrough, type ModelInfo, type Provider, type ProviderState, type ProviderStatus } from "../provider.js";
-import type { GufoProfile, LlamaProfile } from "../settings.js";
+import { ConcurrencyLimiter, type LimiterStats } from "../limiter.js";
+import { AcpUnavailableError, type EmbeddingResult, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type ImagePassthrough, type ModelInfo, type Provider, type ProviderState, type ProviderStatus } from "../provider.js";
+import type { GufoProfile, LlamaEmbedding, LlamaProfile } from "../settings.js";
 import type { LocalServerId } from "../shared/ipc.js";
 
 export interface LocalOpenAiOptions {
@@ -20,7 +21,17 @@ export interface LocalOpenAiOptions {
   coordinator?: LocalModelCoordinator;
   /** Coordinator profile every request of this provider holds a lease on (Strata: `strata`); Gufo derives it from the model's profile. */
   leaseProfile?: string;
+  /** Llama.cpp: the embedding model (`providers.llama.embedding`); listed as `<id>/<model>` with kind `embedding` and served by `embed` when `enabled`. */
+  embedding?: EmbeddingSettings;
+  /** Llama.cpp in the desktop app: starts the embedding server when it is not running and resolves when it answers. Without it requests go straight to the embedding port (headless: start the server yourself). */
+  embedHost?: EmbedHost;
 }
+
+/** What the provider needs of `providers.llama.embedding`. */
+type EmbeddingSettings = Pick<LlamaEmbedding, "enabled" | "model" | "port" | "maxConcurrent">;
+export interface EmbedHost { ensureRunning(signal: AbortSignal): Promise<void> }
+
+const EMBED_NOT_RUNNING = "Embeddings are not running - start them from the app";
 
 /** What the provider needs of a Gufo or Llama.cpp profile. */
 interface ProfileEntry { id: string; model: string; label: string; kind: "llm" | "image"; vision: boolean; requestTimeoutMs?: number }
@@ -64,6 +75,9 @@ export class LocalOpenAiProvider implements Provider {
   private models: ModelInfo[] = [];
   private readonly listeners = new Set<(status: ProviderStatus) => void>();
   private readonly inflight = new Set<AbortController>();
+  private embedding?: EmbeddingSettings;
+  private embedLimiter?: ConcurrencyLimiter;
+  private readonly embedHost?: EmbedHost;
 
   constructor(options: LocalOpenAiOptions) {
     this.id = options.id; this.displayName = options.displayName; this.ownedBy = options.id;
@@ -71,19 +85,40 @@ export class LocalOpenAiProvider implements Provider {
     this.fetchImpl = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.coordinator = options.coordinator;
     this.leaseProfile = options.leaseProfile;
+    this.embedHost = options.embedHost;
+    if (options.embedding) this.setEmbedding(options.embedding);
     if (options.profiles) this.setProfiles(options.profiles);
   }
 
   private setProfiles(profiles: GufoProfile[] | LlamaProfile[]): void {
     this.profiles = (profiles as Array<GufoProfile | LlamaProfile>).map(toEntry);
-    this.staticModels = this.profiles.map((profile) => ({ id: profile.model, name: profile.label, kind: profile.kind, vision: profile.kind === "llm" && profile.vision }));
-    this.models = this.staticModels;
+    this.rebuildModels();
   }
 
-  /** A saved profile change (e.g. model files and vision after a download) takes effect without a restart; a provider without profiles (Strata) keeps its upstream list. */
+  /** The listed models: the profiles, then the embedding model while it is enabled. */
+  private rebuildModels(): void {
+    if (!this.profiles) return;
+    const listed: ModelInfo[] = this.profiles.map((profile) => ({ id: profile.model, name: profile.label, kind: profile.kind, vision: profile.kind === "llm" && profile.vision }));
+    if (this.embedding?.enabled) listed.push({ id: this.embedding.model, name: `${this.embedding.model} (embeddings)`, kind: "embedding", vision: false });
+    this.staticModels = listed;
+    this.models = listed;
+  }
+
+  private setEmbedding(settings: EmbeddingSettings): void {
+    const { enabled, model, port, maxConcurrent } = settings;
+    if (this.embedLimiter?.stats().limit !== maxConcurrent) this.embedLimiter = new ConcurrencyLimiter({ limit: maxConcurrent });
+    this.embedding = { enabled, model, port, maxConcurrent };
+  }
+
+  private isEmbeddingModel(model: string): boolean { return this.embedding?.enabled === true && this.embedding.model === model; }
+
+  /** A saved profile or embedding change (e.g. model files and vision after a download) takes effect without a restart; a provider without profiles (Strata) keeps its upstream list. */
   updateSettings(providerSettings: Record<string, unknown>): void {
-    if (!this.profiles || !Array.isArray(providerSettings.profiles)) return;
-    this.setProfiles(providerSettings.profiles as GufoProfile[] | LlamaProfile[]);
+    if (!this.profiles) return;
+    const embedding = providerSettings.embedding as Partial<EmbeddingSettings> | undefined;
+    if (this.embedding && embedding && typeof embedding.model === "string" && typeof embedding.port === "number" && typeof embedding.maxConcurrent === "number") this.setEmbedding({ enabled: embedding.enabled === true, model: embedding.model, port: embedding.port, maxConcurrent: embedding.maxConcurrent });
+    if (Array.isArray(providerSettings.profiles)) this.setProfiles(providerSettings.profiles as GufoProfile[] | LlamaProfile[]);
+    else this.rebuildModels();
   }
 
   private profileOf(model: string): ProfileEntry | undefined { return this.profiles?.find((profile) => profile.model === model); }
@@ -92,6 +127,13 @@ export class LocalOpenAiProvider implements Provider {
 
   supportsImageGeneration(model: string): boolean { return this.profileOf(model)?.kind === "image"; }
 
+  supportsEmbeddings(model: string): boolean { return this.isEmbeddingModel(model); }
+
+  extraQueueStats(): Record<string, LimiterStats> {
+    if (!this.embedLimiter || !this.embedding?.enabled) return {};
+    return { [`${this.id}-embed`]: this.embedLimiter.stats() };
+  }
+
   requestTimeoutMs(model: string): number | undefined {
     const profile = this.profileOf(model);
     return profile?.requestTimeoutMs ?? (profile?.kind === "image" ? DEFAULT_IMAGE_TIMEOUT_MS : undefined);
@@ -99,6 +141,7 @@ export class LocalOpenAiProvider implements Provider {
 
   /** Checks the request against the model's profile, then waits for the coordinator to make that profile ready. All 400s come before any switch is started. */
   async prepareModel(model: string, messages: Message[] | undefined, signal: AbortSignal): Promise<{ release(): void } | undefined> {
+    if (this.isEmbeddingModel(model)) throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' is an embedding model; it ${messages ? "does not answer chat requests" : "does not generate images"}. Use POST /v1/embeddings.`, "model");
     const profile = this.profileOf(model);
     if (messages) {
       if (profile?.kind === "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' generates images; it does not answer chat requests.`, "model");
@@ -257,16 +300,7 @@ export class LocalOpenAiProvider implements Provider {
       const raw = await response.text();
       let parsed: unknown;
       try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
-      if (!response.ok) {
-        const error = (parsed as { error?: { message?: unknown } | string } | undefined)?.error;
-        const detail = typeof error === "string" ? error : typeof error?.message === "string" ? error.message : raw.slice(0, 300);
-        const status = response.status;
-        if (status === 401 || status === 403) throw new ApiError(502, "local_upstream_auth", `${this.displayName} rejected the request (HTTP ${status}); check the ${this.displayName} API key in Settings.${detail ? ` ${detail}` : ""}`);
-        if (status === 404) throw new ApiError(502, "upstream_error", `${this.displayName} answered HTTP 404: endpoint or model not found${detail ? ` (${detail})` : ""}.`);
-        if (status === 413) throw new ApiError(413, "invalid_request", detail || `${this.displayName} answered HTTP 413: the request is too large.`);
-        if (status >= 400 && status < 500) throw new ApiError(400, "invalid_request", detail || `${this.displayName} answered HTTP ${status}`);
-        throw new ApiError(502, "upstream_error", `${this.displayName} answered HTTP ${response.status}: ${detail}`);
-      }
+      if (!response.ok) throw this.upstreamFailure(response.status, raw, parsed, this.displayName);
       this.setState("ready");
       const data = (parsed as { data?: unknown } | undefined)?.data;
       if (!Array.isArray(data) || !data.length || !data.every((entry) => typeof (entry as { b64_json?: unknown } | undefined)?.b64_json === "string")) throw new ApiError(502, "upstream_error", `${this.displayName} answered without image data.`);
@@ -278,6 +312,57 @@ export class LocalOpenAiProvider implements Provider {
     }
   }
 
+  /** The proxy error for a non-2xx answer of an upstream: 401/403 -> 502 `local_upstream_auth`, 404 -> 502, 413 -> 413, other 4xx -> 400 `invalid_request`, 5xx -> 502 `upstream_error`. */
+  private upstreamFailure(status: number, raw: string, parsed: unknown, name: string): ApiError {
+    const error = (parsed as { error?: { message?: unknown } | string } | undefined)?.error;
+    const detail = typeof error === "string" ? error : typeof error?.message === "string" ? error.message : raw.slice(0, 300);
+    if (status === 401 || status === 403) return new ApiError(502, "local_upstream_auth", `${name} rejected the request (HTTP ${status}); check the ${name} API key in Settings.${detail ? ` ${detail}` : ""}`);
+    if (status === 404) return new ApiError(502, "upstream_error", `${name} answered HTTP 404: endpoint or model not found${detail ? ` (${detail})` : ""}.`);
+    if (status === 413) return new ApiError(413, "invalid_request", detail || `${name} answered HTTP 413: the request is too large.`);
+    if (status >= 400 && status < 500) return new ApiError(400, "invalid_request", detail || `${name} answered HTTP ${status}`);
+    return new ApiError(502, "upstream_error", `${name} answered HTTP ${status}: ${detail}`);
+  }
+
+  /**
+   * Embeds `input` on the embedding server (AAP-43), which runs beside the chat model: no coordinator lease, never a switch. Its own FIFO limit is
+   * `embedding.maxConcurrent`. In the desktop app the server is started on the first request (`embedHost`); headless, a closed port is 503
+   * `local_server_not_running`. Upstream failures map as in `generateImage`.
+   */
+  async embed(model: string, input: string[], signal: AbortSignal): Promise<EmbeddingResult> {
+    const embedding = this.embedding;
+    if (!embedding || !this.isEmbeddingModel(model) || !this.embedLimiter) throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' is not an embedding model.`, "model");
+    const release = await this.embedLimiter.acquire(signal);
+    const controller = new AbortController(); this.inflight.add(controller);
+    const forward = (): void => controller.abort();
+    if (signal.aborted) controller.abort(); else signal.addEventListener("abort", forward, { once: true });
+    try {
+      if (this.embedHost) {
+        try { await this.embedHost.ensureRunning(controller.signal); }
+        catch (error) {
+          if (controller.signal.aborted || error instanceof ApiError || error instanceof AcpUnavailableError) throw error;
+          throw new ApiError(503, "local_model_start_failed", `Could not start the embedding server: ${error instanceof Error ? error.message : String(error)}`, undefined, { retryAfterSeconds: 30 });
+        }
+      }
+      let response: Response;
+      try { response = await this.fetchImpl(`http://127.0.0.1:${embedding.port}/v1/embeddings`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ model: embedding.model, input }), signal: controller.signal }); }
+      catch (error) { if (controller.signal.aborted) throw error; throw new AcpUnavailableError(`${EMBED_NOT_RUNNING}.`, error, NOT_RUNNING); }
+      const raw = await response.text();
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+      if (!response.ok) throw this.upstreamFailure(response.status, raw, parsed, "The embedding server");
+      const body = parsed as { data?: Array<{ index?: unknown; embedding?: unknown }>; usage?: { prompt_tokens?: unknown; total_tokens?: unknown } } | undefined;
+      const items = Array.isArray(body?.data) ? [...body.data].sort((a, b) => (typeof a.index === "number" ? a.index : 0) - (typeof b.index === "number" ? b.index : 0)) : [];
+      const vectors = items.map((item) => item.embedding);
+      if (vectors.length !== input.length || !vectors.every((vector): vector is number[] => Array.isArray(vector) && vector.length > 0 && vector.every((value) => typeof value === "number"))) throw new ApiError(502, "upstream_error", "The embedding server answered without one vector per input.");
+      const tokens = body?.usage?.prompt_tokens ?? body?.usage?.total_tokens;
+      return { embeddings: vectors, promptTokens: typeof tokens === "number" ? tokens : 0 };
+    } finally {
+      signal.removeEventListener("abort", forward);
+      this.inflight.delete(controller);
+      release();
+    }
+  }
+
   async login(): Promise<void> { /* a local server has no login */ }
 
   async close(): Promise<void> {
@@ -286,13 +371,14 @@ export class LocalOpenAiProvider implements Provider {
   }
 }
 
-export interface GufoHost { coordinator?: LocalModelCoordinator }
+/** `embed` (Llama.cpp only, the desktop app): starts the embedding server on demand. */
+export interface GufoHost { coordinator?: LocalModelCoordinator; embed?: EmbedHost }
 
 function registration(id: LocalServerId, displayName: string, host: GufoHost = {}): ProviderRegistration {
   return {
     id, displayName,
     // Node's global fetch on purpose, not ctx.fetch (Electron net.fetch): Strata refuses a POST that carries a browser Origin header.
-    create: ({ providerSettings, ctx }) => new LocalOpenAiProvider({ id, displayName, baseUrl: `http://127.0.0.1:${providerSettings.port as number}/v1`, ...(typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? { apiKey: providerSettings.apiKey } : {}), logger: ctx.logger.child(id), ...(Array.isArray(providerSettings.profiles) ? { profiles: providerSettings.profiles as GufoProfile[] | LlamaProfile[] } : {}), ...(host.coordinator ? { coordinator: host.coordinator, ...(id === "strata" ? { leaseProfile: STRATA_PROFILE_ID } : {}) } : {}) }),
+    create: ({ providerSettings, ctx }) => new LocalOpenAiProvider({ id, displayName, baseUrl: `http://127.0.0.1:${providerSettings.port as number}/v1`, ...(typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? { apiKey: providerSettings.apiKey } : {}), logger: ctx.logger.child(id), ...(Array.isArray(providerSettings.profiles) ? { profiles: providerSettings.profiles as GufoProfile[] | LlamaProfile[] } : {}), ...(host.coordinator ? { coordinator: host.coordinator, ...(id === "strata" ? { leaseProfile: STRATA_PROFILE_ID } : {}) } : {}), ...(id === "llama" && typeof providerSettings.embedding === "object" && providerSettings.embedding !== null ? { embedding: providerSettings.embedding as EmbeddingSettings, ...(host.embed ? { embedHost: host.embed } : {}) } : {}) }),
   };
 }
 

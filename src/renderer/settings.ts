@@ -84,6 +84,9 @@ const fields: FieldSpec[] = [
   { path: "providers.llama.maxConcurrent", kind: "number", scope: "llama", optional: true },
   { path: "providers.llama.modelsDir", kind: "text", scope: "llama" },
   { path: "providers.llama.hfToken", kind: "text", scope: "llama", optional: true },
+  { path: "providers.llama.embedding.enabled", kind: "bool", scope: "llama" },
+  { path: "providers.llama.embedding.port", kind: "number", scope: "llama" },
+  { path: "providers.llama.embedding.ctxSize", kind: "number", scope: "llama" },
 ];
 
 /** Shown before the provider has reported its methods (it is not running yet). */
@@ -103,7 +106,9 @@ const badgeText: Record<string, string> = { needs_login: "needs login", not_inst
 /** The tool a provider's shared login folder belongs to (named in the log-out confirmation). */
 const toolName: Record<string, string> = { codex: "Codex (the Codex app and CLI)", antigravity: "Google Antigravity and the Gemini tools", claude: "Claude Code" };
 const providerOrder = ["codex", "claude", "antigravity"] as const;
-const localOrder: readonly LocalServerId[] = ["gufo", "strata", "llama"];
+/** The local servers that have a page; `embed` (the embedding server) is a card of the Llama.cpp page. */
+type PageServerId = Exclude<LocalServerId, "embed">;
+const localOrder: readonly PageServerId[] = ["gufo", "strata", "llama"];
 const views = ["overview", "usage", "requests", "server", "codex", "claude", "antigravity", "gufo", "strata", "llama"] as const;
 type ViewName = (typeof views)[number];
 const VIEW_KEY = "acp-proxy.view";
@@ -256,7 +261,7 @@ function renderProvider(provider: string, current: StateView): void {
 }
 
 /** Fields, provider badge and models of a local model server page (no login or terms parts). */
-function renderLocal(id: LocalServerId, current: StateView): void {
+function renderLocal(id: PageServerId, current: StateView): void {
   const root = card(id);
   if (id === "gufo" && !dirty.gufo) {
     const gufo = current.settings.providers.gufo;
@@ -282,6 +287,7 @@ const timeOfDay = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: 
 function renderLocalServers(list: LocalServerStatusView[]): void {
   localServers = list;
   for (const server of list) {
+    if (server.id === "embed") { llama.setEmbedLauncher(server); continue; }
     const root = card(server.id);
     setBadge(role(root, "server-badge"), server.state);
     const startButton = root.querySelector<HTMLButtonElement>('[data-role="start"]');
@@ -417,14 +423,14 @@ async function startGufoProfile(profileId: string): Promise<void> {
 }
 
 /** The provider state of a local server, overridden by the launcher while it starts or failed. */
-function localDotState(id: LocalServerId): string {
+function localDotState(id: PageServerId): string {
   const launcher = localServers.find((entry) => entry.id === id)?.state;
   if (launcher === "starting" || launcher === "error") return launcher;
   return state?.status.providers.find((entry) => entry.id === id)?.state ?? "disabled";
 }
 
 /** Starts a local server; unsaved edits of its page are saved first so the launcher reads them. */
-async function startLocal(id: LocalServerId): Promise<void> {
+async function startLocal(id: PageServerId): Promise<void> {
   const msg = role<HTMLElement>(card(id), "msg");
   flash(msg, "");
   if (dirty[id]) {
@@ -435,7 +441,7 @@ async function startLocal(id: LocalServerId): Promise<void> {
   if (!result.ok) flash(msg, result.message, true);
 }
 
-async function stopLocal(id: LocalServerId): Promise<void> {
+async function stopLocal(id: PageServerId): Promise<void> {
   const result = await api.stopLocalServer(id);
   if (!result.ok) flash(role<HTMLElement>(card(id), "msg"), result.message, true);
 }
@@ -688,6 +694,7 @@ function collectPatch(scope: Scope): { patch?: SettingsPatchView; errors: Array<
     // `binary` and `profiles` are replaced as whole values.
     setPath(patch, "providers.llama.binary", collected.binary);
     setPath(patch, "providers.llama.profiles", collected.profiles);
+    setPath(patch, "providers.llama.embedding.modelFile", collected.embeddingModelFile);
   }
   return { patch: patch as SettingsPatchView, errors };
 }

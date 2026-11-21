@@ -5,8 +5,10 @@ import type { Logger } from "./logger.js";
 import { killProcessTree } from "./process-tree.js";
 import type { LocalServerId, LocalServerStatusView } from "./shared/ipc.js";
 
-export const LOCAL_SERVER_IDS: readonly LocalServerId[] = ["gufo", "strata", "llama"];
-export const LOCAL_SERVER_NAMES: Record<LocalServerId, string> = { gufo: "Gufo", strata: "Strata", llama: "Llama.cpp" };
+export const LOCAL_SERVER_IDS: readonly LocalServerId[] = ["gufo", "strata", "llama", "embed"];
+export const LOCAL_SERVER_NAMES: Record<LocalServerId, string> = { gufo: "Gufo", strata: "Strata", llama: "Llama.cpp", embed: "Embeddings (llama.cpp)" };
+/** The servers that take turns (one at a time). `embed` is not one of them: it runs beside whichever of these is up, starts and stops on its own. */
+export const EXCLUSIVE_SERVER_IDS: readonly LocalServerId[] = LOCAL_SERVER_IDS.filter((id) => id !== "embed");
 
 export interface LocalServerSpec { id: LocalServerId; command: string; args: string; cwd: string; port: number; profile?: string; startTimeoutMs?: number }
 
@@ -135,7 +137,9 @@ export class LocalServerManager extends EventEmitter {
     entry.view = { ...entry.view, state: "starting", port: spec.port, profile: spec.profile, error: undefined, pid: undefined, readyAt: undefined, startedAt: undefined, commandLine: commandLine(spec), log: [] };
     this.emitChange();
     try {
-      await Promise.all(LOCAL_SERVER_IDS.filter((id) => { const other = this.entries.get(id)!; return id !== spec.id && (other.run || other.view.state === "starting"); }).map((id) => {
+      // `embed` neither stops the others nor is stopped by them.
+      const others = spec.id === "embed" ? [] : EXCLUSIVE_SERVER_IDS;
+      await Promise.all(others.filter((id) => { const other = this.entries.get(id)!; return id !== spec.id && (other.run || other.view.state === "starting"); }).map((id) => {
         stoppedAny = true;
         return this.stop(id);
       }));
@@ -171,6 +175,25 @@ export class LocalServerManager extends EventEmitter {
     const entry = this.entries.get(id);
     if (!entry || entry.run || entry.view.state === "starting" || entry.view.state === "ready") return false;
     return this.probeOnce(port);
+  }
+
+  /** Resolves when the server is ready; rejects when it errors or stops first, or when `signal` aborts. The start timeout of the spec ends a start that never answers. */
+  waitReady(id: LocalServerId, signal: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const check = (): boolean => {
+        const view = this.entries.get(id)?.view;
+        if (!view) { reject(new Error(`Unknown local server "${String(id)}".`)); return true; }
+        if (view.state === "ready") { resolve(); return true; }
+        if (view.state === "error" || view.state === "stopped") { reject(new Error(view.error ?? view.log[view.log.length - 1] ?? `${LOCAL_SERVER_NAMES[id]} stopped before it was ready.`)); return true; }
+        return false;
+      };
+      if (check()) return;
+      const cleanup = (): void => { this.off("change", onChange); signal.removeEventListener("abort", onAbort); };
+      const onChange = (): void => { if (check()) cleanup(); };
+      const onAbort = (): void => { cleanup(); reject(new Error("Aborted")); };
+      this.on("change", onChange);
+      if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   async stop(id: LocalServerId): Promise<void> {

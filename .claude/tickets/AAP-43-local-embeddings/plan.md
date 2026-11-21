@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 request: creative-hub/REQ-0030
 repos: [api-acp-proxy]
 branch: AAP-43_local-embeddings
@@ -57,3 +57,21 @@ creative-hub C6: `POST /v1/embeddings` with `model: "llama/nomic-embed-text-v1.5
 ## ROADMAP row
 
 `- [x] Embeddings (AAP-43; live check UNTESTED): POST /v1/embeddings with llama/nomic-embed-text-v1.5 on its own llama-server (port 8083) beside the loaded chat model, never evicting it; for Scriptorium's RAG without LM Studio (creative-hub HUB-38).`
+
+## Implementation notes (2026-11-21)
+
+Scope 1-8 implemented on branch `AAP-43_local-embeddings` (nothing committed). Verification: `npm test` 43 files passed, 1 skipped; 513 tests passed, 1 skipped. `npm run typecheck` (tsc --noEmit, core and renderer) clean. `npm run build`, the desktop page, a real llama-server and the live check C9 are UNTESTED (dist/ is in use; llama-server and the nomic GGUF are not installed).
+
+- A1: `tests/embeddings.test.ts` (new, the one file) drives the HTTP server with a fake `fetch` upstream: string and two-item input in index order (the fake answers reversed), base64 / dimensions / empty array / empty item / 257 items / chat model / unknown model refusals (nothing reaches the upstream), chat to the embedding model 400, `kind: "embedding"` listing, `/healthz` `llama-embed`; second `it`: refused connection -> 503 `local_server_not_running`.
+- A2: one block added to the first `it` of `tests/local-servers.test.ts` (embed starts beside a ready llama and stops nothing; a gufo start stops llama but not embed; `stopAll` stops it). Existing counts updated (4 ids).
+- Settings/args assertions were added to the existing `settings.test.ts` and `llama-args.test.ts` tests (no new `it`).
+
+Adaptations and deviations:
+- `settingsSchema` is now a `ZodEffects` (root `superRefine` for the cross-provider port check); only `.parse` is used elsewhere.
+- `EXCLUSIVE_SERVER_IDS` (new, `local-servers.ts`) = ids that take turns; `local-host.ts` `current()` uses it so `embed` is never the coordinator's active or failed server. `LocalServerManager.waitReady(id, signal)` added for the on-demand start.
+- `Provider.embed` returns `{ embeddings, promptTokens }` (the handler builds the OpenAI shape); `Provider.supportsEmbeddings` / `extraQueueStats` and `AcpLike.canEmbed` / `embed` added; `ProviderRouter.queueStats` merges `extraQueueStats` (healthz `llama-embed` also shows `max_queue: 0`).
+- Upstream error mapping of `generateImage` moved into a private `upstreamFailure` used by both (same messages).
+- `/v1/embeddings` always sends `input` upstream as an array (a string becomes a one-item array); the model id echoed in the answer is the one sent (always `llama/...`). A disabled embedding model is not listed, so a request for it is 404 `model_not_found`.
+- Default `modelFile` file name `nomic-embed-text-v1.5.Q4_K_M.gguf` is a guess (the plan leaves it to the file the user copies).
+- Renderer: `embed` has no page, so the renderer uses `PageServerId = Exclude<LocalServerId, "embed">` for the page loops; the Embeddings card lives in the Llama.cpp page (`llama-view.ts`, `settings.html`), Enabled/Port/Context are ordinary `fields` entries, the model file uses the AAP-40 `filePicker` (now typed on `Pick<LlamaProfileView, FileField>`) and is mounted again in `renderProfiles`. `LlamaStatusView.embedding.missingFiles` added for the missing-file warning.
+- Not built: restarting a running embed server when its settings change (README says Stop/Start).
