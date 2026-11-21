@@ -25,7 +25,7 @@ import { installLlama, probeLlamaVersion } from "../llama-install.js";
 import { HF_POLICY, downloadHfFiles, listHfFiles, parseHfLink } from "../hf-models.js";
 import type { HfFile, HfFileGroup } from "../hf-models.js";
 import { buildLlamaArgs, checkBuild, checkLlamaFiles } from "../llama-args.js";
-import { customExePatch, installPatch, profileFilesPatch } from "../llama-jobs.js";
+import { autoMmproj, customExePatch, installPatch, profileFilesPatch } from "../llama-jobs.js";
 import type { ProfileFiles } from "../llama-jobs.js";
 import { antigravityRegistration, installAntigravity, readInstallInfo } from "./antigravity.js";
 import { SettingsWindow } from "./settings-window.js";
@@ -464,11 +464,13 @@ async function main(): Promise<void> {
         if (!found) throw new DownloadError("hf_not_found", `File not found in ${hf.repo}: ${name}`);
         return found;
       };
-      const mmproj = hf.mmproj ? byName("mmproj", hf.mmproj) : undefined;
+      // A profile without an mmproj gets the repository's one too (vision is turned on only if it was downloaded and the profile still has none).
+      const picked = hf.mmproj ? undefined : autoMmproj(profile, listing.groups);
+      const mmproj = hf.mmproj ? byName("mmproj", hf.mmproj) : picked;
       const draft = hf.draft ? byName("draft", hf.draft) : undefined;
       const files = [...model.files, ...(mmproj ? [mmproj] : []), ...(draft ? [draft] : [])];
       const paths = await downloadHfFiles({ repo: hf.repo, revision: hf.revision, files, modelsDir, fetch: fetch as typeof fetch, signal, onProgress: llamaProgress, ...(token ? { token } : {}) });
-      return { modelFile: paths[0]!, ...(mmproj ? { mmprojFile: paths[model.files.length]! } : {}), ...(draft ? { draftFile: paths[paths.length - 1]! } : {}) } satisfies ProfileFiles;
+      return { modelFile: paths[0]!, ...(mmproj ? { mmprojFile: paths[model.files.length]!, ...(picked ? { autoMmproj: true } : {}) } : {}), ...(draft ? { draftFile: paths[paths.length - 1]! } : {}) } satisfies ProfileFiles;
     });
     if (!outcome.ok) return outcome;
     try {

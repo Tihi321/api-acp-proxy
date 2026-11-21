@@ -1,3 +1,4 @@
+import type { HfFile, HfFileGroup } from "./hf-models.js";
 import type { LlamaInstallInfo, LlamaProfile, LlamaSource, Settings, SettingsPatch } from "./settings.js";
 
 // Settings patches written when a llama.cpp job (install, exe check, profile model download) completes. Each is built from the settings
@@ -17,15 +18,26 @@ export function customExePatch(current: LlamaSettings, file: string, build: numb
   return { providers: { llama: { binary: { ...binary, mode: "custom", customPath: file, ...(build !== undefined ? { customBuild: build } : {}) } } } };
 }
 
-/** What a profile model download produced. */
-export interface ProfileFiles { modelFile: string; mmprojFile?: string; draftFile?: string }
+/** What a profile model download produced. `autoMmproj`: the mmproj was picked by the app (the profile named none), so it is applied only when the profile still has none, and then turns vision on. */
+export interface ProfileFiles { modelFile: string; mmprojFile?: string; draftFile?: string; autoMmproj?: boolean }
 
 /** After a profile model download: the file fields of that one profile; every other field and profile stays as saved now. Empty when the profile was removed meanwhile. */
 export function profileFilesPatch(current: LlamaSettings, profileId: string, files: ProfileFiles): SettingsPatch {
   if (!current.profiles.some((profile) => profile.id === profileId)) return {};
   const profiles = current.profiles.map((profile): LlamaProfile => {
     if (profile.id !== profileId) return profile;
-    return { ...profile, modelFile: files.modelFile, ...(files.mmprojFile ? { mmprojFile: files.mmprojFile } : {}), ...(files.draftFile ? { draftFile: files.draftFile } : {}) };
+    const next: LlamaProfile = { ...profile, modelFile: files.modelFile, ...(files.draftFile ? { draftFile: files.draftFile } : {}) };
+    if (files.mmprojFile && !files.autoMmproj) next.mmprojFile = files.mmprojFile;
+    else if (files.mmprojFile && !profile.mmprojFile) { next.mmprojFile = files.mmprojFile; next.vision = true; }
+    return next;
   });
   return { providers: { llama: { profiles } } };
+}
+
+/** The mmproj to fetch with a profile that names none and has no mmproj file: F16, then BF16, then the first one the repository lists. */
+export function autoMmproj(profile: LlamaProfile, groups: readonly HfFileGroup[]): HfFile | undefined {
+  if (profile.mmprojFile || profile.hf?.mmproj) return undefined;
+  const files = groups.filter((group) => group.kind === "mmproj").flatMap((group) => group.files);
+  const named = (quant: string) => files.find((file) => new RegExp(`(^|[-_.])${quant}\\.gguf$`, "i").test(file.saveAs));
+  return named("F16") ?? named("BF16") ?? files[0];
 }

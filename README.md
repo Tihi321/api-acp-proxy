@@ -193,7 +193,7 @@ Profile fields (`providers.llama.profiles[]`); the app builds the llama-server c
 | `draftGpuLayers` | - | `--spec-draft-ngl <auto\|all\|n>` |
 | `extraArgs` | empty | appended as written; the place for anything else (sampling flags, a renamed flag of another build) |
 | `startTimeoutMs`, `requestTimeoutMs` | 10 min / server default | - |
-| `hf` | - | where **Download model files** fetches from: `repo`, `revision`, `quant`, optional `mmproj` and `draft` file names |
+| `hf` | - | where **Download model files** fetches from: `repo`, `revision`, `quant`, optional `mmproj` and `draft` file names; a profile with neither `hf.mmproj` nor `mmprojFile` also gets the repository's mmproj (F16, else BF16, else the first listed) and `vision` on |
 | `requires` | - | build gate: `minBuild`, `sources` |
 
 Start refuses a profile with a missing file (the error names the first; the profile card lists all) or a build gate that fails; an unknown build only warns. The gate passes when the installed source is in `requires.sources` or the build number is at least `requires.minBuild`.

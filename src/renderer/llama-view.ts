@@ -478,7 +478,12 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
         const target = profiles.find((profile) => profile.id === profileId);
         if (target) {
           target.modelFile = result.profile.modelFile;
-          if (result.profile.mmprojFile !== undefined) target.mmprojFile = result.profile.mmprojFile;
+          // An mmproj the app picked (the profile named none) fills an empty field only, and brings vision with it.
+          const auto = !target.hf?.mmproj;
+          if (result.profile.mmprojFile !== undefined && (!auto || !target.mmprojFile?.trim())) {
+            target.mmprojFile = result.profile.mmprojFile;
+            if (auto && result.profile.vision) target.vision = true;
+          }
           if (result.profile.draftFile !== undefined) target.draftFile = result.profile.draftFile;
         }
         renderProfiles();
