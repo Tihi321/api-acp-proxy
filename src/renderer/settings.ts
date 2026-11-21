@@ -1,9 +1,10 @@
 import { nextExpiryDelay, usageLimitLine } from "./usage-limit-line.js";
 import { mcpAddCommand, mcpEndpointUrl } from "./mcp-command.js";
 import { initUsageView } from "./usage-view.js";
+import { initLlamaView } from "./llama-view.js";
 import type { ActivityView, GufoProfileView, InstallProgressView, LocalServerId, LocalServerStatusView, ProviderStatusView, SaveResult, SettingsPatchView, StateView } from "../shared/ipc.js";
 
-type Scope = "server" | "codex" | "antigravity" | "claude" | "gufo" | "strata" | "llama"; // T8: llama added by T1 only to keep the widened LocalServerId compiling
+type Scope = "server" | "codex" | "antigravity" | "claude" | "gufo" | "strata" | "llama";
 interface FieldSpec { path: string; kind: "text" | "number" | "bool" | "select"; scope: Scope; optional?: boolean }
 
 const api = window.proxyApi;
@@ -78,6 +79,11 @@ const fields: FieldSpec[] = [
   { path: "providers.strata.cwd", kind: "text", scope: "strata" },
   { path: "providers.strata.apiKey", kind: "text", scope: "strata", optional: true },
   { path: "providers.strata.maxConcurrent", kind: "number", scope: "strata", optional: true },
+  { path: "providers.llama.enabled", kind: "bool", scope: "llama" },
+  { path: "providers.llama.port", kind: "number", scope: "llama" },
+  { path: "providers.llama.maxConcurrent", kind: "number", scope: "llama", optional: true },
+  { path: "providers.llama.modelsDir", kind: "text", scope: "llama" },
+  { path: "providers.llama.hfToken", kind: "text", scope: "llama", optional: true },
 ];
 
 /** Shown before the provider has reported its methods (it is not running yet). */
@@ -97,8 +103,8 @@ const badgeText: Record<string, string> = { needs_login: "needs login", not_inst
 /** The tool a provider's shared login folder belongs to (named in the log-out confirmation). */
 const toolName: Record<string, string> = { codex: "Codex (the Codex app and CLI)", antigravity: "Google Antigravity and the Gemini tools", claude: "Claude Code" };
 const providerOrder = ["codex", "claude", "antigravity"] as const;
-const localOrder: readonly LocalServerId[] = ["gufo", "strata"];
-const views = ["overview", "usage", "requests", "server", "codex", "claude", "antigravity", "gufo", "strata"] as const;
+const localOrder: readonly LocalServerId[] = ["gufo", "strata", "llama"];
+const views = ["overview", "usage", "requests", "server", "codex", "claude", "antigravity", "gufo", "strata", "llama"] as const;
 type ViewName = (typeof views)[number];
 const VIEW_KEY = "acp-proxy.view";
 const featureChips: Array<{ label: string; on: (status: ProviderStatusView) => boolean }> = [
@@ -111,10 +117,18 @@ const featureChips: Array<{ label: string; on: (status: ProviderStatusView) => b
 
 let state: StateView | undefined;
 let activity: ActivityView[] = [];
-const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, claude: false, gufo: false, strata: false, llama: false }; // T8
-/** Launcher state of the local model servers, in the order gufo, strata. */
+const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, claude: false, gufo: false, strata: false, llama: false };
+/** Launcher state of the local model servers, in the order gufo, strata, llama. */
 let localServers: LocalServerStatusView[] = [];
 const usage = initUsageView({ api, showView: (name) => showView(name) });
+const llama = initLlamaView({
+  api,
+  markDirty: (value) => markDirty("llama", value),
+  isDirty: () => dirty.llama,
+  save: async () => { await saveScope("llama"); return !dirty.llama; },
+  refresh: () => refresh(),
+  setBadge,
+});
 const loggingIn = new Set<string>();
 const loggingOut = new Set<string>();
 let installing = false;
@@ -144,6 +158,7 @@ function showView(name: string): void {
   }
   try { localStorage.setItem(VIEW_KEY, target); } catch { /* storage unavailable: the choice is not remembered */ }
   if (target === "usage") usage.shown();
+  if (target === "llama") llama.shown();
 }
 
 function storedView(): ViewName {
@@ -249,6 +264,7 @@ function renderLocal(id: LocalServerId, current: StateView): void {
     el<HTMLInputElement>("gufo-switch-wait").value = String(Math.round(gufo.switchWaitMs / 60000));
     renderProfiles();
   }
+  if (id === "llama" && !dirty.llama) llama.load(current.settings.providers.llama);
   const status = current.status.providers.find((entry) => entry.id === id);
   const providerState = status?.state ?? "disabled";
   setBadge(role(root, "badge"), providerState);
@@ -274,6 +290,11 @@ function renderLocalServers(list: LocalServerStatusView[]): void {
       const label = server.profile ? gufoDraft.find((profile) => profile.id === server.profile)?.label ?? server.profile : undefined;
       if (label && server.state !== "stopped") role<HTMLElement>(root, "server-badge").textContent = server.state === "ready" ? `Gufo: ${label}` : `Gufo: ${label} (${server.state})`;
       updateProfileButtons();
+    }
+    if (server.id === "llama") {
+      const label = server.profile ? state?.settings.providers.llama.profiles.find((profile) => profile.id === server.profile)?.label ?? server.profile : undefined;
+      if (label && server.state !== "stopped") role<HTMLElement>(root, "server-badge").textContent = server.state === "ready" ? `Llama.cpp: ${label}` : `Llama.cpp: ${label} (${server.state})`;
+      llama.setLauncher(server);
     }
     role<HTMLButtonElement>(root, "stop").disabled = server.state === "stopped";
     showError(role(root, "error"), server.state === "error" ? server.error : undefined);
@@ -660,6 +681,14 @@ function collectPatch(scope: Scope): { patch?: SettingsPatchView; errors: Array<
     else setPath(patch, "providers.gufo.switchWaitMs", Math.round(waitMinutes * 60000));
     setPath(patch, "providers.gufo.profiles", gufoDraft.map((profile) => ({ ...profile, label: profile.label.trim(), id: profile.id.trim(), model: profile.model.trim(), vision: profile.kind === "llm" && profile.vision })));
   }
+  if (scope === "llama") {
+    const collected = llama.collect();
+    errors.push(...collected.errors);
+    if (collected.switchWaitMs !== undefined) setPath(patch, "providers.llama.switchWaitMs", collected.switchWaitMs);
+    // `binary` and `profiles` are replaced as whole values.
+    setPath(patch, "providers.llama.binary", collected.binary);
+    setPath(patch, "providers.llama.profiles", collected.profiles);
+  }
   return { patch: patch as SettingsPatchView, errors };
 }
 
@@ -808,6 +837,7 @@ function wire(): void {
     const startButton = root.querySelector<HTMLButtonElement>('[data-role="start"]');
     if (startButton) startButton.onclick = () => void startLocal(id);
     role(root, "stop").onclick = () => void stopLocal(id);
+    if (id === "llama") continue; // no API key; its token button is wired by llama-view
     el(`${id}-key-show`).onclick = () => {
       const input = field(`providers.${id}.apiKey`) as HTMLInputElement;
       input.type = input.type === "password" ? "text" : "password";

@@ -33,6 +33,7 @@
         <p class="nav-group">Local models</p>
         <button type="button" class="nav-item" data-view="gufo"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Gufo</span></button>
         <button type="button" class="nav-item" data-view="strata"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Strata</span></button>
+        <button type="button" class="nav-item" data-view="llama"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Llama.cpp</span></button>
       </nav>
 
       <div class="sidebar-foot">
@@ -450,6 +451,108 @@
             <label class="field wide"><span>API key <em class="muted">(optional; sent to the server as a Bearer token, never put on the command line)</em></span>
               <div class="row"><input id="providers.strata.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="strata-key-show">Show</button></div>
               <small data-note-for="providers.strata.apiKey"></small><small class="error" data-error-for="providers.strata.apiKey"></small></label>
+          </section>
+
+          <section class="card models">
+            <div class="card-head"><h2>Models <span class="muted" data-role="model-count"></span></h2><button type="button" class="small push" data-role="refresh">Refresh models</button></div>
+            <ul class="chips" data-role="models"></ul>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Log</h2></div>
+            <pre class="log mono" data-role="log"></pre>
+          </section>
+
+          <div class="save-bar">
+            <button type="button" class="primary" data-role="save">Save and restart</button>
+            <span class="muted hint">Saving restarts the proxy server; in-flight requests will be dropped after 5 s. A running local server is not restarted.</span>
+            <p class="msg" data-role="msg" role="status"></p>
+            <p class="error" data-role="general-error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Llama.cpp -->
+      <section class="view" id="view-llama" data-view="llama" aria-labelledby="llama-title" hidden>
+        <div class="view-body provider local" data-provider="llama" id="card-llama">
+          <div class="view-head">
+            <div><h1 id="llama-title">Llama.cpp</h1><p class="view-sub">A local llama-server on this PC, started by this app, with models from Hugging Face.</p></div>
+            <div class="view-actions">
+              <span class="badge" data-role="badge" title="The proxy's view of the provider">-</span>
+              <span class="badge" data-role="server-badge" title="The server process started by this app">stopped</span>
+              <button type="button" data-role="stop">Stop</button>
+              <label class="switch"><input id="providers.llama.enabled" type="checkbox"><span>Enabled</span></label>
+            </div>
+          </div>
+          <small data-note-for="providers.llama.enabled"></small>
+          <p class="note">Only one local server runs at a time: starting one stops the other. Llama.cpp runs one model profile at a time; a request for another profile switches it when the running one is idle.</p>
+
+          <section class="card">
+            <div class="card-head"><h2>Server</h2></div>
+            <p class="error" data-role="error" hidden></p>
+            <p class="muted small-text" data-role="server-info"></p>
+            <div class="grid">
+              <label class="field"><span>Port</span><input id="providers.llama.port" type="number" min="1" max="65535"><small>llama-server listens on 127.0.0.1 on this port; the proxy sends requests there and checks it for readiness.</small><small data-note-for="providers.llama.port"></small><small class="error" data-error-for="providers.llama.port"></small></label>
+              <label class="field"><span>Max concurrent requests <em class="muted">(empty = 1)</em></span><input id="providers.llama.maxConcurrent" type="number" min="0"><small data-note-for="providers.llama.maxConcurrent"></small><small class="error" data-error-for="providers.llama.maxConcurrent"></small></label>
+              <label class="field"><span>Wait for a busy server (minutes)</span><input id="llama-switch-wait" type="number" min="1" step="1"><small>A request for another model waits this long while the running model is busy, then gets 503 <code>local_model_busy</code>.</small></label>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>llama.cpp build</h2></div>
+            <div class="checks">
+              <label class="check"><input type="radio" name="llama-mode" id="llama-mode-managed" value="managed"><span>Managed: this app downloads llama-server for you</span></label>
+              <label class="check"><input type="radio" name="llama-mode" id="llama-mode-custom" value="custom"><span>My own llama-server.exe</span></label>
+            </div>
+            <div id="llama-managed">
+              <div class="grid">
+                <label class="field"><span>Source</span><select id="llama-source"><option value="ggml-org">ggml-org (official)</option><option value="unsloth">Unsloth (fork)</option></select></label>
+                <label class="field"><span>Version</span><select id="llama-version"></select></label>
+                <label class="field"><span>Backend</span><select id="llama-backend"></select><small>ROCm: Strix Halo (gfx1151) is supported. Choose Vulkan if ROCm fails to load.</small></label>
+                <label class="field"><span>Binaries folder</span><div class="row"><input id="llama-dir" type="text" autocomplete="off" spellcheck="false"><button type="button" class="small" id="llama-dir-browse">Browse…</button></div></label>
+              </div>
+              <div class="row install-row">
+                <button type="button" id="llama-install">Download</button>
+                <button type="button" class="small" id="llama-releases-refresh" title="Read the release list from GitHub again">Refresh versions</button>
+                <button type="button" class="small" id="llama-install-cancel" hidden>Cancel</button>
+                <progress id="llama-install-progress" max="100" hidden></progress>
+                <span class="muted" id="llama-install-text"></span>
+              </div>
+              <p class="error" id="llama-install-error" hidden></p>
+              <p class="muted mono small-text" id="llama-installed"></p>
+            </div>
+            <div id="llama-custom" hidden>
+              <label class="field wide"><span>llama-server.exe</span><div class="row"><input id="llama-exe" type="text" autocomplete="off" spellcheck="false"><button type="button" class="small" id="llama-exe-browse">Browse…</button><button type="button" class="small" id="llama-exe-check">Check</button></div></label>
+              <p class="muted small-text" id="llama-exe-info"></p>
+              <p class="error" id="llama-exe-error" hidden></p>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Models</h2></div>
+            <div class="grid">
+              <label class="field"><span>Models folder</span><div class="row"><input id="providers.llama.modelsDir" type="text" autocomplete="off" spellcheck="false"><button type="button" class="small" id="llama-models-browse">Browse…</button></div><small data-note-for="providers.llama.modelsDir"></small><small class="error" data-error-for="providers.llama.modelsDir"></small></label>
+              <label class="field"><span>Hugging Face token <em class="muted">(optional; for gated models)</em></span><div class="row"><input id="providers.llama.hfToken" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="llama-token-show">Show</button></div><small data-note-for="providers.llama.hfToken"></small><small class="error" data-error-for="providers.llama.hfToken"></small></label>
+            </div>
+            <label class="field wide"><span>Hugging Face link</span><div class="row"><input id="llama-hf-link" type="text" autocomplete="off" spellcheck="false" placeholder="https://huggingface.co/owner/repo-GGUF  (or owner/repo:Q8_0)"><button type="button" class="small" id="llama-hf-list">List files</button></div></label>
+            <p class="error" id="llama-hf-error" hidden></p>
+            <div class="table-wrap" id="llama-hf-wrap" hidden>
+              <table class="table"><thead><tr><th></th><th>File</th><th class="num">Size</th><th>Kind</th></tr></thead><tbody id="llama-hf-body"></tbody></table>
+            </div>
+            <div class="row install-row" id="llama-hf-actions" hidden>
+              <button type="button" id="llama-hf-download">Download</button>
+              <button type="button" class="small" id="llama-hf-cancel" hidden>Cancel</button>
+              <progress id="llama-hf-progress" max="100" hidden></progress>
+              <span class="muted" id="llama-hf-text"></span>
+              <button type="button" id="llama-hf-create" hidden>Create profile from this</button>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Profiles</h2><button type="button" class="small push" id="llama-add-profile">Add profile</button><button type="button" class="small" id="llama-restore-presets">Restore missing presets</button></div>
+            <p class="note">One model per profile, exposed as <code>llama/&lt;model id&gt;</code>. Starting a large model can take many minutes. Start saves unsaved edits for you.</p>
+            <div id="llama-profiles"></div>
+            <p class="msg" id="llama-profiles-msg" role="status"></p>
           </section>
 
           <section class="card models">

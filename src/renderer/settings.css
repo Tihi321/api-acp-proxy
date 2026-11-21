@@ -213,3 +213,4 @@ dialog a { color: var(--accent); }
   button, input, select, .switch input, .switch input::after { transition: none; }
 }
 .log { margin: 0; max-height: 240px; overflow: auto; padding: var(--space-2) var(--space-3); background: var(--surface-2); border-radius: var(--radius-md); font-size: var(--text-xs); white-space: pre-wrap; word-break: break-all; }
+.profile-warn { color: var(--warn); font-size: var(--text-sm); margin: 0; }
