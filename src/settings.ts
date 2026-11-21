@@ -78,6 +78,7 @@ const gufoProviderSchema = z.preprocess(migrateGufo, z.object({
   /** How long a request waits for a busy Gufo (another model running a request) before it gets 503 local_model_busy. */
   switchWaitMs: z.number().int().positive().default(30 * 60 * 1000),
   profiles: z.array(gufoProfileSchema).default([]).superRefine((profiles, ctx) => {
+    profiles.forEach((profile, index) => { if (profile.id === "strata") ctx.addIssue({ code: "custom", path: [index, "id"], message: "The profile id 'strata' is reserved for the Strata server." }); });
     for (const key of ["id", "model"] as const) {
       const seen = new Set<string>();
       profiles.forEach((profile, index) => {

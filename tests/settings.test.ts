@@ -39,6 +39,7 @@ describe("gufo profiles", () => {
     expect(settingsSchema.parse({ providers: { gufo: { profiles: two } } }).providers.gufo.profiles.map((p) => p.id)).toEqual(["a", "b"]);
     expect(restoreMissingPresets(settingsSchema.parse({ providers: { gufo: { profiles: two } } }).providers.gufo.profiles)).toHaveLength(7);
     expect(() => settingsSchema.parse({ providers: { gufo: { profiles: [two[0], { ...two[1], model: "a" }] } } })).toThrow(/Duplicate profile model/);
+    expect(() => settingsSchema.parse({ providers: { gufo: { profiles: [{ ...two[0], id: "strata" }] } } })).toThrow(/reserved/);
   });
 });
 

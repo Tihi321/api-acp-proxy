@@ -130,7 +130,7 @@ export class LocalServerManager extends EventEmitter {
       stoppedAny = true;
       // A previous start still before its spawn has no run: the bump above already cancelled it.
       if (entry.run) await this.stop(spec.id);
-      if (entry.startGen !== gen) { if (this.closed) return; throw new SupersededError(`${LOCAL_SERVER_NAMES[spec.id]} start for '${spec.profile ?? spec.id}' was replaced by a newer start.`); }
+      if (this.cancelled(entry, gen, spec)) return;
     }
     entry.view = { ...entry.view, state: "starting", port: spec.port, profile: spec.profile, error: undefined, pid: undefined, readyAt: undefined, startedAt: undefined, commandLine: commandLine(spec), log: [] };
     this.emitChange();
@@ -164,6 +164,13 @@ export class LocalServerManager extends EventEmitter {
     if (entry.startGen === gen) return false;
     if (entry.claimGen !== gen) throw new SupersededError(`${LOCAL_SERVER_NAMES[spec.id]} start for '${spec.profile ?? spec.id}' was replaced by a newer start.`);
     return true;
+  }
+
+  /** True when the app owns no process for this server and its port already answers: a server started outside the app, which is never adopted, stopped or replaced. */
+  async answersExternally(id: LocalServerId, port: number): Promise<boolean> {
+    const entry = this.entries.get(id);
+    if (!entry || entry.run || entry.view.state === "starting" || entry.view.state === "ready") return false;
+    return this.probeOnce(port);
   }
 
   async stop(id: LocalServerId): Promise<void> {

@@ -11,6 +11,8 @@ export interface LocalModelHost {
   current(): { profile?: string; state: "stopped" | "starting" | "ready" | "error"; error?: string };
   /** Stop-if-different + start; resolves when spawned. */
   start(target: LocalModelTarget): Promise<void>;
+  /** True when the app owns no process for the target's server and its port already answers (a server started outside the app): requests pass straight through, nothing is started or stopped. Optional. */
+  external?(target: LocalModelTarget): Promise<boolean>;
   /** Rejects when the launcher goes to error/stopped. */
   waitReady(profile: string, signal: AbortSignal): Promise<void>;
 }
@@ -141,7 +143,7 @@ export class LocalModelCoordinator {
       waiter.reject(new QueueAbortedError());
     };
     waiter.signal?.addEventListener("abort", onAbort, { once: true });
-    this.ensureReady(profile).then(
+    this.ensureReady(profile, waiter.lease).then(
       () => {
         if (settled) return;
         settled = true;
@@ -159,10 +161,17 @@ export class LocalModelCoordinator {
     );
   }
 
-  private ensureReady(profile: LocalModelTarget): Promise<void> {
+  private async ensureReady(profile: LocalModelTarget, lease: boolean): Promise<void> {
     if (this.starting?.profile === profile.id) return this.starting.promise;
     const current = this.host.current();
-    if (current.profile === profile.id && current.state === "ready") return Promise.resolve();
+    if (current.profile === profile.id && current.state === "ready") return;
+    // A request (not the Settings Start button) to a server the app does not own goes straight upstream, as before AAP-37.
+    if (lease && this.host.external && !this.starting && await this.host.external(profile).catch(() => false)) return;
+    return this.startAndWait(profile, current);
+  }
+
+  private startAndWait(profile: LocalModelTarget, current: ReturnType<LocalModelHost["current"]>): Promise<void> {
+    if (this.starting?.profile === profile.id) return this.starting.promise;
     // Never cancelled by a leaver: this signal is not tied to any request.
     const never = new AbortController().signal;
     if (current.profile === profile.id && current.state === "starting") return this.host.waitReady(profile.id, never);

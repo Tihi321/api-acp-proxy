@@ -102,4 +102,15 @@ describe("LocalModelCoordinator", () => {
     markReady();
     (await strata).release();
   });
+
+  it("passes requests straight through to a server started outside the app, but the Settings Start still starts", async () => {
+    const { host, starts } = fakeHost();
+    const coordinator = new LocalModelCoordinator({ ...host, current: () => ({ state: "stopped" }), external: async () => true }, () => ({ profiles: ["A"].map(profile), switchWaitMs: 1000 }));
+    const lease = await coordinator.acquire("A", new AbortController().signal);
+    lease.release();
+    expect(starts).toEqual([]);
+    void coordinator.switchTo("A").catch(() => undefined);
+    await flush();
+    expect(starts).toEqual(["A"]);
+  });
 });

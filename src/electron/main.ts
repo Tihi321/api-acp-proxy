@@ -123,6 +123,11 @@ async function main(): Promise<void> {
       if (!settings) throw new Error("Settings are not loaded yet.");
       await servers.start({ id: "gufo", command: settings.command, args: profile.args, cwd: settings.cwd, port: settings.port, profile: profile.id, startTimeoutMs: profile.startTimeoutMs });
     },
+    external: async (target) => {
+      const isStrata = target.id === STRATA_PROFILE_ID;
+      const port = isStrata ? strataSettings?.port : gufoSettings?.port;
+      return port !== undefined && servers.answersExternally(isStrata ? "strata" : "gufo", port);
+    },
     waitReady: (profile, signal) => new Promise<void>((resolve, reject) => {
       const serverId = profile === STRATA_PROFILE_ID ? "strata" : "gufo";
       const name = serverId === "strata" ? "Strata" : "Gufo";
