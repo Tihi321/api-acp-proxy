@@ -48,11 +48,14 @@ export interface SettingsView {
       enabled: boolean; apiKey?: string; oauthToken?: string; configDir?: string; executablePath?: string; authMethodId?: string;
       termsAcknowledgedAt?: string; maxConcurrent?: number; maxPromptChars?: number;
     };
-    gufo: LocalProviderSettingsView;
+    gufo: GufoProviderSettingsView;
     strata: LocalProviderSettingsView;
   };
 }
 export interface LocalProviderSettingsView { enabled: boolean; port: number; command: string; args: string; cwd: string; apiKey?: string; maxConcurrent?: number }
+/** One Gufo model profile (see `GufoProfile` in settings.ts); `SettingsPatchView` replaces `profiles` as a whole array. */
+export interface GufoProfileView { id: string; label: string; model: string; kind: "llm" | "image"; args: string; vision: boolean; startTimeoutMs?: number; requestTimeoutMs?: number }
+export interface GufoProviderSettingsView { enabled: boolean; port: number; command: string; cwd: string; apiKey?: string; maxConcurrent?: number; switchWaitMs: number; profiles: GufoProfileView[] }
 export type LocalServerId = "gufo" | "strata";
 export type LocalServerState = "stopped" | "starting" | "ready" | "error";
 export interface LocalServerStatusView {
@@ -60,6 +63,7 @@ export interface LocalServerStatusView {
   name: string;                 // "Gufo" | "Strata"
   state: LocalServerState;
   port?: number;                // of the last start
+  profile?: string;             // gufo: id of the profile of the last start (filled by the launcher, T2)
   pid?: number;                 // while the process lives
   startedAt?: number;           // epoch ms of the last spawn
   readyAt?: number;             // epoch ms the probe first answered 200
@@ -74,7 +78,7 @@ export type SettingsPatchView = {
     codex?: { [K in keyof SettingsView["providers"]["codex"]]?: SettingsView["providers"]["codex"][K] | null };
     antigravity?: { [K in keyof SettingsView["providers"]["antigravity"]]?: SettingsView["providers"]["antigravity"][K] | null };
     claude?: { [K in keyof SettingsView["providers"]["claude"]]?: SettingsView["providers"]["claude"][K] | null };
-    gufo?: { [K in keyof LocalProviderSettingsView]?: LocalProviderSettingsView[K] | null };
+    gufo?: { [K in keyof GufoProviderSettingsView]?: GufoProviderSettingsView[K] | null };
     strata?: { [K in keyof LocalProviderSettingsView]?: LocalProviderSettingsView[K] | null };
   };
 };

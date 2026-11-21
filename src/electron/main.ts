@@ -246,8 +246,13 @@ async function main(): Promise<void> {
   handle("proxy:startLocalServer", async (id: unknown): Promise<ActionResult> => {
     if (id !== "gufo" && id !== "strata") return { ok: false, message: "Invalid server" };
     return action(async () => {
-      const settings = (await proxy.getSettings()).effective.providers[id];
-      const spec: LocalServerSpec = { id, command: settings.command, args: settings.args, cwd: settings.cwd, port: settings.port };
+      const providers = (await proxy.getSettings()).effective.providers;
+      const settings = providers[id];
+      // T6: the Gufo profile (and its startTimeoutMs) is chosen by the coordinator; until then the first llm profile is started.
+      const profile = id === "gufo" ? providers.gufo.profiles.find((candidate) => candidate.kind === "llm") ?? providers.gufo.profiles[0] : undefined;
+      const args = id === "gufo" ? profile?.args : providers.strata.args;
+      if (args === undefined) throw new Error("No Gufo profile is configured.");
+      const spec: LocalServerSpec = { id, command: settings.command, args, cwd: settings.cwd, port: settings.port };
       await servers.start(spec);
     });
   });
