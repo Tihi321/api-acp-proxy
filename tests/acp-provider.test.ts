@@ -37,6 +37,16 @@ describe("AcpProvider", () => {
     expect(result.text).toBe("echo:b:fake-session:-");
   });
 
+  it("forwards agent thought chunks as reasoning, apart from the answer text", async () => {
+    process.env.FAKE_ACP_THOUGHT = JSON.stringify(["Hmm, ", "ok."]);
+    process.env.FAKE_ACP_ANSWER = JSON.stringify(["Done"]);
+    const events: Array<["t" | "r", string]> = [];
+    const result = await make().generate("m", user, { onText: (text) => events.push(["t", text]), onReasoning: (text) => events.push(["r", text]) });
+    expect(events).toEqual([["r", "Hmm, "], ["r", "ok."], ["t", "Done"]]);
+    expect(result.text).toBe("Done");
+    expect(result.reasoning).toBe("Hmm, ok.");
+  });
+
   it("lists static models without starting a process", async () => {
     const provider = make({ staticModels: ["x", "y"] });
     expect((await provider.listModels()).map((model) => model.id)).toEqual(["x", "y"]);

@@ -51,6 +51,79 @@ describe("LocalOpenAiProvider", () => {
     expect(listed).not.toContain("Qwen3.8-27B");
   });
 
+  /** A fake upstream: GET /v1/models and a streaming POST /v1/chat/completions that `script` writes. */
+  async function thinkingProxy(script: (response: import("node:http").ServerResponse) => Promise<void> | void, bodies: unknown[] = []): Promise<string> {
+    const upstream = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/v1/models") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ data: [{ id: "Qwen3.8-27B" }] })); return; }
+      if (request.method === "POST" && request.url === "/v1/chat/completions") {
+        let raw = ""; request.on("data", (part) => { raw += part; });
+        request.on("end", () => { bodies.push(JSON.parse(raw)); response.setHeader("content-type", "text/event-stream"); void Promise.resolve(script(response)); });
+        return;
+      }
+      response.statusCode = 404; response.end();
+    });
+    const port = await listen(upstream);
+    return await serve(new ProviderRouter({ providers: [new LocalOpenAiProvider({ id: "gufo", displayName: "Gufo", baseUrl: `http://127.0.0.1:${port}/v1`, logger })] }));
+  }
+  const sse = (response: import("node:http").ServerResponse, chunk: unknown) => response.write(`data:${JSON.stringify(chunk)}\r\n\r\n`);
+  const thinkChunk = (reasoning_content: string) => ({ choices: [{ delta: { reasoning_content } }] });
+  const askBody = { model: "gufo/Qwen3.8-27B", messages: [{ role: "user", content: "hi" }] };
+
+  it("forwards upstream reasoning_content as separate chunks before the content, with the upstream usage", async () => {
+    const base = await thinkingProxy((response) => {
+      sse(response, thinkChunk("Let me ")); sse(response, thinkChunk("think.")); sse(response, { choices: [{ delta: { content: "Hi" } }] });
+      sse(response, { choices: [{ delta: {}, finish_reason: "stop" }] });
+      sse(response, { choices: [], usage: { prompt_tokens: 5, completion_tokens: 9, total_tokens: 14, completion_tokens_details: { reasoning_tokens: 7 } } });
+      response.end("data: [DONE]\r\n\r\n");
+    });
+    const res = await fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...askBody, stream: true, stream_options: { include_usage: true } }) });
+    const chunks = (await res.text()).split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)) as { choices: Array<{ delta: { content?: string; reasoning_content?: string } }>; usage?: { completion_tokens: number; completion_tokens_details: { reasoning_tokens: number } } | null });
+    const deltas = chunks.map((chunk) => chunk.choices[0]?.delta ?? {});
+    expect(deltas.map((delta) => delta.reasoning_content ?? "").join("")).toBe("Let me think.");
+    expect(deltas.map((delta) => delta.content ?? "").join("")).toBe("Hi");
+    expect(deltas.some((delta) => delta.content !== undefined && delta.reasoning_content !== undefined)).toBe(false);
+    expect(deltas.map((delta) => delta.reasoning_content !== undefined).lastIndexOf(true)).toBeLessThan(deltas.findIndex((delta) => delta.content !== undefined));
+    const usage = chunks.at(-1)?.usage;
+    expect(usage?.completion_tokens).toBe(9);
+    expect(usage?.completion_tokens_details.reasoning_tokens).toBe(7);
+  });
+
+  it("returns message.reasoning_content when not streamed, counts it in the estimated usage and sends max_tokens upstream", async () => {
+    const bodies: Array<{ max_tokens?: number }> = [];
+    const base = await thinkingProxy((response) => {
+      sse(response, thinkChunk("Let me ")); sse(response, thinkChunk("think.")); sse(response, { choices: [{ delta: { content: "Hi" } }] });
+      sse(response, { choices: [{ delta: {}, finish_reason: "stop" }] });
+      response.end("data: [DONE]\r\n\r\n");
+    }, bodies);
+    const res = await fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...askBody, stream: false, max_completion_tokens: 50 }) });
+    const body = await res.json() as { choices: Array<{ message: { content: string; reasoning_content?: string } }>; usage: { completion_tokens: number; completion_tokens_details: { reasoning_tokens: number } } };
+    expect(body.choices[0]?.message.reasoning_content).toBe("Let me think.");
+    expect(body.choices[0]?.message.content).toBe("Hi");
+    expect(body.usage.completion_tokens).toBe(4 + 1);
+    expect(body.usage.completion_tokens_details.reasoning_tokens).toBe(4);
+    expect(bodies[0]?.max_tokens).toBe(50);
+  }, 5000);
+
+  it("delivers a reasoning chunk to the client before the upstream has finished", async () => {
+    let seen!: () => void; const clientSawReasoning = new Promise<void>((resolve) => { seen = resolve; });
+    const base = await thinkingProxy(async (response) => {
+      sse(response, thinkChunk("Hmm"));
+      await clientSawReasoning;
+      sse(response, { choices: [{ delta: { content: "Hi" } }] }); sse(response, { choices: [{ delta: {}, finish_reason: "stop" }] });
+      response.end("data: [DONE]\r\n\r\n");
+    });
+    const res = await fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...askBody, stream: true }) });
+    const reader = res.body!.getReader(); const decoder = new TextDecoder(); let text = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+      if (text.includes("reasoning_content")) seen();
+    }
+    expect(text).toContain('"reasoning_content":"Hmm"');
+    expect(text).toContain('"content":"Hi"');
+  }, 5000);
+
   it("answers 503 local_server_not_running when the upstream port is closed", async () => {
     const probe = createServer();
     const port = await listen(probe);

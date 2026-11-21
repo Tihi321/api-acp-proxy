@@ -15,10 +15,15 @@ export interface GeneratedImage { mimeType: string; data: string; revisedPrompt?
 export interface McpCallResult { server: string; name: string; /** The JSON text of the arguments. */ arguments: string; output: string | null; error: string | null; status: "completed" | "failed" | "incomplete"; }
 /** A web search the agent ran, from its `tool_call` updates: `sources` are the pages the agent reported for it (Claude only). */
 export interface WebSearchResult { query: string; status: "completed" | "failed"; sources?: Array<{ title?: string; url: string }>; }
-export interface GenerationResult { text: string; stopReason: StopReason | "tool_calls"; usage: Usage | null; images?: GeneratedImage[]; toolCalls?: ToolCall[]; /** The remote MCP calls the agent made during this response (only for a request with `mcpServers`). */ mcpCalls?: McpCallResult[]; /** The web searches the agent ran during this response (only for a request with `webSearch`). */ searches?: WebSearchResult[]; }
+export interface GenerationResult { text: string; stopReason: StopReason | "tool_calls"; usage: Usage | null; images?: GeneratedImage[]; toolCalls?: ToolCall[]; /** The remote MCP calls the agent made during this response (only for a request with `mcpServers`). */ mcpCalls?: McpCallResult[]; /** The web searches the agent ran during this response (only for a request with `webSearch`). */ searches?: WebSearchResult[]; /** The whole thinking text of this answer; absent or "" when the model sent none. */ reasoning?: string; }
 /** `instructions` is extra prompt text kept out of the client-visible messages; `images` lets the agent generate images (its image permission is allowed for this request only). `tools` gives the agent the client's function tools through the MCP bridge (`toolChoice` and `parallelToolCalls` as the request said). */
-export interface GenerateOptions { instructions?: string; images?: true; tools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** Remote MCP servers the agent may call inside its turn (a Responses `mcp` tool); the agent talks to them itself. */ mcpServers?: McpServerSpec[]; /** The request asked for web search: the agent may use its search tool (and nothing else on the web); the hints go into the prompt. */ webSearch?: WebSearchRequest; }
-export interface GenerationCallbacks { onText?: (text: string) => void; onUsage?: (usage: Usage) => void; }
+export interface GenerateOptions { instructions?: string; images?: true; tools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** Remote MCP servers the agent may call inside its turn (a Responses `mcp` tool); the agent talks to them itself. */ mcpServers?: McpServerSpec[]; /** The request asked for web search: the agent may use its search tool (and nothing else on the web); the hints go into the prompt. */ webSearch?: WebSearchRequest; /** The client's output limit (max_tokens / max_completion_tokens / max_output_tokens). Local OpenAI-compatible providers forward it upstream as `max_tokens`; ACP providers ignore it. */ maxOutputTokens?: number; }
+export interface GenerationCallbacks {
+  onText?: (text: string) => void;
+  /** A piece of the model's thinking (reasoning_content / agent_thought_chunk); never part of the answer text. */
+  onReasoning?: (text: string) => void;
+  onUsage?: (usage: Usage) => void;
+}
 
 export class AcpUnavailableError extends Error {
   /** `retryAfterSeconds` becomes the `Retry-After` header of the 503 answer. */

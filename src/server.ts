@@ -126,25 +126,29 @@ export function mapStopReason(stopReason: GenerationResult["stopReason"]): { cha
 }
 
 /** Runs one generation and enforces the client's output limit on the raw text: the part that fits is emitted, the agent turn is cancelled and the result is a "max_tokens" stop with usage left to the estimate. */
-async function runGeneration(bridge: AcpLike, model: string, messages: Message[], options: GenerateOptions, limit: number | undefined, emit: ((text: string) => void) | undefined, signal: AbortSignal): Promise<GenerationResult> {
-  if (limit === undefined && !emit) return await bridge.generate(model, messages, {}, signal, options);
+async function runGeneration(bridge: AcpLike, model: string, messages: Message[], options: GenerateOptions, limit: number | undefined, emit: ((text: string) => void) | undefined, signal: AbortSignal, emitReasoning?: (text: string) => void): Promise<GenerationResult> {
+  if (limit === undefined && !emit && !emitReasoning) return await bridge.generate(model, messages, {}, signal, options);
   const controller = new AbortController();
   const link = () => controller.abort();
   if (signal.aborted) link(); else signal.addEventListener("abort", link, { once: true });
   const budget = limit === undefined ? Infinity : limit * CHARS_PER_TOKEN;
   let emitted = "";
   let truncated = false;
+  let reasoning = "";
   const onText = (text: string) => {
     if (truncated) return;
     const fit = text.length > budget - emitted.length ? text.slice(0, Math.max(0, budget - emitted.length)) : text;
     if (fit) { emitted += fit; emit?.(fit); }
     if (fit.length < text.length) { truncated = true; controller.abort(); }
   };
+  // Thinking is always collected (a truncated result keeps it) and never counts against the output budget.
+  const onReasoning = (text: string) => { reasoning += text; emitReasoning?.(text); };
+  const truncatedResult = (): GenerationResult => ({ text: emitted, stopReason: "max_tokens", usage: null, ...(reasoning ? { reasoning } : {}) });
   try {
-    const result = await bridge.generate(model, messages, { onText }, controller.signal, options);
-    return truncated ? { text: emitted, stopReason: "max_tokens", usage: null } : result;
+    const result = await bridge.generate(model, messages, { ...(limit !== undefined || emit ? { onText } : {}), onReasoning }, controller.signal, options);
+    return truncated ? truncatedResult() : result;
   } catch (error) {
-    if (truncated) return { text: emitted, stopReason: "max_tokens", usage: null };
+    if (truncated) return truncatedResult();
     throw error;
   } finally { signal.removeEventListener("abort", link); }
 }
@@ -167,7 +171,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   request.once("aborted", () => abortController.abort());
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
-  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}) };
+  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}), ...(parsed.maxOutputTokens !== undefined ? { maxOutputTokens: parsed.maxOutputTokens } : {}) };
   // Refuse an oversized prompt with a real HTTP 400 before a stream starts.
   try { bridge.checkPrompt?.(parsed.model, parsed.conversation, options); } catch (error) { clearTimeout(timer); throw error; }
   const asJson = parsed.format.type === "json";
@@ -184,7 +188,8 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
     chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }]);
     try {
       const delta = (text: string) => chunk([{ index: 0, delta: { content: text }, finish_reason: null }]);
-      const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, asJson ? undefined : delta, abortController.signal);
+      const thinking = (text: string) => chunk([{ index: 0, delta: { reasoning_content: text }, finish_reason: null }]);
+      const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, asJson ? undefined : delta, abortController.signal, thinking);
       if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
       traceUsage(trace, result, promptText);
       if (asJson && (result.text || !result.toolCalls?.length)) delta(finalText(parsed.format, result));
@@ -215,7 +220,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
     const toolCalls = chatToolCalls(result);
     const content = finalText(parsed.format, result);
     const annotations = chatAnnotations(result);
-    json(response, 200, { id: chatId, object: "chat.completion", created, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: toolCalls.length && !content ? null : content, ...(annotations ? { annotations } : {}), ...(images.length ? { images } : {}), ...(toolCalls.length ? { tool_calls: toolCalls.map(({ index: _index, ...call }) => call) } : {}) }, finish_reason: reason }], usage: usageFor(result) });
+    json(response, 200, { id: chatId, object: "chat.completion", created, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: toolCalls.length && !content ? null : content, ...(result.reasoning ? { reasoning_content: result.reasoning } : {}), ...(annotations ? { annotations } : {}), ...(images.length ? { images } : {}), ...(toolCalls.length ? { tool_calls: toolCalls.map(({ index: _index, ...call }) => call) } : {}) }, finish_reason: reason }], usage: usageFor(result) });
   } finally { clearTimeout(timer); }
 }
 
@@ -241,7 +246,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   request.once("aborted", () => abortController.abort());
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
-  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(mcpServers ? { mcpServers } : {}), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}) };
+  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(mcpServers ? { mcpServers } : {}), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}), ...(parsed.maxOutputTokens !== undefined ? { maxOutputTokens: parsed.maxOutputTokens } : {}) };
   try { bridge.checkPrompt?.(parsed.model, parsed.conversation, options); } catch (error) { clearTimeout(timer); throw forResponses(error); }
   const asJson = parsed.format.type === "json";
   const withTools = parsed.functionTools !== undefined;

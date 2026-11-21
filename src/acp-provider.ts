@@ -98,6 +98,8 @@ interface ToolTurn {
   watch?: UsageLimitWatch;
   /** All the agent text of the prompt so far; `segment` is where the text of the current HTTP response starts. */
   text: string; segment: number;
+  /** The thinking of the current HTTP response (reset when the response ends with tool calls). */
+  reasoning: string;
   tracked: Map<string, TrackedToolCall>;
   /** `tools/call`s that arrived and are not yet in a returned batch. */
   pending: HeldCall[];
@@ -843,6 +845,7 @@ export class AcpProvider implements Provider {
     };
     signal?.addEventListener("abort", abort, { once: true });
     let text = "";
+    let reasoning = "";
     const wantImages = options?.images === true;
     const imageSupport = this.descriptor.imageGeneration;
     const generated: GeneratedImage[] = [];
@@ -873,6 +876,9 @@ export class AcpProvider implements Provider {
         if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
           text += update.content.text;
           watch.callbacks.onText?.(update.content.text);
+        } else if (update.sessionUpdate === "agent_thought_chunk" && update.content.type === "text" && update.content.text) {
+          reasoning += update.content.text;
+          watch.callbacks.onReasoning?.(update.content.text);
         } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
           if (mcp || search) trackToolCall(mcpTracked, update);
           if (!mcp && imageSupport && update.sessionUpdate === "tool_call_update" && update.status === "completed") this.takeImages(update, wantImages ? generated : undefined, reportedFiles);
@@ -895,7 +901,7 @@ export class AcpProvider implements Provider {
       if (this.options.reuseSessions && !wantImages && !mcp && !search && result.stopReason === "end_turn" && !aborted) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
       const mcpCalls = mcp ? this.collectMcpCalls(mcpTracked, mcp.map((server) => server.label), undefined, true) : [];
       const searches = search ? this.collectSearches(mcpTracked, undefined, true) : [];
-      return { text, stopReason: result.stopReason, usage, ...(wantImages ? { images: generated } : {}), ...(mcpCalls.length ? { mcpCalls } : {}), ...(search ? { searches } : {}) };
+      return { text, stopReason: result.stopReason, usage, ...(reasoning ? { reasoning } : {}), ...(wantImages ? { images: generated } : {}), ...(mcpCalls.length ? { mcpCalls } : {}), ...(search ? { searches } : {}) };
     } catch (error) {
       if (aborted && !promptSent) return cancelled();
       if (aborted) throw new AcpUnavailableError("The request was cancelled.", error);
@@ -990,10 +996,11 @@ export class AcpProvider implements Provider {
 
   /** The state of a prompt that has the client's tools: its update handler (text goes to the current sink, tool calls are only tracked and never forwarded), its permission rule and the bridge's call hook. */
   private newTurn(agent: ClientContext, session: PreparedSession, model: string, bridge: BridgeSession, toolsKey: string, sink: GenerationCallbacks, baseUsage: Usage | undefined, mcp?: McpServerSpec[], search = false): ToolTurn {
-    const turn: ToolTurn = { agent, session, model, bridge, toolsKey, ...(mcp ? { mcp } : {}), reported: new Set(), sink, text: "", segment: 0, tracked: new Map(), pending: [], cancelled: false, baseUsage };
+    const turn: ToolTurn = { agent, session, model, bridge, toolsKey, ...(mcp ? { mcp } : {}), reported: new Set(), sink, text: "", segment: 0, reasoning: "", tracked: new Map(), pending: [], cancelled: false, baseUsage };
     this.handlers.set(session.sessionId, (update) => {
       turn.watch?.update(update);
       if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") { turn.text += update.content.text; turn.sink.onText?.(update.content.text); }
+      else if (update.sessionUpdate === "agent_thought_chunk" && update.content.type === "text" && update.content.text) { turn.reasoning += update.content.text; turn.sink.onReasoning?.(update.content.text); }
       else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") trackToolCall(turn.tracked, update);
     });
     this.permissionRules.set(session.sessionId, this.toolRule(this.mcpAccess(mcp, true), turn.tracked, search));
@@ -1049,6 +1056,8 @@ export class AcpProvider implements Provider {
   private suspend(turn: ToolTurn, calls: HeldCall[], history: KeptMessage[]): GenerationResult {
     const text = turn.text.slice(turn.segment);
     turn.segment = turn.text.length;
+    const reasoning = turn.reasoning;
+    turn.reasoning = "";
     turn.sink = {};
     const limit = Math.max(1, this.options.retainedSessions ?? DEFAULT_RETAINED_SESSIONS);
     while (this.kept.length + this.suspendedCount() >= limit) {
@@ -1060,7 +1069,7 @@ export class AcpProvider implements Provider {
     const entry: SuspendedTurn = { turn, calls, ids: calls.map((call) => call.id), transcript: [...history, { role: "assistant", text, images: [], toolCalls: calls.map(({ id, name }) => ({ id, name })) }], timer: setTimeout(() => this.expire(entry, "The client did not return the tool result in time."), this.resultTimeoutMs()) };
     entry.timer.unref?.();
     for (const id of entry.ids) this.suspended.set(id, entry);
-    return { text, stopReason: "tool_calls", usage: null, toolCalls: calls.map(({ id, name, arguments: args }) => ({ id, name, arguments: args })) };
+    return { text, stopReason: "tool_calls", usage: null, ...(reasoning ? { reasoning } : {}), toolCalls: calls.map(({ id, name, arguments: args }) => ({ id, name, arguments: args })) };
   }
 
   /** A suspended turn ran out of time (or room): its held calls get an error result, the turn is cancelled and the session disposed. A late follow-up takes the text fallback. */
@@ -1161,7 +1170,8 @@ export class AcpProvider implements Provider {
         if (this.options.reuseSessions && result.stopReason === "end_turn" && !aborted && !turn.cancelled) keepWith = { transcript: [...messages.map(toKept), { role: "assistant", text, images: [] }], usage: cumulative };
         const mcpCalls = this.collectMcpCalls(turn.tracked, mcpLabels, turn.reported, true);
         const searches = search ? this.collectSearches(turn.tracked, turn.reported, true) : [];
-        return { text, stopReason: result.stopReason, usage, ...(mcpCalls.length ? { mcpCalls } : {}), ...(search ? { searches } : {}) };
+        const reasoning = turn.reasoning;
+        return { text, stopReason: result.stopReason, usage, ...(reasoning ? { reasoning } : {}), ...(mcpCalls.length ? { mcpCalls } : {}), ...(search ? { searches } : {}) };
       }
     } catch (error) {
       if (aborted && !promptSent) return cancelled();

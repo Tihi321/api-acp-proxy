@@ -7,7 +7,8 @@ import { ActivityLog } from "../src/activity.js";
 import type { AcpLike } from "../src/acp.js";
 import type { ProxyConfig } from "../src/config.js";
 import { PLAYGROUND_CSP, PREVIEW_CSP, servePlayground } from "../src/playground-files.js";
-import { chatTitle, curlFor, decodeRate, estimateTokens, formatMs, groupModels, isHttpUrl, parseSseLines, previewDocument, splitBlocks, tokensPerSecond } from "../src/playground/lib.js";
+import { chatTitle, curlFor, decodeRate, estimateTokens, formatMs, groupModels, isHttpUrl, outputTokensEstimate, parseSseLines, previewDocument, splitBlocks, tokensPerSecond } from "../src/playground/lib.js";
+import { highlight, parseMarkdown, safeHref } from "../src/playground/markdown.js";
 import { createProxyServer } from "../src/server.js";
 
 describe("playground helpers", () => {
@@ -73,6 +74,58 @@ describe("playground helpers", () => {
     expect(decodeRate({ outputTokens: 100, totalMs: 2000 })).toBe(50);
     expect(decodeRate({ totalMs: 2000 })).toBeUndefined();
     expect(tokensPerSecond(estimateTokens("x".repeat(400)), 2000)).toBe(50);
+    expect(outputTokensEstimate("x".repeat(200), "y".repeat(200))).toBe(100);
+    expect(outputTokensEstimate("x".repeat(400))).toBe(100);
+  });
+
+  it("parses markdown into an AST: inline marks, safe links, raw html as text, tables, nested lists, quotes, hr and an unclosed fence", () => {
+    const source = [
+      "# Title", "",
+      "Some **b**, *i*, `c`, [ok](https://a.example) and [bad](javascript:alert(1)).", "",
+      "<script>alert(1)</script>", "",
+      "| Name | Qty | Sum |", "|:--|:-:|--:|", "| a | 1 | 2 |", "",
+      "- one", "  1. inner", "- two", "",
+      "> quoted", "", "---", "", "```js", "let x = 1",
+    ].join("\n");
+    const t = (text: string) => ({ type: "text", text });
+    expect(parseMarkdown(source)).toEqual([
+      { type: "heading", level: 1, children: [t("Title")] },
+      { type: "paragraph", children: [
+        t("Some "), { type: "strong", children: [t("b")] }, t(", "), { type: "em", children: [t("i")] }, t(", "), { type: "code", text: "c" }, t(", "),
+        { type: "link", href: "https://a.example", children: [t("ok")] }, t(" and bad."),
+      ] },
+      { type: "paragraph", children: [t("<script>alert(1)</script>")] },
+      { type: "table", align: ["left", "center", "right"], head: [[t("Name")], [t("Qty")], [t("Sum")]], rows: [[[t("a")], [t("1")], [t("2")]]] },
+      { type: "list", ordered: false, items: [{ children: [t("one")], sub: { type: "list", ordered: true, items: [{ children: [t("inner")] }] } }, { children: [t("two")] }] },
+      { type: "blockquote", children: [{ type: "paragraph", children: [t("quoted")] }] },
+      { type: "hr" },
+      { type: "code", lang: "js", code: "let x = 1", closed: false },
+    ]);
+    expect(safeHref("mailto:a@b.c")).toBeDefined();
+    expect(safeHref("/x")).toBeUndefined();
+    // no answer text is ever dropped, also after a nested list of the other kind
+    const texts = (value: unknown): string[] => Array.isArray(value) ? value.flatMap(texts) : value && typeof value === "object" ? Object.entries(value).flatMap(([k, v]) => k === "text" && typeof v === "string" ? [v] : texts(v)) : [];
+    for (const [md, words] of [["- x\n  1. a\n  - b\n- y", ["x", "a", "b", "y"]], ["1. w0\n    - w1\n    1. w2", ["w0", "w1", "w2"]], ["- x\n  - a\n\n  1. b", ["x", "a", "b"]]] as const) {
+      const all = texts(parseMarkdown(md)).join(" ");
+      for (const word of words) expect(all).toContain(word);
+    }
+    // linear time on long space and paren runs
+    for (const hostile of ["a" + " ".repeat(100000) + "b" + "\nc", "http://ab.example/" + ")".repeat(50000)]) {
+      const started = Date.now();
+      parseMarkdown(hostile);
+      expect(Date.now() - started).toBeLessThan(1000);
+    }
+  });
+
+  it("highlights losslessly and classifies js tokens and html tags", () => {
+    const js = 'const s = "x"; // c\nlet n = 42;';
+    const tokens = highlight(js, "js");
+    expect(tokens.map((token) => token.text).join("")).toBe(js);
+    expect(tokens).toEqual(expect.arrayContaining([{ text: "const", cls: "kw" }, { text: '"x"', cls: "str" }, { text: "// c", cls: "com" }, { text: "42", cls: "num" }]));
+    const html = highlight('<a href="x">', "html");
+    expect(html.map((token) => token.cls)).toEqual(expect.arrayContaining(["tag", "attr"]));
+    const odd = "weird 'unclosed\n\\ /* never";
+    expect(highlight(odd, "nope").map((token) => token.text).join("")).toBe(odd);
   });
 });
 
@@ -102,7 +155,7 @@ describe("serving the playground", () => {
   it("serves the page and its fixed files with a strict CSP, and nothing else", async () => {
     const dir = path.join(root, "built");
     mkdirSync(dir, { recursive: true });
-    for (const [name, body] of [["playground.html", "<!doctype html>page"], ["playground.js", "js"], ["lib.js", "lib"], ["playground.css", "css"], ["preview.html", "<!doctype html>preview"], ["secret.txt", "no"]]) writeFileSync(path.join(dir, name), body);
+    for (const [name, body] of [["playground.html", "<!doctype html>page"], ["playground.js", "js"], ["lib.js", "lib"], ["markdown.js", "md"], ["playground.css", "css"], ["preview.html", "<!doctype html>preview"], ["secret.txt", "no"]]) writeFileSync(path.join(dir, name), body);
     const port = await listen(createServer((req, res) => { void servePlayground(req.method ?? "GET", new URL(req.url ?? "/", "http://x").pathname, res, dir).then((handled) => { if (!handled) { res.writeHead(418); res.end(); } }); }));
     const page = await get(port, "/playground");
     expect(page).toMatchObject({ status: 200, text: "<!doctype html>page" });
@@ -111,6 +164,8 @@ describe("serving the playground", () => {
     expect(page.headers["x-content-type-options"]).toBe("nosniff");
     expect(page.headers["cache-control"]).toBe("no-store");
     expect(await get(port, "/playground/playground.js")).toMatchObject({ status: 200, text: "js" });
+    expect(await get(port, "/playground/markdown.js")).toMatchObject({ status: 200, text: "md" });
+    expect((await get(port, "/playground/markdown.js")).headers["content-type"]).toBe("text/javascript; charset=utf-8");
     expect((await get(port, "/playground/playground.css")).headers["content-type"]).toBe("text/css; charset=utf-8");
     const preview = await get(port, "/playground/preview");
     expect(preview).toMatchObject({ status: 200, text: "<!doctype html>preview" });

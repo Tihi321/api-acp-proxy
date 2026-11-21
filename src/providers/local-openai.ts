@@ -91,11 +91,11 @@ export class LocalOpenAiProvider implements Provider {
     const controller = new AbortController(); this.inflight.add(controller);
     const onAbort = (): void => controller.abort();
     if (signal?.aborted) controller.abort(); else signal?.addEventListener("abort", onAbort, { once: true });
-    let text = ""; let usage: Usage | null = null; let finish: string | undefined;
-    const cancelled = (): GenerationResult => ({ text, stopReason: "cancelled", usage: null });
+    let text = ""; let reasoning = ""; let usage: Usage | null = null; let finish: string | undefined;
+    const cancelled = (): GenerationResult => ({ text, stopReason: "cancelled", usage: null, ...(reasoning ? { reasoning } : {}) });
     try {
       let response: Response;
-      try { response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, { method: "POST", headers: this.headers(true), body: JSON.stringify({ model, messages: wire, stream: true, stream_options: { include_usage: true } }), signal: controller.signal }); }
+      try { response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, { method: "POST", headers: this.headers(true), body: JSON.stringify({ model, messages: wire, stream: true, stream_options: { include_usage: true }, ...(options?.maxOutputTokens !== undefined ? { max_tokens: options.maxOutputTokens } : {}) }), signal: controller.signal }); }
       catch (error) { if (controller.signal.aborted) return cancelled(); throw this.notRunning(error); }
       if (!response.ok) {
         const raw = await response.text().catch(() => "");
@@ -106,16 +106,18 @@ export class LocalOpenAiProvider implements Provider {
       this.setState("ready");
       const handle = (payload: string): void => {
         if (!payload || payload === "[DONE]") return;
-        let chunk: { choices?: Array<{ delta?: { content?: unknown }; finish_reason?: string | null }>; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null; error?: { message?: unknown } | string };
+        let chunk: { choices?: Array<{ delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown }; finish_reason?: string | null }>; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; completion_tokens_details?: { reasoning_tokens?: number } } | null; error?: { message?: unknown } | string };
         try { chunk = JSON.parse(payload); } catch { return; }
         if (chunk.error) { const detail = typeof chunk.error === "string" ? chunk.error : String(chunk.error.message ?? "unknown error"); throw new AcpUnavailableError(`${this.displayName} answered HTTP ${response.status}: ${detail}`, undefined, "upstream_error"); }
         const choice = chunk.choices?.[0];
+        const thought = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning;
+        if (typeof thought === "string" && thought) { reasoning += thought; callbacks?.onReasoning?.(thought); }
         const delta = choice?.delta?.content;
         if (typeof delta === "string" && delta) { text += delta; callbacks?.onText?.(delta); }
         if (choice?.finish_reason) finish = choice.finish_reason;
         if (chunk.usage) {
           const inputTokens = chunk.usage.prompt_tokens ?? 0; const outputTokens = chunk.usage.completion_tokens ?? 0;
-          usage = { inputTokens, outputTokens, totalTokens: chunk.usage.total_tokens ?? inputTokens + outputTokens };
+          usage = { inputTokens, outputTokens, totalTokens: chunk.usage.total_tokens ?? inputTokens + outputTokens, ...(typeof chunk.usage.completion_tokens_details?.reasoning_tokens === "number" ? { thoughtTokens: chunk.usage.completion_tokens_details.reasoning_tokens } : {}) };
           callbacks?.onUsage?.(usage);
         }
       };
@@ -144,11 +146,11 @@ export class LocalOpenAiProvider implements Provider {
       }
       if (controller.signal.aborted) return cancelled();
       const stopReason: StopReason = finish === "length" ? "max_tokens" : "end_turn";
-      return { text, stopReason, usage };
+      return { text, stopReason, usage, ...(reasoning ? { reasoning } : {}) };
     } finally {
       signal?.removeEventListener("abort", onAbort);
       this.inflight.delete(controller);
-      this.logger.debug(`${model}: ${text.length} chars`);
+      this.logger.debug(`${model}: ${text.length} chars, ${reasoning.length} reasoning chars`);
     }
   }
 

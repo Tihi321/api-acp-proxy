@@ -9,7 +9,7 @@ export interface OpenAiUsage { prompt: number; completion: number; total: number
 /** Agent-reported usage when present (OpenAI `prompt` includes cached tokens), otherwise an estimate from the prompt and returned text. */
 export function openAiUsage(result: GenerationResult, promptText: string): OpenAiUsage {
   const usage = result.usage;
-  if (!usage) { const prompt = estimateTokens(promptText); const completion = estimateTokens(result.text); return { prompt, completion, total: prompt + completion, cached: 0, reasoning: 0 }; }
+  if (!usage) { const prompt = estimateTokens(promptText); const reasoning = estimateTokens(result.reasoning ?? ""); const completion = estimateTokens(result.text) + reasoning; return { prompt, completion, total: prompt + completion, cached: 0, reasoning }; }
   const prompt = usage.inputTokens + (usage.cachedReadTokens ?? 0) + (usage.cachedWriteTokens ?? 0);
   return { prompt, completion: usage.outputTokens, total: prompt + usage.outputTokens, cached: usage.cachedReadTokens ?? 0, reasoning: usage.thoughtTokens ?? 0 };
 }

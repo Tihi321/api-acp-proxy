@@ -118,6 +118,9 @@ export function previewDocument(blocks: readonly Block[]): string | undefined {
 /** ceil(chars / 4), the proxy's estimate. */
 export function estimateTokens(text: string): number { return Math.ceil(text.length / 4); }
 
+/** The proxy's output estimate: the answer plus the thinking text. */
+export function outputTokensEstimate(content: string, reasoning = ""): number { return estimateTokens(content) + estimateTokens(reasoning); }
+
 /** tokens per second, or undefined when tokens <= 0 or ms <= 0. */
 export function tokensPerSecond(tokens: number, ms: number): number | undefined {
   return tokens > 0 && ms > 0 ? tokens / (ms / 1000) : undefined;
