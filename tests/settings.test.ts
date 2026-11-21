@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import path from "node:path";
 import { loadConfig } from "../src/config.js";
 import { createLogger } from "../src/logger.js";
-import { defaultSettings, defaultSettingsPath, mergeSettings, resolveConfig, SettingsStore, settingsSchema, type SecretCodec } from "../src/settings.js";
+import { defaultSettings, defaultSettingsPath, mergeSettings, resolveConfig, restoreMissingPresets, SettingsStore, settingsSchema, type SecretCodec } from "../src/settings.js";
 
 const dir = path.resolve(".claude/temp/settings-tests", String(process.pid));
 mkdirSync(dir, { recursive: true });
@@ -17,10 +17,29 @@ describe("local provider settings", () => {
     const parsed = settingsSchema.parse({ providers: { gufo: { port: 9000 } } });
     expect(parsed.providers.gufo.port).toBe(9000);
     expect(parsed.providers.gufo.command).toBe("D:\\Gufo\\gufo.cmd");
-    expect(parsed.providers.gufo.args).toContain("--port {port}");
+    expect(parsed.providers.gufo.profiles[0]?.args).toContain("--port {port}");
     expect(parsed.providers.strata.port).toBe(8080);
     expect(parsed.providers.strata.command).toBe("D:\\Strata\\terminal\\run-unsloth-ud-iq4_xs.bat");
     expect(mergeSettings(defaultSettings(), { providers: { strata: { args: "--x" } } }).providers.strata.args).toBe("--x");
+  });
+});
+
+describe("gufo profiles", () => {
+  it("builds presets, migrates the old args, keeps stored profiles and rejects duplicate models", () => {
+    const presets = settingsSchema.parse({}).providers.gufo.profiles;
+    expect(presets.map((p) => [p.id, p.model, p.kind])).toEqual([
+      ["qwen27-q4", "Qwen3.8-27B", "llm"], ["flash-next-q4", "flash-next-q4", "llm"], ["deepseek4", "deepseek4", "llm"],
+      ["qwen-image-2.1", "qwen-image-2.1", "image"], ["qwen-image-2.1-turbo", "qwen-image-2.1-turbo", "image"],
+    ]);
+    const migrated = settingsSchema.parse({ providers: { gufo: { args: "serve llm --model X --port {port}" } } }).providers.gufo.profiles;
+    expect(migrated).toHaveLength(5);
+    expect(migrated.find((p) => p.id === "qwen27-q4")?.args).toBe("serve llm --model X --port {port}");
+    expect(migrated.filter((p) => p.id !== "qwen27-q4")).toEqual(presets.filter((p) => p.id !== "qwen27-q4"));
+    const two = [{ id: "a", label: "A", model: "a", kind: "llm", args: "x" }, { id: "b", label: "B", model: "b", kind: "image", args: "y" }];
+    expect(settingsSchema.parse({ providers: { gufo: { profiles: two } } }).providers.gufo.profiles.map((p) => p.id)).toEqual(["a", "b"]);
+    expect(restoreMissingPresets(settingsSchema.parse({ providers: { gufo: { profiles: two } } }).providers.gufo.profiles)).toHaveLength(7);
+    expect(() => settingsSchema.parse({ providers: { gufo: { profiles: [two[0], { ...two[1], model: "a" }] } } })).toThrow(/Duplicate profile model/);
+    expect(() => settingsSchema.parse({ providers: { gufo: { profiles: [{ ...two[0], id: "strata" }] } } })).toThrow(/reserved/);
   });
 });
 

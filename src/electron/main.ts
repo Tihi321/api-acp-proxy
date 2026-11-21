@@ -9,16 +9,18 @@ import type { ControllerStatus } from "../controller.js";
 import { createLogger } from "../logger.js";
 import { claudeRegistration } from "../providers/claude.js";
 import { codexRegistration } from "../providers/codex.js";
-import { gufoRegistration, strataRegistration } from "../providers/local-openai.js";
+import { createGufoRegistration, createStrataRegistration } from "../providers/local-openai.js";
+import { LocalModelCoordinator, STRATA_PROFILE_ID } from "../local-models.js";
+import type { LocalModelHost } from "../local-models.js";
 import { LocalServerManager } from "../local-servers.js";
 import type { LocalServerSpec } from "../local-servers.js";
 import { listMcpServers } from "../mcp-servers.js";
-import { defaultSettingsPath } from "../settings.js";
-import type { SecretCodec, SettingsPatch } from "../settings.js";
+import { defaultSettingsPath, restoreMissingPresets } from "../settings.js";
+import type { GufoProfile, SecretCodec, SettingsPatch } from "../settings.js";
 import { antigravityRegistration, installAntigravity, readInstallInfo } from "./antigravity.js";
 import { SettingsWindow } from "./settings-window.js";
 import { TrayController } from "./tray.js";
-import type { ActionResult, ActivityView, FieldError, InstallInfoView, InstallResult, OpenTarget, SaveResult, StateView, UsageView } from "../shared/ipc.js";
+import type { ActionResult, ActivityView, FieldError, GufoProfileView, InstallInfoView, InstallResult, OpenTarget, SaveResult, StateView, UsageView } from "../shared/ipc.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(here, "..", "..");
@@ -91,11 +93,66 @@ async function main(): Promise<void> {
   // The hook is also put in NODE_OPTIONS so it reaches the agents' own node grandchildren: codex-acp starts `node codex.js`, which spawns codex.exe without windowsHide (a console window would open for it). The user's existing NODE_OPTIONS is kept and the hook appended.
   const hideWindowsOption = `--require="${hideWindows.replace(/\\/g, "/")}"`;
   const nodeOptions = [process.env.NODE_OPTIONS, hideWindowsOption].filter(Boolean).join(" ");
+  const servers = new LocalServerManager({ logger: logger.child("local") });
+  localServers = servers;
+
+  // The coordinator reads the effective Gufo settings synchronously; the cache is filled before the proxy starts and after every save.
+  type GufoSettings = Awaited<ReturnType<ProxyController["getSettings"]>>["effective"]["providers"]["gufo"];
+  let gufoSettings: GufoSettings | undefined;
+  type StrataSettings = Awaited<ReturnType<ProxyController["getSettings"]>>["effective"]["providers"]["strata"];
+  let strataSettings: StrataSettings | undefined;
+  const refreshLocalSettings = async (): Promise<void> => { const providers = (await proxy.getSettings()).effective.providers; gufoSettings = providers.gufo; strataSettings = providers.strata; };
+  const gufoHost: LocalModelHost = {
+    // Strata counts as the profile `strata`; only one of the two servers runs at a time.
+    current: () => {
+      const list = servers.list();
+      const strata = list.find((candidate) => candidate.id === "strata");
+      if (strata && (strata.state === "starting" || strata.state === "ready")) return { profile: STRATA_PROFILE_ID, state: strata.state };
+      const entry = list.find((candidate) => candidate.id === "gufo");
+      return { profile: entry?.profile, state: entry?.state ?? "stopped", error: entry?.error };
+    },
+    start: async (target) => {
+      if (target.id === STRATA_PROFILE_ID) {
+        const strata = strataSettings;
+        if (!strata) throw new Error("Settings are not loaded yet.");
+        await servers.start({ id: "strata", command: strata.command, args: strata.args, cwd: strata.cwd, port: strata.port });
+        return;
+      }
+      const profile = target as GufoProfile;
+      const settings = gufoSettings;
+      if (!settings) throw new Error("Settings are not loaded yet.");
+      await servers.start({ id: "gufo", command: settings.command, args: profile.args, cwd: settings.cwd, port: settings.port, profile: profile.id, startTimeoutMs: profile.startTimeoutMs });
+    },
+    external: async (target) => {
+      const isStrata = target.id === STRATA_PROFILE_ID;
+      const port = isStrata ? strataSettings?.port : gufoSettings?.port;
+      return port !== undefined && servers.answersExternally(isStrata ? "strata" : "gufo", port);
+    },
+    waitReady: (profile, signal) => new Promise<void>((resolve, reject) => {
+      const serverId = profile === STRATA_PROFILE_ID ? "strata" : "gufo";
+      const name = serverId === "strata" ? "Strata" : "Gufo";
+      const check = (): boolean => {
+        const entry = servers.list().find((candidate) => candidate.id === serverId);
+        if (!entry || (serverId === "gufo" && entry.profile !== profile)) { reject(new Error(`${name} was switched away from '${profile}' while it started.`)); return true; }
+        if (entry.state === "ready") { resolve(); return true; }
+        if (entry.state === "error" || entry.state === "stopped") { reject(new Error(entry.error ?? entry.log[entry.log.length - 1] ?? `${name} '${profile}' stopped before it was ready.`)); return true; }
+        return false;
+      };
+      if (check()) return;
+      const onChange = (): void => { if (check()) cleanup(); };
+      const onAbort = (): void => { cleanup(); reject(new Error("Aborted")); };
+      const cleanup = (): void => { servers.off("change", onChange); signal.removeEventListener("abort", onAbort); };
+      servers.on("change", onChange);
+      if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
+    }),
+  };
+  const coordinator = new LocalModelCoordinator(gufoHost, () => ({ profiles: gufoSettings?.profiles ?? [], switchWaitMs: gufoSettings?.switchWaitMs ?? 30 * 60 * 1000 }));
+
   const proxy = new ProxyController({
     settingsPath,
     logger,
     ...(secretCodec ? { secretCodec } : {}),
-    registry: [codexRegistration, antigravityRegistration, claudeRegistration, gufoRegistration, strataRegistration],
+    registry: [codexRegistration, antigravityRegistration, claudeRegistration, createGufoRegistration({ coordinator }), createStrataRegistration({ coordinator })],
     ctx: {
       dataDir,
       nodeRuntime: { command: process.execPath, argsPrefix: ["--require", hideWindows], env: { ELECTRON_RUN_AS_NODE: "1", NODE_OPTIONS: nodeOptions } },
@@ -163,8 +220,6 @@ async function main(): Promise<void> {
     usageTimer = setTimeout(() => { usageTimer = undefined; if (win.webContents) win.send("proxy:usage", usageView()); }, 500);
   };
 
-  const servers = new LocalServerManager({ logger: logger.child("local") });
-  localServers = servers;
   let localTimer: NodeJS.Timeout | undefined;
   const pushLocalServers = (): void => {
     if (localTimer) return;
@@ -223,6 +278,7 @@ async function main(): Promise<void> {
     if (typeof patch !== "object" || patch === null || Array.isArray(patch)) return { ok: false, errors: [{ path: "", message: "Invalid settings patch" }] };
     try {
       await proxy.applySettings(patch as SettingsPatch);
+      await refreshLocalSettings();
       applyLoginItem((await proxy.getSettings()).effective.server.launchAtLogin);
       return { ok: true };
     } catch (error) {
@@ -243,14 +299,19 @@ async function main(): Promise<void> {
     return action(() => proxy.logout(providerId));
   });
   handle("proxy:localServers", () => servers.list());
-  handle("proxy:startLocalServer", async (id: unknown): Promise<ActionResult> => {
+  handle("proxy:startLocalServer", async (id: unknown, profileId?: unknown): Promise<ActionResult> => {
     if (id !== "gufo" && id !== "strata") return { ok: false, message: "Invalid server" };
     return action(async () => {
-      const settings = (await proxy.getSettings()).effective.providers[id];
-      const spec: LocalServerSpec = { id, command: settings.command, args: settings.args, cwd: settings.cwd, port: settings.port };
-      await servers.start(spec);
+      await refreshLocalSettings();
+      // Both servers start through the coordinator: it queues behind in-flight requests and resolves when ready (minutes for a large model); a queued or failed switch comes back as the error message.
+      if (id === "strata") { await coordinator.switchTo(STRATA_PROFILE_ID); return; }
+      const profiles = gufoSettings!.profiles;
+      const chosen = typeof profileId === "string" && profileId ? profileId : servers.list().find((candidate) => candidate.id === "gufo")?.profile ?? profiles.find((candidate) => candidate.kind === "llm")?.id ?? profiles[0]?.id;
+      if (!chosen) throw new Error("No Gufo profile is configured.");
+      await coordinator.switchTo(chosen);
     });
   });
+  handle("proxy:restoreGufoPresets", (profiles: unknown): GufoProfileView[] => Array.isArray(profiles) ? restoreMissingPresets(profiles as GufoProfile[]) : []);
   handle("proxy:stopLocalServer", (id: unknown): Promise<ActionResult> | ActionResult => {
     if (id !== "gufo" && id !== "strata") return { ok: false, message: "Invalid server" };
     return action(() => servers.stop(id));
@@ -306,6 +367,7 @@ async function main(): Promise<void> {
     return action(() => shell.openExternal(parsed.href));
   });
 
+  await refreshLocalSettings();
   const status = await proxy.start();
   applyLoginItem((await proxy.getSettings()).effective.server.launchAtLogin);
   if (status.server.state === "error") logger.warn(`Server failed to start: ${status.server.error?.message}`);

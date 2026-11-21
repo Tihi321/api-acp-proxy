@@ -1,8 +1,10 @@
 import type { StopReason, Usage } from "@agentclientprotocol/sdk";
-import { messageText, type Message } from "../api.js";
+import { ApiError, messageText, type Message } from "../api.js";
 import type { ProviderRegistration } from "../controller.js";
+import { STRATA_PROFILE_ID, type LocalModelCoordinator } from "../local-models.js";
 import type { Logger } from "../logger.js";
-import { AcpUnavailableError, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type ModelInfo, type Provider, type ProviderState, type ProviderStatus } from "../provider.js";
+import { AcpUnavailableError, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type ImagePassthrough, type ModelInfo, type Provider, type ProviderState, type ProviderStatus } from "../provider.js";
+import type { GufoProfile } from "../settings.js";
 
 export interface LocalOpenAiOptions {
   id: "gufo" | "strata"; displayName: string;
@@ -11,7 +13,17 @@ export interface LocalOpenAiOptions {
   apiKey?: string; logger: Logger;
   /** Default `globalThis.fetch`, not the Electron `net.fetch` of the runtime context (see `registration`). */
   fetch?: typeof fetch;
+  /** Gufo: the models this provider offers (listed whether or not the server runs). Without profiles the upstream's own list is used (Strata). */
+  profiles?: GufoProfile[];
+  /** Gufo: switches/queues the single server to the profile a request names. Without it requests go straight to the upstream. */
+  coordinator?: LocalModelCoordinator;
+  /** Coordinator profile every request of this provider holds a lease on (Strata: `strata`); Gufo derives it from the model's profile. */
+  leaseProfile?: string;
 }
+
+const DEFAULT_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
+const GENERATION_FIELDS = ["prompt", "size", "steps", "seed", "negative_prompt", "guidance_scale", "n"] as const;
+type WireContent = string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
 
 export function notRunningMessage(displayName: string): string { return `${displayName} is not running — start it from the app.`; }
 
@@ -30,6 +42,10 @@ export class LocalOpenAiProvider implements Provider {
   readonly displayName: string;
   readonly ownedBy: string;
   readonly exposeUnprefixed = false;
+  readonly staticModels?: ModelInfo[];
+  private readonly profiles?: GufoProfile[];
+  private readonly coordinator?: LocalModelCoordinator;
+  private readonly leaseProfile?: string;
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly logger: Logger;
@@ -44,6 +60,36 @@ export class LocalOpenAiProvider implements Provider {
     this.id = options.id; this.displayName = options.displayName; this.ownedBy = options.id;
     this.baseUrl = options.baseUrl.replace(/\/+$/, ""); this.apiKey = options.apiKey || undefined; this.logger = options.logger;
     this.fetchImpl = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+    this.coordinator = options.coordinator;
+    this.leaseProfile = options.leaseProfile;
+    if (options.profiles) {
+      this.profiles = options.profiles;
+      this.staticModels = options.profiles.map((profile) => ({ id: profile.model, name: profile.label, kind: profile.kind, vision: profile.kind === "llm" && profile.vision }));
+      this.models = this.staticModels;
+    }
+  }
+
+  private profileOf(model: string): GufoProfile | undefined { return this.profiles?.find((profile) => profile.model === model); }
+
+  acceptsImages(model: string): boolean { const profile = this.profileOf(model); return profile?.kind === "llm" && profile.vision; }
+
+  supportsImageGeneration(model: string): boolean { return this.profileOf(model)?.kind === "image"; }
+
+  requestTimeoutMs(model: string): number | undefined {
+    const profile = this.profileOf(model);
+    return profile?.requestTimeoutMs ?? (profile?.kind === "image" ? DEFAULT_IMAGE_TIMEOUT_MS : undefined);
+  }
+
+  /** Checks the request against the model's profile, then waits for the coordinator to make that profile ready. All 400s come before any switch is started. */
+  async prepareModel(model: string, messages: Message[] | undefined, signal: AbortSignal): Promise<{ release(): void } | undefined> {
+    const profile = this.profileOf(model);
+    if (messages) {
+      if (profile?.kind === "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' generates images; it does not answer chat requests.`, "model");
+      if (messages.some((message) => message.parts.some((part) => part.type === "image")) && !(profile?.kind === "llm" && profile.vision)) throw new ApiError(400, "unsupported_content", `The model '${this.id}/${model}' does not accept image input.`, "messages");
+    } else if (profile && profile.kind !== "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' does not generate images.`, "model");
+    const leaseId = profile?.id ?? this.leaseProfile;
+    if (!leaseId || !this.coordinator) return undefined;
+    return this.coordinator.acquire(leaseId, signal);
   }
 
   status(): ProviderStatus {
@@ -74,9 +120,10 @@ export class LocalOpenAiProvider implements Provider {
     const timer = setTimeout(() => controller.abort(), 5000);
     let response: Response;
     try { response = await this.fetchImpl(`${this.baseUrl}/models`, { headers: this.headers(false), signal: controller.signal }); }
-    catch (error) { throw this.notRunning(error); }
+    catch (error) { const unavailable = this.notRunning(error); if (this.profiles) return this.models; throw unavailable; }
     finally { clearTimeout(timer); this.inflight.delete(controller); }
-    if (!response.ok) { await response.body?.cancel().catch(() => undefined); throw new AcpUnavailableError(`${this.displayName} answered HTTP ${response.status}`, undefined, "upstream_error"); }
+    if (!response.ok) { await response.body?.cancel().catch(() => undefined); if (this.profiles) return this.models; throw new AcpUnavailableError(`${this.displayName} answered HTTP ${response.status}`, undefined, "upstream_error"); }
+    if (this.profiles) { await response.body?.cancel().catch(() => undefined); this.setState("ready"); return this.models; }
     const body = await response.json().catch(() => undefined) as { data?: Array<{ id?: unknown }> } | undefined;
     this.models = (body?.data ?? []).flatMap((entry) => typeof entry.id === "string" ? [{ id: entry.id }] : []);
     this.setState("ready");
@@ -84,9 +131,13 @@ export class LocalOpenAiProvider implements Provider {
   }
 
   async generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
-    const wire: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
+    const wire: Array<{ role: "system" | "user" | "assistant"; content: WireContent }> = [];
+    const vision = this.acceptsImages(model);
     if (options?.instructions) wire.push({ role: "system", content: options.instructions });
-    for (const message of messages) wire.push({ role: message.role === "developer" ? "system" : message.role === "tool" ? "user" : message.role, content: messageText(message) });
+    for (const message of messages) {
+      const images = vision ? message.parts.flatMap((part) => part.type === "image" ? [{ type: "image_url" as const, image_url: { url: `data:${part.mimeType};base64,${part.data}` } }] : []) : [];
+      wire.push({ role: message.role === "developer" ? "system" : message.role === "tool" ? "user" : message.role, content: images.length ? [{ type: "text", text: messageText(message) }, ...images] : messageText(message) });
+    }
 
     const controller = new AbortController(); this.inflight.add(controller);
     const onAbort = (): void => controller.abort();
@@ -154,6 +205,62 @@ export class LocalOpenAiProvider implements Provider {
     }
   }
 
+  /** Forwards an image request to the Gufo image server (Node fetch, bearer key, the request's signal). Upstream 401/403 -> 502 `local_upstream_auth`, 404 -> 502, 413 -> 413, other 4xx -> 400 `invalid_request`, 5xx -> 502 `upstream_error`, no connection -> 503 `local_server_not_running`. */
+  async generateImage(model: string, request: ImagePassthrough, signal: AbortSignal): Promise<{ status: number; body: unknown }> {
+    const profile = this.profileOf(model);
+    if (profile?.kind !== "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' does not generate images.`, "model");
+    const format = request.fields.response_format;
+    if (format !== undefined && format !== "b64_json") throw new ApiError(400, "invalid_request", "Only response_format 'b64_json' is supported.", "response_format");
+    const size = request.fields.size;
+    if (size !== undefined && !(typeof size === "string" && /^\d+x\d+$/.test(size))) throw new ApiError(400, "invalid_request", "size must look like 1024x1024.", "size");
+    const authorization: Record<string, string> = this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {};
+    let init: RequestInit;
+    let path: string;
+    if (request.kind === "generations") {
+      const body: Record<string, unknown> = { model: profile.model };
+      for (const key of GENERATION_FIELDS) if (request.fields[key] !== undefined) body[key] = request.fields[key];
+      if (format !== undefined) body.response_format = format;
+      path = "/images/generations";
+      init = { method: "POST", headers: { "content-type": "application/json", accept: "application/json", ...authorization }, body: JSON.stringify(body) };
+    } else {
+      const form = new FormData();
+      form.append("model", profile.model);
+      for (const key of [...GENERATION_FIELDS, "response_format"]) { const value = request.fields[key]; if (value !== undefined) form.append(key, value); }
+      for (const file of request.files) form.append(file.field, new Blob([file.data as BlobPart], { type: file.type }), file.name);
+      path = "/images/edits";
+      init = { method: "POST", headers: { accept: "application/json", ...authorization }, body: form };
+    }
+    const controller = new AbortController(); this.inflight.add(controller);
+    const forward = (): void => controller.abort();
+    if (signal.aborted) controller.abort(); else signal.addEventListener("abort", forward, { once: true });
+    try {
+      let response: Response;
+      try { response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, signal: controller.signal }); }
+      catch (error) { if (controller.signal.aborted) throw error; throw this.notRunning(error); }
+      const raw = await response.text();
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+      if (!response.ok) {
+        const error = (parsed as { error?: { message?: unknown } | string } | undefined)?.error;
+        const detail = typeof error === "string" ? error : typeof error?.message === "string" ? error.message : raw.slice(0, 300);
+        const status = response.status;
+        if (status === 401 || status === 403) throw new ApiError(502, "local_upstream_auth", `${this.displayName} rejected the request (HTTP ${status}); check the ${this.displayName} API key in Settings.${detail ? ` ${detail}` : ""}`);
+        if (status === 404) throw new ApiError(502, "upstream_error", `${this.displayName} answered HTTP 404: endpoint or model not found${detail ? ` (${detail})` : ""}.`);
+        if (status === 413) throw new ApiError(413, "invalid_request", detail || `${this.displayName} answered HTTP 413: the request is too large.`);
+        if (status >= 400 && status < 500) throw new ApiError(400, "invalid_request", detail || `${this.displayName} answered HTTP ${status}`);
+        throw new ApiError(502, "upstream_error", `${this.displayName} answered HTTP ${response.status}: ${detail}`);
+      }
+      this.setState("ready");
+      const data = (parsed as { data?: unknown } | undefined)?.data;
+      if (!Array.isArray(data) || !data.length || !data.every((entry) => typeof (entry as { b64_json?: unknown } | undefined)?.b64_json === "string")) throw new ApiError(502, "upstream_error", `${this.displayName} answered without image data.`);
+      const object = parsed as Record<string, unknown>;
+      return { status: 200, body: { ...object, created: typeof object.created === "number" ? object.created : Math.floor(Date.now() / 1000), output_format: "png" } };
+    } finally {
+      signal.removeEventListener("abort", forward);
+      this.inflight.delete(controller);
+    }
+  }
+
   async login(): Promise<void> { /* a local server has no login */ }
 
   async close(): Promise<void> {
@@ -162,13 +269,19 @@ export class LocalOpenAiProvider implements Provider {
   }
 }
 
-function registration(id: "gufo" | "strata", displayName: string): ProviderRegistration {
+export interface GufoHost { coordinator?: LocalModelCoordinator }
+
+function registration(id: "gufo" | "strata", displayName: string, host: GufoHost = {}): ProviderRegistration {
   return {
     id, displayName,
     // Node's global fetch on purpose, not ctx.fetch (Electron net.fetch): Strata refuses a POST that carries a browser Origin header.
-    create: ({ providerSettings, ctx }) => new LocalOpenAiProvider({ id, displayName, baseUrl: `http://127.0.0.1:${providerSettings.port as number}/v1`, ...(typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? { apiKey: providerSettings.apiKey } : {}), logger: ctx.logger.child(id) }),
+    create: ({ providerSettings, ctx }) => new LocalOpenAiProvider({ id, displayName, baseUrl: `http://127.0.0.1:${providerSettings.port as number}/v1`, ...(typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? { apiKey: providerSettings.apiKey } : {}), logger: ctx.logger.child(id), ...(id === "gufo" && Array.isArray(providerSettings.profiles) ? { profiles: providerSettings.profiles as GufoProfile[] } : {}), ...(host.coordinator ? { coordinator: host.coordinator, ...(id === "strata" ? { leaseProfile: STRATA_PROFILE_ID } : {}) } : {}) }),
   };
 }
 
-export const gufoRegistration: ProviderRegistration = registration("gufo", "Gufo");
-export const strataRegistration: ProviderRegistration = registration("strata", "Strata");
+/** Gufo with its profiles; `host.coordinator` (the app) switches the single server to the model a request names. */
+export function createGufoRegistration(host: GufoHost = {}): ProviderRegistration { return registration("gufo", "Gufo", host); }
+export const gufoRegistration: ProviderRegistration = createGufoRegistration();
+/** Strata; `host.coordinator` (the app) makes each request hold a lease on the `strata` profile so a Gufo switch cannot kill it mid-generation. */
+export function createStrataRegistration(host: GufoHost = {}): ProviderRegistration { return registration("strata", "Strata", host); }
+export const strataRegistration: ProviderRegistration = createStrataRegistration();

@@ -371,13 +371,12 @@
             <div class="view-actions">
               <span class="badge" data-role="badge" title="The proxy's view of the provider">-</span>
               <span class="badge" data-role="server-badge" title="The server process started by this app">stopped</span>
-              <button type="button" class="primary" data-role="start">Start</button>
               <button type="button" data-role="stop">Stop</button>
               <label class="switch"><input id="providers.gufo.enabled" type="checkbox"><span>Enabled</span></label>
             </div>
           </div>
           <small data-note-for="providers.gufo.enabled"></small>
-          <p class="note">Only one local server runs at a time: starting one stops the other.</p>
+          <p class="note">Only one local server runs at a time: starting one stops the other. Gufo runs one model profile at a time; a request for another profile switches it when the running one is idle.</p>
 
           <section class="card">
             <div class="card-head"><h2>Server</h2></div>
@@ -386,13 +385,20 @@
             <div class="grid">
               <label class="field"><span>Port</span><input id="providers.gufo.port" type="number" min="1" max="65535"><small>The proxy sends requests to 127.0.0.1 on this port and checks it for readiness. <code>{port}</code> in the arguments is replaced with it.</small><small data-note-for="providers.gufo.port"></small><small class="error" data-error-for="providers.gufo.port"></small></label>
               <label class="field"><span>Max concurrent requests <em class="muted">(empty = 1)</em></span><input id="providers.gufo.maxConcurrent" type="number" min="0"><small data-note-for="providers.gufo.maxConcurrent"></small><small class="error" data-error-for="providers.gufo.maxConcurrent"></small></label>
+              <label class="field"><span>Wait for a busy server (minutes)</span><input id="gufo-switch-wait" type="number" min="1" step="1"><small>A request for another model waits this long while the running model is busy, then gets 503 <code>local_model_busy</code>.</small></label>
             </div>
             <label class="field wide"><span>Command</span><input id="providers.gufo.command" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.gufo.command"></small><small class="error" data-error-for="providers.gufo.command"></small></label>
-            <label class="field wide"><span>Arguments</span><input id="providers.gufo.args" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.gufo.args"></small><small class="error" data-error-for="providers.gufo.args"></small></label>
             <label class="field wide"><span>Working folder</span><input id="providers.gufo.cwd" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.gufo.cwd"></small><small class="error" data-error-for="providers.gufo.cwd"></small></label>
             <label class="field wide"><span>API key <em class="muted">(optional; sent to the server as a Bearer token, never put on the command line)</em></span>
               <div class="row"><input id="providers.gufo.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="gufo-key-show">Show</button></div>
               <small data-note-for="providers.gufo.apiKey"></small><small class="error" data-error-for="providers.gufo.apiKey"></small></label>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Profiles</h2><button type="button" class="small push" id="gufo-add-profile">Add profile</button><button type="button" class="small" id="gufo-restore-presets">Restore missing presets</button></div>
+            <p class="note">One model per profile, exposed as <code>gufo/&lt;model id&gt;</code>. <code>{port}</code> in the arguments is replaced with the port. Starting a large model can take many minutes. Save before starting a profile you just edited (Start saves for you).</p>
+            <div id="gufo-profiles"></div>
+            <p class="msg" id="gufo-profiles-msg" role="status"></p>
           </section>
 
           <section class="card models">

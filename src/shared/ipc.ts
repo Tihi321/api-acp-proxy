@@ -48,11 +48,14 @@ export interface SettingsView {
       enabled: boolean; apiKey?: string; oauthToken?: string; configDir?: string; executablePath?: string; authMethodId?: string;
       termsAcknowledgedAt?: string; maxConcurrent?: number; maxPromptChars?: number;
     };
-    gufo: LocalProviderSettingsView;
+    gufo: GufoProviderSettingsView;
     strata: LocalProviderSettingsView;
   };
 }
 export interface LocalProviderSettingsView { enabled: boolean; port: number; command: string; args: string; cwd: string; apiKey?: string; maxConcurrent?: number }
+/** One Gufo model profile (see `GufoProfile` in settings.ts); `SettingsPatchView` replaces `profiles` as a whole array. */
+export interface GufoProfileView { id: string; label: string; model: string; kind: "llm" | "image"; args: string; vision: boolean; startTimeoutMs?: number; requestTimeoutMs?: number }
+export interface GufoProviderSettingsView { enabled: boolean; port: number; command: string; cwd: string; apiKey?: string; maxConcurrent?: number; switchWaitMs: number; profiles: GufoProfileView[] }
 export type LocalServerId = "gufo" | "strata";
 export type LocalServerState = "stopped" | "starting" | "ready" | "error";
 export interface LocalServerStatusView {
@@ -60,6 +63,7 @@ export interface LocalServerStatusView {
   name: string;                 // "Gufo" | "Strata"
   state: LocalServerState;
   port?: number;                // of the last start
+  profile?: string;             // gufo: id of the profile of the last start (filled by the launcher, T2)
   pid?: number;                 // while the process lives
   startedAt?: number;           // epoch ms of the last spawn
   readyAt?: number;             // epoch ms the probe first answered 200
@@ -74,7 +78,7 @@ export type SettingsPatchView = {
     codex?: { [K in keyof SettingsView["providers"]["codex"]]?: SettingsView["providers"]["codex"][K] | null };
     antigravity?: { [K in keyof SettingsView["providers"]["antigravity"]]?: SettingsView["providers"]["antigravity"][K] | null };
     claude?: { [K in keyof SettingsView["providers"]["claude"]]?: SettingsView["providers"]["claude"][K] | null };
-    gufo?: { [K in keyof LocalProviderSettingsView]?: LocalProviderSettingsView[K] | null };
+    gufo?: { [K in keyof GufoProviderSettingsView]?: GufoProviderSettingsView[K] | null };
     strata?: { [K in keyof LocalProviderSettingsView]?: LocalProviderSettingsView[K] | null };
   };
 };
@@ -203,8 +207,10 @@ export interface ProxyApi {
   refreshPlanLimits(providerId: string, force?: boolean): Promise<PlanLimitsView>;
   /** Both local servers, in the order gufo, strata. */
   getLocalServers(): Promise<LocalServerStatusView[]>;
-  /** Resolves once the process is spawned (not when ready); readiness arrives through `onLocalServers`. */
-  startLocalServer(id: LocalServerId): Promise<ActionResult>;
+  /** Gufo: switches to `profileId` (default: the running or first llm profile) through the coordinator, so it may queue behind a busy model; resolves when the model is ready (can take many minutes) or fails with the reason. Progress arrives through `onLocalServers`. Strata: resolves once spawned. */
+  startLocalServer(id: LocalServerId, profileId?: string): Promise<ActionResult>;
+  /** `profiles` plus the built-in presets whose id is absent (pure; the renderer cannot import the settings module). */
+  restoreGufoPresets(profiles: GufoProfileView[]): Promise<GufoProfileView[]>;
   stopLocalServer(id: LocalServerId): Promise<ActionResult>;
   onLocalServers(callback: (servers: LocalServerStatusView[]) => void): () => void;
 }

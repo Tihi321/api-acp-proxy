@@ -2,11 +2,11 @@ import { AcpProvider } from "./acp-provider.js";
 import type { ModelId, ProxyConfig } from "./config.js";
 import type { Message } from "./api.js";
 import { codexDescriptor } from "./providers/codex.js";
-import { defaultRuntimeContext, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type RuntimeContext } from "./provider.js";
+import { defaultRuntimeContext, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type ImagePassthrough, type RuntimeContext } from "./provider.js";
 import { createLogger } from "./logger.js";
 
 export { AcpUnavailableError } from "./provider.js";
-export type { GenerateOptions, GenerationCallbacks, GenerationResult } from "./provider.js";
+export type { GenerateOptions, GenerationCallbacks, GenerationResult, ImagePassthrough } from "./provider.js";
 
 /** Compatibility wrapper: a Codex-backed AcpProvider configured from ProxyConfig. */
 export class AcpBridge extends AcpProvider {
@@ -15,7 +15,7 @@ export class AcpBridge extends AcpProvider {
   }
 }
 
-export interface ModelEntry { id: string; ownedBy?: string; /** Limit on the prompt text in characters, when the provider has one. */ maxPromptChars?: number; /** ISO time the provider's usage limit resets; present only while it is exhausted. */ exhaustedUntil?: string; }
+export interface ModelEntry { id: string; ownedBy?: string; /** Limit on the prompt text in characters, when the provider has one. */ maxPromptChars?: number; /** ISO time the provider's usage limit resets; present only while it is exhausted. */ exhaustedUntil?: string; /** Gufo profile models: what the model is and whether it accepts image input. */ kind?: "llm" | "image"; vision?: boolean; }
 export interface AcpLike {
   generate(model: ModelId, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   close?(): Promise<void>;
@@ -33,6 +33,13 @@ export interface AcpLike {
   canCallTools?(model: string): boolean;
   /** Whether the model's provider can be given remote MCP servers (a bridge without this method is asked and answers 400 itself). */
   canUseMcp?(model: string): boolean;
+  /** Before the request timer starts: switches/queues to a local model (rejects with ApiError 400/503); `messages` is undefined for an image request. The lease is released when the request ends. */
+  prepareModel?(model: string, messages: Message[] | undefined, signal: AbortSignal): Promise<{ release(): void } | undefined>;
+  /** The request timeout of the model (undefined: the server default). */
+  requestTimeoutMs?(model: string): number | undefined;
+  /** Whether image requests for the model are forwarded to an image server (Gufo) instead of going through an agent. */
+  imagePassthrough?(model: string): boolean;
+  generateImage?(model: string, request: ImagePassthrough, signal: AbortSignal): Promise<{ status: number; body: unknown }>;
   /** The id of the provider the model routes to (for the activity log). */
   providerOf?(model: string): string | undefined;
   /** Running and waiting requests per provider id (for /healthz). */

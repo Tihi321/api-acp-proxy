@@ -7,7 +7,7 @@ import { ActivityLog } from "../src/activity.js";
 import type { AcpLike } from "../src/acp.js";
 import type { ProxyConfig } from "../src/config.js";
 import { PLAYGROUND_CSP, PREVIEW_CSP, servePlayground } from "../src/playground-files.js";
-import { chatTitle, curlFor, decodeRate, estimateTokens, formatMs, groupModels, isHttpUrl, outputTokensEstimate, parseSseLines, previewDocument, splitBlocks, tokensPerSecond } from "../src/playground/lib.js";
+import { chatTitle, curlFor, decodeRate, estimateTokens, formatMs, groupModels, isHttpUrl, outputTokensEstimate, parseSseLines, previewDocument, splitBlocks, tokensPerSecond, validateImageForm } from "../src/playground/lib.js";
 import { highlight, parseMarkdown, safeHref } from "../src/playground/markdown.js";
 import { createProxyServer } from "../src/server.js";
 
@@ -115,6 +115,14 @@ describe("playground helpers", () => {
       parseMarkdown(hostile);
       expect(Date.now() - started).toBeLessThan(1000);
     }
+  });
+
+  it("validates the image form: size rules, steps range, file count", () => {
+    expect(validateImageForm({ size: "1024x1024", steps: "", files: 0 })).toBeUndefined();
+    expect(validateImageForm({ size: "1000x1000", steps: "", files: 0 })).toBeDefined();
+    expect(validateImageForm({ size: "4128x64", steps: "", files: 0 })).toBeDefined();
+    expect(validateImageForm({ size: "1024x1024", steps: "1", files: 0 })).toBeDefined();
+    expect(validateImageForm({ size: "1024x1024", steps: "", files: 11 })).toBeDefined();
   });
 
   it("highlights losslessly and classifies js tokens and html tags", () => {

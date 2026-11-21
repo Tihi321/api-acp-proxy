@@ -17,6 +17,8 @@ import { McpEndpoint, type McpEndpointTuning } from "./mcp-endpoint.js";
 import { servePlayground } from "./playground-files.js";
 import { CHARS_PER_TOKEN, chatUsage, openAiUsage, responsesUsage, usageEstimated } from "./usage.js";
 import type { ActivityEntry, ActivityFeature, ActivityLog } from "./activity.js";
+import { QueueAbortedError } from "./limiter.js";
+import type { ImagePassthrough } from "./provider.js";
 
 const startedAt = Date.now();
 
@@ -70,7 +72,11 @@ function authenticated(request: IncomingMessage, config: ProxyConfig): boolean {
   return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
-async function readBody(request: IncomingMessage, limit: number): Promise<unknown> {
+/** Image requests (a multipart edit carries up to 10 files) may be larger than the JSON limit. */
+const IMAGE_BODY_MIN_BYTES = 64 * 1024 * 1024;
+const imageBodyLimit = (config: ProxyConfig): number => Math.max(config.maxBodyBytes, IMAGE_BODY_MIN_BYTES);
+
+async function readRaw(request: IncomingMessage, limit: number): Promise<Buffer> {
   const contentLength = Number(request.headers["content-length"] || 0);
   if (contentLength > limit) throw new ApiError(413, "request_too_large", "Request body exceeds the configured limit.");
   const chunks: Buffer[] = [];
@@ -81,8 +87,27 @@ async function readBody(request: IncomingMessage, limit: number): Promise<unknow
     chunks.push(Buffer.from(chunk));
   }
   if (!chunks.length) throw new ApiError(400, "invalid_request", "Request body is required.");
-  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new ApiError(400, "invalid_request", "Request body must be valid JSON."); }
+  return Buffer.concat(chunks);
 }
+
+function parseJson(raw: Buffer): unknown {
+  try { return JSON.parse(raw.toString("utf8")); } catch { throw new ApiError(400, "invalid_request", "Request body must be valid JSON."); }
+}
+
+async function readBody(request: IncomingMessage, limit: number): Promise<unknown> { return parseJson(await readRaw(request, limit)); }
+
+/** Waits for a local model before the request timer starts. `undefined` when there is nothing to wait for; `null` when the client left while waiting. The release is idempotent. */
+async function prepare(bridge: AcpLike, model: string, messages: Message[] | undefined, signal: AbortSignal): Promise<{ release(): void } | undefined | null> {
+  let lease: { release(): void } | undefined;
+  try { lease = await bridge.prepareModel?.(model, messages, signal); }
+  catch (error) { if (error instanceof QueueAbortedError) return null; throw error; }
+  if (!lease) return undefined;
+  let released = false;
+  return { release: () => { if (released) return; released = true; lease!.release(); } };
+}
+
+/** Request timer duration: the model's own timeout (a Gufo image profile) or the server default. */
+const timeoutFor = (bridge: AcpLike, model: string, config: ProxyConfig): number => bridge.requestTimeoutMs?.(model) ?? config.timeoutMs;
 
 function modelCheck(bridge: AcpLike): ModelCheck | undefined { return bridge.hasModel ? (model) => bridge.hasModel!(model) : undefined; }
 
@@ -167,15 +192,19 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   const created = Math.floor(Date.now() / 1000);
   const abortController = new AbortController();
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; abortController.abort(); }, config.timeoutMs);
   request.once("aborted", () => abortController.abort());
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
   const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}), ...(parsed.maxOutputTokens !== undefined ? { maxOutputTokens: parsed.maxOutputTokens } : {}) };
   // Refuse an oversized prompt with a real HTTP 400 before a stream starts.
-  try { bridge.checkPrompt?.(parsed.model, parsed.conversation, options); } catch (error) { clearTimeout(timer); throw error; }
-  const asJson = parsed.format.type === "json";
+  bridge.checkPrompt?.(parsed.model, parsed.conversation, options);
+  // Before the lease: a throw here must not leave a lease or timer behind.
   const promptText = serializePrompt(parsed.conversation, options.instructions);
+  // A local model is switched to (and waited for) before the timer starts, so the wait does not count against it.
+  const lease = await prepare(bridge, parsed.model, parsed.conversation, abortController.signal);
+  if (lease === null) return;
+  const timer = setTimeout(() => { timedOut = true; abortController.abort(); }, timeoutFor(bridge, parsed.model, config));
+  const asJson = parsed.format.type === "json";
   /** `url_citation` annotations of the answer (only for a request with web search; none otherwise). */
   const chatAnnotations = (result: GenerationResult) => parsed.webSearch ? extractCitations(finalText(parsed.format, result)).map(({ url, title, start_index, end_index }) => ({ type: "url_citation", url_citation: { start_index, end_index, url, title } })) : undefined;
   const chatToolCalls = (result: GenerationResult) => (result.toolCalls ?? []).map((call, index) => ({ index, id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } }));
@@ -184,9 +213,9 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   if (parsed.stream) {
     const includeUsage = (parsed.stream_options as { include_usage?: boolean } | null | undefined)?.include_usage === true;
     const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) => writeSse(response, { id: chatId, object: "chat.completion.chunk", created, model: parsed.model, choices, ...(includeUsage ? { usage: null } : {}), ...extra });
-    beginSse(response);
-    chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }]);
     try {
+      beginSse(response);
+      chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }]);
       const delta = (text: string) => chunk([{ index: 0, delta: { content: text }, finish_reason: null }]);
       const thinking = (text: string) => chunk([{ index: 0, delta: { reasoning_content: text }, finish_reason: null }]);
       const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, asJson ? undefined : delta, abortController.signal, thinking);
@@ -208,7 +237,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
       Object.assign(trace, refusedMark(error), { error: errorCode(error) });
       writeSse(response, errorEnvelope(error instanceof Error ? error : new Error(String(error))));
       endSse(response);
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); lease?.release(); }
     return;
   }
   try {
@@ -221,7 +250,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
     const content = finalText(parsed.format, result);
     const annotations = chatAnnotations(result);
     json(response, 200, { id: chatId, object: "chat.completion", created, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: toolCalls.length && !content ? null : content, ...(result.reasoning ? { reasoning_content: result.reasoning } : {}), ...(annotations ? { annotations } : {}), ...(images.length ? { images } : {}), ...(toolCalls.length ? { tool_calls: toolCalls.map(({ index: _index, ...call }) => call) } : {}) }, finish_reason: reason }], usage: usageFor(result) });
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); lease?.release(); }
 }
 
 /** The provider names the `messages` parameter; a Responses request calls it `input`. */
@@ -242,17 +271,22 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   const created = Math.floor(Date.now() / 1000);
   const abortController = new AbortController();
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; abortController.abort(); }, config.timeoutMs);
   request.once("aborted", () => abortController.abort());
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
   const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(mcpServers ? { mcpServers } : {}), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}), ...(parsed.maxOutputTokens !== undefined ? { maxOutputTokens: parsed.maxOutputTokens } : {}) };
-  try { bridge.checkPrompt?.(parsed.model, parsed.conversation, options); } catch (error) { clearTimeout(timer); throw forResponses(error); }
+  const promptText = serializePrompt(parsed.conversation, options.instructions);
+  let lease: { release(): void } | undefined | null;
+  try {
+    bridge.checkPrompt?.(parsed.model, parsed.conversation, options);
+    lease = await prepare(bridge, parsed.model, parsed.conversation, abortController.signal);
+  } catch (error) { throw forResponses(error); }
+  if (lease === null) return;
+  const timer = setTimeout(() => { timedOut = true; abortController.abort(); }, timeoutFor(bridge, parsed.model, config));
   const asJson = parsed.format.type === "json";
   const withTools = parsed.functionTools !== undefined;
   // The message item comes after the generated images, the web searches and the MCP calls, so its text is not streamed live (it is only known when the turn is over).
   const deferred = parsed.generateImages || mcpServers !== undefined || parsed.webSearch !== undefined;
-  const promptText = serializePrompt(parsed.conversation, options.instructions);
   /** A `function_call` output item per tool call the agent made; they come after the message. */
   const callItems = (result: GenerationResult) => (result.toolCalls ?? []).map((call) => ({ id: id("fc"), type: "function_call", status: "completed", call_id: call.id, name: call.name, arguments: call.arguments }));
   /** An `image_generation_call` item per generated image; they come before the message. */
@@ -269,8 +303,6 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   if (parsed.stream) {
     let sequenceNumber = 0;
     const event = (type: string, payload: Record<string, unknown>) => writeSse(response, { type, sequence_number: sequenceNumber++, ...payload }, type);
-    beginSse(response);
-    event("response.created", { response: { id: responseId, object: "response", created_at: created, status: "in_progress", model: parsed.model, output: [], usage: null, store: false } });
     // With images the message comes after them, so its events (and its text) wait until the generation is over; otherwise it is item 0 and streams live.
     const openMessage = (index: number) => {
       event("response.output_item.added", { output_index: index, item: { id: messageId, type: "message", status: "in_progress", role: "assistant", content: [] } });
@@ -278,8 +310,10 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
     };
     // With function tools the message item opens with the first text, since a response that goes straight to tool calls has none.
     let messageOpen = false;
-    if (!deferred && !withTools) openMessage(0);
     try {
+      beginSse(response);
+      event("response.created", { response: { id: responseId, object: "response", created_at: created, status: "in_progress", model: parsed.model, output: [], usage: null, store: false } });
+      if (!deferred && !withTools) openMessage(0);
       const delta = (text: string, index = 0) => {
         if (withTools && !deferred && !messageOpen) { messageOpen = true; openMessage(0); }
         event("response.output_text.delta", { item_id: messageId, output_index: index, content_index: 0, delta: text });
@@ -326,7 +360,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
       event(terminalEvent, { response: base(result, status, items, calls) });
       endSse(response);
     } catch (error) { Object.assign(trace, refusedMark(error), { error: errorCode(error) }); const mapped = forResponses(error); writeSse(response, errorEnvelope(mapped instanceof Error ? mapped : new Error(String(mapped)))); endSse(response); }
-    finally { clearTimeout(timer); }
+    finally { clearTimeout(timer); lease?.release(); }
     return;
   }
   try {
@@ -335,32 +369,92 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
     traceUsage(trace, result, promptText);
     json(response, 200, base(result, mapStopReason(result.stopReason).responseStatus, [...imageItems(result), ...searchItems(result), ...mcpItems(result)], callItems(result)));
   } catch (error) { throw forResponses(error); }
-  finally { clearTimeout(timer); }
+  finally { clearTimeout(timer); lease?.release(); }
+}
+
+/** The parts an image request shares: the client-gone signal, the lease before the timer, the model's own timeout. `run` gets the signal and tells whether the timer fired. */
+async function withImageRequest(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, model: string, run: (signal: AbortSignal, timedOut: () => boolean) => Promise<void>): Promise<void> {
+  const abortController = new AbortController();
+  let timedOut = false;
+  request.once("aborted", () => abortController.abort());
+  request.once("close", () => { if (!request.complete) abortController.abort(); });
+  response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
+  const lease = await prepare(bridge, model, undefined, abortController.signal);
+  if (lease === null) return;
+  const timer = setTimeout(() => { timedOut = true; abortController.abort(); }, timeoutFor(bridge, model, config));
+  try { await run(abortController.signal, () => timedOut); }
+  finally { clearTimeout(timer); lease?.release(); }
+}
+
+/** Forwards an image request to the provider's image server (Gufo) and relays the answer. */
+async function runPassthrough(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, trace: Trace, model: string, passthrough: ImagePassthrough): Promise<void> {
+  trace.model = model;
+  trace.features.add("imageGeneration");
+  await withImageRequest(request, response, config, bridge, model, async (signal, timedOut) => {
+    let result: { status: number; body: unknown };
+    try { result = await bridge.generateImage!(model, passthrough, signal); }
+    catch (error) {
+      if (timedOut()) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
+      if (signal.aborted) return;
+      throw error;
+    }
+    if (timedOut()) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
+    json(response, result.status, result.body);
+  });
 }
 
 async function handleImageGeneration(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, trace: Trace): Promise<void> {
-  const parsed = normalizeImageGeneration(await readBody(request, config.maxBodyBytes), modelCheck(bridge));
+  const raw = await readRaw(request, imageBodyLimit(config));
+  const body = parseJson(raw);
+  const peek = typeof body === "object" && body !== null && !Array.isArray(body) ? (body as { model?: unknown }).model : undefined;
+  if (typeof peek === "string" && bridge.imagePassthrough?.(peek)) {
+    await runPassthrough(request, response, config, bridge, trace, peek, { kind: "generations", fields: body as Record<string, unknown> });
+    return;
+  }
+  // The ACP path keeps the normal body limit.
+  if (raw.length > config.maxBodyBytes) throw new ApiError(413, "request_too_large", "Request body exceeds the configured limit.");
+  const parsed = normalizeImageGeneration(body, modelCheck(bridge));
   trace.model = parsed.model;
   trace.features.add("imageGeneration");
   requireImageGeneration(bridge, parsed.model);
   const created = Math.floor(Date.now() / 1000);
-  const abortController = new AbortController();
-  let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; abortController.abort(); }, config.timeoutMs);
-  request.once("aborted", () => abortController.abort());
-  request.once("close", () => { if (!request.complete) abortController.abort(); });
-  response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
-  try {
-    const result = await runGeneration(bridge, parsed.model, parsed.conversation, { images: true }, undefined, undefined, abortController.signal);
-    if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
+  await withImageRequest(request, response, config, bridge, parsed.model, async (signal, timedOut) => {
+    const result = await runGeneration(bridge, parsed.model, parsed.conversation, { images: true }, undefined, undefined, signal);
+    if (timedOut()) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
     traceUsage(trace, result, serializePrompt(parsed.conversation));
     const image = result.images?.[0];
     if (!image) { const said = result.text.trim().slice(0, 500); throw new ApiError(502, "no_image_generated", `The agent did not generate an image.${said ? ` It said: ${said}` : ""}`); }
     json(response, 200, { created, data: [{ b64_json: image.data, ...(image.revisedPrompt ? { revised_prompt: image.revisedPrompt } : {}) }], output_format: imageFormatName(image.mimeType) });
-  } finally { clearTimeout(timer); }
+  });
 }
 
-const ENDPOINTS = new Set(["GET /v1/models", "POST /v1/chat/completions", "POST /v1/images/generations", "POST /v1/responses"]);
+const MAX_EDIT_IMAGES = 10;
+
+/** `POST /v1/images/edits` (multipart): only for a model whose provider proxies an image server. */
+async function handleImageEdits(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, trace: Trace): Promise<void> {
+  const raw = await readRaw(request, imageBodyLimit(config));
+  const contentType = request.headers["content-type"] ?? "";
+  if (!/^multipart\/form-data/i.test(contentType)) throw new ApiError(400, "invalid_request", "Request body must be multipart/form-data.");
+  let form: FormData;
+  try { form = await new Response(new Uint8Array(raw), { headers: { "content-type": contentType } }).formData(); }
+  catch { throw new ApiError(400, "invalid_request", "Request body must be valid multipart/form-data."); }
+  const model = form.get("model");
+  if (typeof model !== "string" || !model) throw new ApiError(400, "invalid_request", "'model' is required.", "model");
+  if (bridge.hasModel && !bridge.hasModel(model)) throw new ApiError(404, "model_not_found", `The model '${model}' does not exist.`, "model");
+  if (!bridge.imagePassthrough?.(model)) throw new ApiError(400, "model_not_capable", `The model '${model}' does not support image edits.`, "model");
+  if (form.has("mask")) throw new ApiError(400, "invalid_request", "'mask' is not supported.", "mask");
+  const fields: Record<string, string> = {};
+  const files: Array<{ field: string; name: string; type: string; data: Uint8Array }> = [];
+  for (const [key, value] of form.entries()) {
+    if (typeof value === "string") { if (key !== "model") fields[key] = value; continue; }
+    if (key !== "image" && key !== "image[]") throw new ApiError(400, "invalid_request", `Unexpected file field '${key}'.`, key);
+    files.push({ field: key, name: value.name, type: value.type, data: new Uint8Array(await value.arrayBuffer()) });
+  }
+  if (files.length < 1 || files.length > MAX_EDIT_IMAGES) throw new ApiError(400, "invalid_request", `Send between 1 and ${MAX_EDIT_IMAGES} images in 'image'.`, "image");
+  await runPassthrough(request, response, config, bridge, trace, model, { kind: "edits", fields, files });
+}
+
+const ENDPOINTS = new Set(["GET /v1/models", "POST /v1/chat/completions", "POST /v1/images/generations", "POST /v1/images/edits", "POST /v1/responses"]);
 
 /** Records the request in the activity log when its response is over (a closed connection counts too). Only the fields of `ActivityEntry`. */
 function track(activity: ActivityLog, bridge: AcpLike, response: ServerResponse, endpoint: string, trace: Trace): void {
@@ -412,9 +506,10 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
       if (options.activity && !mcpRoute) track(options.activity, bridge, response, ENDPOINTS.has(route) ? route : "other", trace);
       if (!authenticated(request, config)) { trace.error = "invalid_api_key"; json(response, 401, { error: { message: "Invalid or missing bearer token.", type: "invalid_request_error", code: "invalid_api_key", param: null } }); return; }
       if (mcpRoute) { await mcp.handle(request, response); return; }
-      if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : []; json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai", ...(model.maxPromptChars ? { max_prompt_chars: model.maxPromptChars } : {}), ...(model.exhaustedUntil ? { exhausted_until: model.exhaustedUntil } : {}) })) }); return; }
+      if (method === "GET" && url.pathname === "/v1/models") { const models = bridge.listModels ? await bridge.listModels() : []; json(response, 200, { object: "list", data: models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: model.ownedBy ?? "openai", ...(model.maxPromptChars ? { max_prompt_chars: model.maxPromptChars } : {}), ...(model.kind ? { kind: model.kind } : {}), ...(model.vision !== undefined ? { vision: model.vision } : {}), ...(model.exhaustedUntil ? { exhausted_until: model.exhaustedUntil } : {}) })) }); return; }
       if (method === "POST" && url.pathname === "/v1/chat/completions") { await handleChat(request, response, config, bridge, trace, options.fetch); return; }
       if (method === "POST" && url.pathname === "/v1/images/generations") { await handleImageGeneration(request, response, config, bridge, trace); return; }
+      if (method === "POST" && url.pathname === "/v1/images/edits") { await handleImageEdits(request, response, config, bridge, trace); return; }
       if (method === "POST" && url.pathname === "/v1/responses") { await handleResponses(request, response, config, bridge, trace, options.fetch); return; }
       trace.error = "not_found";
       json(response, 404, { error: { message: "Not found.", type: "invalid_request_error", code: "not_found", param: null } });

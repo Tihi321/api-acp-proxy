@@ -1,0 +1,3 @@
+- 2026-11-21 implement: stale providers.gufo.args field in renderer (src/renderer/settings.ts:71, settings.html:391) - suggested: replaced by T6
+- 2026-11-21 implement: MCP generate_image on a Gufo image model calls bridge.generate (chat) instead of the image passthrough (src/mcp-endpoint.ts:733) - suggested: route to generateImage
+- 2026-11-21 implement: start() with different-profile concurrent calls can interleave while awaiting stop (src/local-servers.ts) - suggested: coordinator serialises; keep in mind
