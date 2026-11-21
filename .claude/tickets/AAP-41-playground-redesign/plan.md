@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 request: REQ-0009
 repos: [api-acp-proxy]
 branch: AAP-41_playground-redesign
