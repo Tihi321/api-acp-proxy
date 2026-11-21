@@ -9,7 +9,7 @@ export type Inline =
   | { type: "code"; text: string }
   | { type: "link"; href: string; children: Inline[] } // href already passed safeHref
   | { type: "br" }; // a soft line break inside a paragraph (keeps today's pre-wrap look)
-export interface ListItem { children: Inline[]; sub?: ListBlock }
+export interface ListItem { children: Inline[]; sub?: ListBlock; rest?: MdBlock[] } // rest: blocks that follow the sub list inside the item (e.g. a list of the other kind)
 export interface ListBlock { type: "list"; ordered: boolean; start?: number; items: ListItem[] }
 export type Align = "left" | "center" | "right" | null;
 export type MdBlock =
@@ -105,11 +105,11 @@ function inline(text: string, links: boolean): Inline[] {
     const c = text[i] as string;
     if (c === "\\") {
       const next = text[i + 1] ?? "";
-      if (next === "\n") { buf = buf.replace(/ +$/, ""); push({ type: "br" }); i += 2; continue; }
+      if (next === "\n") { buf = trimEndSpaces(buf); push({ type: "br" }); i += 2; continue; }
       if (isAsciiPunct(next)) { buf += next; i += 2; continue; }
       buf += c; i++; continue;
     }
-    if (c === "\n") { buf = buf.replace(/ +$/, ""); push({ type: "br" }); i++; continue; }
+    if (c === "\n") { buf = trimEndSpaces(buf); push({ type: "br" }); i++; continue; }
     if (c === "`") {
       const len = runLen.get(i) ?? 1;
       const close = nextRun.get(i);
@@ -138,10 +138,11 @@ function inline(text: string, links: boolean): Inline[] {
       let j = i;
       while (j < n && !/[\s<>]/.test(text[j] as string)) j++;
       let end = j;
+      let closes = countChar(text, i, end, ")"), opens = countChar(text, i, end, "("); // counted once, adjusted as the end moves
       for (;;) { // trailing punctuation belongs to the sentence, an unbalanced `)` too
         const last = text[end - 1] ?? "";
         if (end > i && /[.,;:!?'"*_\]]/.test(last)) end--;
-        else if (last === ")" && countChar(text, i, end, ")") > countChar(text, i, end, "(")) end--;
+        else if (last === ")" && closes > opens) { end--; closes--; }
         else break;
       }
       const url = text.slice(i, end);
@@ -188,6 +189,12 @@ function inline(text: string, links: boolean): Inline[] {
   flush();
   while (stack.length > 1) dissolve(stack.pop() as Frame);
   return root.children;
+}
+
+function trimEndSpaces(s: string): string {
+  let end = s.length;
+  while (end > 0 && s[end - 1] === " ") end--;
+  return end === s.length ? s : s.slice(0, end);
 }
 
 function countChar(text: string, from: number, to: number, char: string): number {
@@ -432,7 +439,18 @@ function parseList(lines: string[], start: number, depth: number): { list: ListB
     if (depth < MAX_NESTING) sub = body.findIndex((line) => { const m = markerOf(line); return m !== undefined && !isHr(line) && m.indent >= base + 2; });
     for (const line of sub < 0 ? body : body.slice(0, sub)) textLines.push(line.trim());
     item.children = parseInline(textLines.join("\n"));
-    if (sub >= 0) item.sub = parseList(body.slice(sub), 0, depth + 1).list;
+    if (sub >= 0) {
+      const subBody = body.slice(sub);
+      const parsed = parseList(subBody, 0, depth + 1);
+      item.sub = parsed.list;
+      const leftover = subBody.slice(parsed.next); // lines after the sub list ended (another kind of list, text after a blank line): never dropped
+      const firstText = leftover.find((line) => line.trim());
+      if (firstText !== undefined) {
+        const cut = indentOf(firstText);
+        const rest = parseBlocks(leftover.map((line) => { let k = 0; while (k < cut && line[k] === " ") k++; return line.slice(k); }), depth + 1);
+        if (rest.length) item.rest = rest;
+      }
+    }
     list.items.push(item);
   }
   return { list, next: Math.max(i, start + 1) };

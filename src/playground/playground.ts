@@ -143,6 +143,7 @@ function listNode(list: ListBlock): HTMLElement {
     const li = make("li");
     li.append(...inlineNodes(item.children));
     if (item.sub) li.append(listNode(item.sub));
+    if (item.rest) li.append(...markdownNodes(item.rest));
     node.append(li);
   }
   return node;
@@ -193,7 +194,7 @@ function codeFigure(lang: string, code: string): HTMLElement {
   const copy = make("button", "copy", "Copy");
   copy.type = "button";
   const label = (text: string) => { copy.textContent = text; setTimeout(() => { copy.textContent = "Copy"; }, 1500); };
-  copy.onclick = () => void navigator.clipboard.writeText(code).then(() => label("Copied"), () => label("Copy failed"));
+  copy.onclick = () => void Promise.resolve().then(() => navigator.clipboard.writeText(code)).then(() => label("Copied"), () => label("Copy failed"));
   caption.append(make("span", "lang", lang), copy);
   const codeNode = make("code");
   codeNode.append(...highlight(code, lang).map((token) => token.cls ? make("span", `tok-${token.cls}`, token.text) : document.createTextNode(token.text)));

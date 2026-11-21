@@ -61,7 +61,7 @@ import path from "node:path";
 //                                    as one agent_message_chunk and ends with end_turn at once (no delay, no other switch applies)
 //   FAKE_ACP_ANSWER=<json>          the plain answer as agent_message_chunks, one per string of the array (instead of "fake response")
 //   FAKE_ACP_THOUGHT=<json>         before the answer of a plain prompt, one agent_thought_chunk per string of the array (thinking, never part of the answer)
-//   FAKE_ACP_RATE_LIMIT=<json>     before the plain answer, a usage_update with _meta {"_claude/rateLimit": <json>} like claude-agent-acp
+//   FAKE_ACP_RATE_LIMIT=<json>      before the plain answer, a usage_update with _meta {"_claude/rateLimit": <json>} like claude-agent-acp
 //   FAKE_ACP_LOG=<file>             append every request as a JSON line {method, params}; permission answers as {method: "permission_response", params: <the response result>}
 const env = process.env;
 const pending = new Map();

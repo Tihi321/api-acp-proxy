@@ -103,6 +103,18 @@ describe("playground helpers", () => {
     ]);
     expect(safeHref("mailto:a@b.c")).toBeDefined();
     expect(safeHref("/x")).toBeUndefined();
+    // no answer text is ever dropped, also after a nested list of the other kind
+    const texts = (value: unknown): string[] => Array.isArray(value) ? value.flatMap(texts) : value && typeof value === "object" ? Object.entries(value).flatMap(([k, v]) => k === "text" && typeof v === "string" ? [v] : texts(v)) : [];
+    for (const [md, words] of [["- x\n  1. a\n  - b\n- y", ["x", "a", "b", "y"]], ["1. w0\n    - w1\n    1. w2", ["w0", "w1", "w2"]], ["- x\n  - a\n\n  1. b", ["x", "a", "b"]]] as const) {
+      const all = texts(parseMarkdown(md)).join(" ");
+      for (const word of words) expect(all).toContain(word);
+    }
+    // linear time on long space and paren runs
+    for (const hostile of ["a" + " ".repeat(100000) + "b" + "\nc", "http://ab.example/" + ")".repeat(50000)]) {
+      const started = Date.now();
+      parseMarkdown(hostile);
+      expect(Date.now() - started).toBeLessThan(1000);
+    }
   });
 
   it("highlights losslessly and classifies js tokens and html tags", () => {
