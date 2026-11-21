@@ -37,7 +37,7 @@ describe("LocalServerManager", () => {
     const cwd = path.resolve(".");
     const spec = (id: LocalServerId, port: number): LocalServerSpec => ({ id, command: process.execPath, args: "--port {port}", cwd, port });
 
-    expect(manager.list().map((s) => s.id)).toEqual(["gufo", "strata"]);
+    expect(manager.list().map((s) => s.id)).toEqual(["gufo", "strata", "llama"]);
     await manager.start(spec("gufo", 18081));
     await waitFor("gufo", "ready");
     const gufoChild = children[0];
@@ -51,7 +51,7 @@ describe("LocalServerManager", () => {
     expect(state("gufo").log).toContain("up");
 
     await manager.stopAll();
-    expect(manager.list().map((s) => s.state)).toEqual(["stopped", "stopped"]);
+    expect(manager.list().map((s) => s.state)).toEqual(["stopped", "stopped", "stopped"]);
     expect(children.every((child) => child.exitCode !== null || child.signalCode !== null)).toBe(true);
   });
 

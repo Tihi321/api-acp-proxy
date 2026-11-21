@@ -5,8 +5,8 @@ import type { Logger } from "./logger.js";
 import { killProcessTree } from "./process-tree.js";
 import type { LocalServerId, LocalServerStatusView } from "./shared/ipc.js";
 
-export const LOCAL_SERVER_IDS: readonly LocalServerId[] = ["gufo", "strata"];
-export const LOCAL_SERVER_NAMES: Record<LocalServerId, string> = { gufo: "Gufo", strata: "Strata" };
+export const LOCAL_SERVER_IDS: readonly LocalServerId[] = ["gufo", "strata", "llama"];
+export const LOCAL_SERVER_NAMES: Record<LocalServerId, string> = { gufo: "Gufo", strata: "Strata", llama: "Llama.cpp" };
 
 export interface LocalServerSpec { id: LocalServerId; command: string; args: string; cwd: string; port: number; profile?: string; startTimeoutMs?: number }
 

@@ -27,20 +27,24 @@ const localProviderSchema = (defaults: { port: number; command: string; args: st
   args: z.string().default(defaults.args),
 }).default({});
 
-/** One Gufo model: the launcher runs `args`, the proxy exposes it as `gufo/<model>`. */
-const gufoProfileSchema = z.object({
+/** Fields shared by the Gufo and Llama.cpp profiles. */
+const profileBase = z.object({
   /** Slug, unique in the list. */
   id: z.string().regex(/^[a-z0-9._-]{1,48}$/, "A profile id is 1 to 48 characters of a-z, 0-9, '.', '_' or '-'."),
   label: z.string().min(1),
-  /** The id exposed as gufo/<model> and sent upstream; unique in the list. */
+  /** The id exposed as <provider>/<model> and sent upstream; unique in the list. */
   model: z.string().min(1),
-  kind: z.enum(["llm", "image"]),
-  /** One command-line string, {port} replaced; passed to cmd.exe as written after the quoted command. */
-  args: z.string(),
   /** llm only: accepts image parts. */
   vision: z.boolean().default(false),
   startTimeoutMs: z.number().int().positive().optional(),
   requestTimeoutMs: z.number().int().positive().optional(),
+});
+
+/** One Gufo model: the launcher runs `args`, the proxy exposes it as `gufo/<model>`. */
+const gufoProfileSchema = profileBase.extend({
+  kind: z.enum(["llm", "image"]),
+  /** One command-line string, {port} replaced; passed to cmd.exe as written after the quoted command. */
+  args: z.string(),
 });
 export type GufoProfile = z.infer<typeof gufoProfileSchema>;
 
@@ -79,6 +83,121 @@ const gufoProviderSchema = z.preprocess(migrateGufo, z.object({
   switchWaitMs: z.number().int().positive().default(30 * 60 * 1000),
   profiles: z.array(gufoProfileSchema).default([]).superRefine((profiles, ctx) => {
     profiles.forEach((profile, index) => { if (profile.id === "strata") ctx.addIssue({ code: "custom", path: [index, "id"], message: "The profile id 'strata' is reserved for the Strata server." }); });
+    for (const key of ["id", "model"] as const) {
+      const seen = new Set<string>();
+      profiles.forEach((profile, index) => {
+        if (seen.has(profile[key])) ctx.addIssue({ code: "custom", path: [index, key], message: `Duplicate profile ${key} '${profile[key]}'.` });
+        seen.add(profile[key]);
+      });
+    }
+  }),
+}).default({} as never));
+
+export const LLAMA_SOURCES = ["ggml-org", "unsloth"] as const;
+export type LlamaSource = (typeof LLAMA_SOURCES)[number];
+export const LLAMA_SPEC_TYPES = ["none", "draft-simple", "draft-eagle3", "draft-mtp", "draft-dflash", "draft-dspark", "draft-dflash2",
+  "draft-lilicorr", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod", "ngram-cache"] as const;
+const layers = z.union([z.enum(["auto", "all"]), z.number().int().min(0)]);
+
+/** One llama.cpp model: structured fields that generate the llama-server args; the proxy exposes it as `llama/<model>`. Always an llm. */
+const llamaProfileSchema = profileBase.extend({
+  /** Relative to `modelsDir` or absolute; the first shard of a split model. */
+  modelFile: z.string().min(1),
+  mmprojFile: z.string().min(1).optional(),
+  ctxSize: z.number().int().positive().optional(),
+  gpuLayers: layers.default("auto"),
+  flashAttn: z.enum(["auto", "on", "off"]).default("auto"),
+  specType: z.enum(LLAMA_SPEC_TYPES).default("none"),
+  draftFile: z.string().min(1).optional(),
+  draftNMax: z.number().int().positive().optional(),
+  draftNMin: z.number().int().min(0).optional(),
+  draftGpuLayers: layers.optional(),
+  /** Appended verbatim after the generated flags. */
+  extraArgs: z.string().default(""),
+  /** Where "Download model files" fetches from. */
+  hf: z.object({
+    repo: z.string().min(1),
+    revision: z.string().min(1).default("main"),
+    quant: z.string().min(1),
+    mmproj: z.string().optional(),
+    draft: z.string().optional(),
+  }).optional(),
+  requires: z.object({
+    minBuild: z.number().int().positive().optional(),
+    sources: z.array(z.enum(LLAMA_SOURCES)).optional(),
+  }).optional(),
+}).refine((profile) => !profile.vision || !!profile.mmprojFile, { path: ["mmprojFile"], message: "A vision profile needs an mmproj file." });
+export type LlamaProfile = z.infer<typeof llamaProfileSchema>;
+
+const INKLING_SAMPLING = "--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0";
+/** The built-in llama.cpp profiles (editable; the exact file names are inferred and corrected by "Download model files"). */
+export const LLAMA_PRESETS: readonly LlamaProfile[] = [
+  {
+    id: "inkling-2-mini", label: "Inkling 2 Mini (Q8_0, vision)", model: "inkling-2-mini", vision: true,
+    modelFile: "ggml-org/Inkling-2-Mini-GGUF/Inkling-2-Mini-Q8_0.gguf", mmprojFile: "ggml-org/Inkling-2-Mini-GGUF/mmproj-Inkling-2-Mini-BF16.gguf",
+    ctxSize: 32768, gpuLayers: "all", flashAttn: "auto", specType: "none", extraArgs: INKLING_SAMPLING,
+    hf: { repo: "ggml-org/Inkling-2-Mini-GGUF", revision: "main", quant: "Q8_0", mmproj: "mmproj-Inkling-2-Mini-BF16.gguf" },
+    requires: { minBuild: 12607, sources: ["unsloth"] },
+  },
+  {
+    id: "inkling-2-mini-dspark", label: "Inkling 2 Mini DSpark (Unsloth build)", model: "inkling-2-mini-dspark", vision: true,
+    modelFile: "unsloth/Inkling-2-Mini-GGUF/Inkling-2-Mini-UD-Q8_K_XL.gguf", mmprojFile: "unsloth/Inkling-2-Mini-GGUF/mmproj-F16.gguf",
+    ctxSize: 32768, gpuLayers: "all", flashAttn: "auto", specType: "draft-dspark", draftFile: "unsloth/Inkling-2-Mini-GGUF/dspark-Inkling-2-Mini-Q8_0.gguf",
+    draftNMax: 3, draftGpuLayers: 99, extraArgs: INKLING_SAMPLING,
+    hf: { repo: "unsloth/Inkling-2-Mini-GGUF", revision: "main", quant: "UD-Q8_K_XL", mmproj: "mmproj-F16.gguf", draft: "dspark-Inkling-2-Mini-Q8_0.gguf" },
+    requires: { sources: ["unsloth"] },
+  },
+];
+const cloneLlamaPresets = (): LlamaProfile[] => structuredClone(LLAMA_PRESETS) as LlamaProfile[];
+
+/** `profiles` plus the presets whose id and model are absent (same rule as `restoreMissingPresets`). Pure. */
+export function restoreMissingLlamaPresets(profiles: readonly LlamaProfile[]): LlamaProfile[] {
+  const have = new Set(profiles.map((profile) => profile.id));
+  const models = new Set(profiles.map((profile) => profile.model));
+  return [...structuredClone(profiles) as LlamaProfile[], ...cloneLlamaPresets().filter((preset) => !have.has(preset.id) && !models.has(preset.model))];
+}
+
+const llamaInstallInfoSchema = z.object({
+  source: z.enum(LLAMA_SOURCES),
+  tag: z.string(),
+  build: z.number().int().optional(),
+  backend: z.string(),
+  arch: z.enum(["x64", "arm64"]),
+  assetName: z.string(),
+  sha256: z.string(),
+  runtimeAssetName: z.string().optional(),
+  command: z.string(),
+  dir: z.string(),
+  installedAt: z.string(),
+});
+export type LlamaInstallInfo = z.infer<typeof llamaInstallInfoSchema>;
+
+const llamaProviderSchema = z.preprocess((input) => {
+  const raw = isPlain(input) ? input : {};
+  return Array.isArray(raw.profiles) ? raw : { ...raw, profiles: cloneLlamaPresets() };
+}, z.object({
+  enabled: z.boolean().default(true),
+  /** 127.0.0.1:<port>: where the proxy sends requests and the launcher probes /v1/models; always passed as `--port`. */
+  port: z.number().int().min(1).max(65535).default(8082),
+  maxConcurrent: z.number().int().min(0).default(1),
+  /** How long a request waits for a busy local server before it gets 503 local_model_busy. */
+  switchWaitMs: z.number().int().positive().default(30 * 60 * 1000),
+  modelsDir: z.string().default("D:\\LlamaCpp\\models"),
+  /** Hugging Face token (secret; encrypted at rest like apiKey). */
+  hfToken: z.string().optional(),
+  binary: z.object({
+    mode: z.enum(["managed", "custom"]).default("managed"),
+    /** Managed installs go to <dir>/<source>-<tag>-<backend>/. */
+    dir: z.string().default("D:\\LlamaCpp\\bin"),
+    source: z.enum(LLAMA_SOURCES).default("ggml-org"),
+    backend: z.string().default("rocm"),
+    arch: z.enum(["x64", "arm64"]).default("x64"),
+    /** Mode custom: full path of llama-server.exe. */
+    customPath: z.string().optional(),
+    customBuild: z.number().int().optional(),
+    installed: llamaInstallInfoSchema.optional(),
+  }).default({}),
+  profiles: z.array(llamaProfileSchema).default([]).superRefine((profiles, ctx) => {
     for (const key of ["id", "model"] as const) {
       const seen = new Set<string>();
       profiles.forEach((profile, index) => {
@@ -188,6 +307,7 @@ export const settingsSchema = z.object({
       usageLimitPattern: z.string().refine((value) => { try { new RegExp(value); return true; } catch { return false; } }, "must be a valid regular expression").optional(),
     }).default({}),
     gufo: gufoProviderSchema,
+    llama: llamaProviderSchema,
     strata: localProviderSchema({ port: 8080, command: "D:\\Strata\\terminal\\run-unsloth-ud-iq4_xs.bat", args: "", cwd: "D:\\Strata" }),
   }).default({}),
   /** MCP servers a Responses request may name by `server_label` (JSON only, no settings-window editor). Headers and env are stored as written. */
@@ -231,7 +351,7 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
 
 function mapSecrets(settings: Settings, map: (value: string) => string | undefined): Settings {
   const copy = structuredClone(settings);
-  const holders: Array<[Record<string, unknown>, string]> = [[copy.server, "apiKey"], [copy.providers.antigravity, "apiKey"], [copy.providers.claude, "apiKey"], [copy.providers.claude, "oauthToken"], [copy.providers.gufo, "apiKey"], [copy.providers.strata, "apiKey"]];
+  const holders: Array<[Record<string, unknown>, string]> = [[copy.server, "apiKey"], [copy.providers.antigravity, "apiKey"], [copy.providers.claude, "apiKey"], [copy.providers.claude, "oauthToken"], [copy.providers.gufo, "apiKey"], [copy.providers.strata, "apiKey"], [copy.providers.llama, "hfToken"]];
   for (const [holder, key] of holders) {
     const value = holder[key];
     if (typeof value !== "string") continue;

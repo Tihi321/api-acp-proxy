@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { ProxyApi, StateView, InstallProgressView, ActivityView, UsageView, LocalServerStatusView } from "../shared/ipc.js";
+import type { ProxyApi, StateView, InstallProgressView, ActivityView, UsageView, LocalServerStatusView, LlamaProgressView } from "../shared/ipc.js";
 
 // Sandboxed preload: only `electron` may be required at runtime, so this file has no other runtime imports.
 const invoke = <T,>(channel: string, ...args: unknown[]): Promise<T> => ipcRenderer.invoke(channel, ...args) as Promise<T>;
@@ -40,5 +40,17 @@ const api: ProxyApi = {
   copyText: (text) => invoke("proxy:copyText", text),
   openExternal: (url) => invoke("proxy:openExternal", url),
   onState: (callback) => subscribe<StateView>("proxy:state", callback),
+  // T7: bridge methods added by T1 only to keep the ProxyApi type satisfied; main.ts handlers come with T7.
+  pickDirectory: (title, defaultPath) => invoke("proxy:pickDirectory", title, defaultPath),
+  llamaReleases: (source, refresh) => invoke("proxy:llamaReleases", source, refresh),
+  installLlama: (request) => invoke("proxy:installLlama", request),
+  checkLlamaExecutable: (path) => invoke("proxy:checkLlamaExecutable", path),
+  hfListFiles: (link) => invoke("proxy:hfListFiles", link),
+  hfDownload: (request) => invoke("proxy:hfDownload", request),
+  downloadProfileModels: (profileId) => invoke("proxy:downloadProfileModels", profileId),
+  cancelLlamaDownload: (job) => invoke("proxy:cancelLlamaDownload", job),
+  restoreLlamaPresets: (profiles) => invoke("proxy:restoreLlamaPresets", profiles),
+  llamaStatus: () => invoke("proxy:llamaStatus"),
+  onLlamaProgress: (callback) => subscribe<LlamaProgressView>("proxy:llamaProgress", callback),
 };
 contextBridge.exposeInMainWorld("proxyApi", api);

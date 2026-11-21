@@ -50,13 +50,39 @@ export interface SettingsView {
     };
     gufo: GufoProviderSettingsView;
     strata: LocalProviderSettingsView;
+    llama: LlamaProviderSettingsView;
   };
 }
 export interface LocalProviderSettingsView { enabled: boolean; port: number; command: string; args: string; cwd: string; apiKey?: string; maxConcurrent?: number }
 /** One Gufo model profile (see `GufoProfile` in settings.ts); `SettingsPatchView` replaces `profiles` as a whole array. */
 export interface GufoProfileView { id: string; label: string; model: string; kind: "llm" | "image"; args: string; vision: boolean; startTimeoutMs?: number; requestTimeoutMs?: number }
 export interface GufoProviderSettingsView { enabled: boolean; port: number; command: string; cwd: string; apiKey?: string; maxConcurrent?: number; switchWaitMs: number; profiles: GufoProfileView[] }
-export type LocalServerId = "gufo" | "strata";
+export type LlamaSourceView = "ggml-org" | "unsloth";
+export type LlamaLayersView = "auto" | "all" | number;
+/** One llama.cpp model profile (see `LlamaProfile` in settings.ts); `SettingsPatchView` replaces `profiles` as a whole array. */
+export interface LlamaProfileView {
+  id: string; label: string; model: string; vision: boolean; modelFile: string; mmprojFile?: string; ctxSize?: number;
+  gpuLayers: LlamaLayersView; flashAttn: "auto" | "on" | "off"; specType: string; draftFile?: string; draftNMax?: number; draftNMin?: number;
+  draftGpuLayers?: LlamaLayersView; extraArgs: string;
+  hf?: { repo: string; revision: string; quant: string; mmproj?: string; draft?: string };
+  requires?: { minBuild?: number; sources?: LlamaSourceView[] };
+  startTimeoutMs?: number; requestTimeoutMs?: number;
+}
+/** What the main process saved after an install (see `LlamaInstallInfo` in settings.ts). */
+export interface LlamaInstallInfoView {
+  source: LlamaSourceView; tag: string; build?: number; backend: string; arch: "x64" | "arm64"; assetName: string; sha256: string;
+  runtimeAssetName?: string; command: string; dir: string; installedAt: string;
+}
+export interface LlamaBinarySettingsView {
+  mode: "managed" | "custom"; dir: string; source: LlamaSourceView; backend: string; arch: "x64" | "arm64";
+  customPath?: string; customBuild?: number; installed?: LlamaInstallInfoView;
+}
+/** `SettingsPatchView` replaces `profiles` and `binary` as whole values. */
+export interface LlamaProviderSettingsView {
+  enabled: boolean; port: number; maxConcurrent?: number; switchWaitMs: number; modelsDir: string; hfToken?: string;
+  binary: LlamaBinarySettingsView; profiles: LlamaProfileView[];
+}
+export type LocalServerId = "gufo" | "strata" | "llama";
 export type LocalServerState = "stopped" | "starting" | "ready" | "error";
 export interface LocalServerStatusView {
   id: LocalServerId;
@@ -80,6 +106,7 @@ export type SettingsPatchView = {
     claude?: { [K in keyof SettingsView["providers"]["claude"]]?: SettingsView["providers"]["claude"][K] | null };
     gufo?: { [K in keyof GufoProviderSettingsView]?: GufoProviderSettingsView[K] | null };
     strata?: { [K in keyof LocalProviderSettingsView]?: LocalProviderSettingsView[K] | null };
+    llama?: { [K in keyof LlamaProviderSettingsView]?: LlamaProviderSettingsView[K] | null };
   };
 };
 
@@ -175,6 +202,32 @@ export type InstallResult = { ok: true; info: InstallInfoView } | { ok: false; m
 export type PickResult = { path?: string };
 export type OpenTarget = "codexHome" | "settingsFile";
 
+/** Same list as `DownloadErrorCode` in download.ts (C5); repeated because shared types import no Node modules. */
+export type DownloadErrorCodeView = "download_host_not_allowed" | "download_http_error" | "download_checksum_mismatch" | "download_size_mismatch"
+  | "download_cancelled" | "download_disk_space" | "download_busy" | "hf_link_invalid" | "hf_auth_required" | "hf_terms_required" | "hf_not_found"
+  | "llama_release_not_found" | "llama_asset_not_found" | "llama_no_digest" | "llama_server_missing" | "llama_build_too_old";
+export type Failure = { ok: false; message: string; code?: DownloadErrorCodeView };
+export interface LlamaProgressView { job: "binary" | "model"; phase: "release" | "download" | "verify" | "extract" | "done" | "error" | "cancelled"; file?: string; received?: number; total?: number; message?: string }
+export interface LlamaAssetView {
+  name: string; size: number; sha256?: string; url: string; backend: string; arch: "x64" | "arm64";
+  runtime?: { name: string; size: number; sha256?: string; url: string };
+}
+export interface LlamaReleaseView { source: LlamaSourceView; tag: string; build?: number; publishedAt: string; assets: LlamaAssetView[] }
+export interface HfFileView { path: string; size: number; sha256?: string; saveAs: string }
+export interface HfFileGroupView { kind: "model" | "mmproj" | "draft"; label: string; quant?: string; files: HfFileView[]; totalSize: number; split: boolean }
+export interface LlamaStatusView {
+  binary: { mode: "managed" | "custom"; command?: string; source: LlamaSourceView | "custom"; tag?: string; build?: number; backend?: string; exists: boolean };
+  profiles: Record<string, { build: "ok" | "too_old" | "unknown"; buildMessage?: string; missingFiles: string[] }>;
+  /** Running jobs. */
+  jobs: { binary: boolean; model: boolean };
+}
+export type LlamaReleasesResult = { ok: true; releases: LlamaReleaseView[] } | Failure;
+export type LlamaInstallResult = { ok: true; info: LlamaInstallInfoView } | Failure;
+export type LlamaCheckResult = { ok: true; build?: number; version: string } | Failure;
+export type HfListResult = { ok: true; repo: string; revision: string; quant?: string; groups: HfFileGroupView[] } | Failure;
+export type HfDownloadResult = { ok: true; paths: string[] } | Failure;
+export type ProfileModelsResult = { ok: true; profile: LlamaProfileView } | Failure;
+
 export interface ProxyApi {
   getState(): Promise<StateView>;
   saveSettings(patch: SettingsPatchView): Promise<SaveResult>;
@@ -205,7 +258,7 @@ export interface ProxyApi {
   getPlanLimits(): Promise<PlanLimitsView[]>;
   /** Probes unless a value younger than 60 s exists and `force` is not true. */
   refreshPlanLimits(providerId: string, force?: boolean): Promise<PlanLimitsView>;
-  /** Both local servers, in the order gufo, strata. */
+  /** The local servers, in the order gufo, strata, llama. */
   getLocalServers(): Promise<LocalServerStatusView[]>;
   /** Gufo: switches to `profileId` (default: the running or first llm profile) through the coordinator, so it may queue behind a busy model; resolves when the model is ready (can take many minutes) or fails with the reason. Progress arrives through `onLocalServers`. Strata: resolves once spawned. */
   startLocalServer(id: LocalServerId, profileId?: string): Promise<ActionResult>;
@@ -213,6 +266,23 @@ export interface ProxyApi {
   restoreGufoPresets(profiles: GufoProfileView[]): Promise<GufoProfileView[]>;
   stopLocalServer(id: LocalServerId): Promise<ActionResult>;
   onLocalServers(callback: (servers: LocalServerStatusView[]) => void): () => void;
+  /** Folder picker (`openDirectory`, `createDirectory`). */
+  pickDirectory(title: string, defaultPath?: string): Promise<PickResult>;
+  llamaReleases(source: LlamaSourceView, refresh?: boolean): Promise<LlamaReleasesResult>;
+  /** On success main saves `binary.installed`, `mode = "managed"`, source, backend and arch. */
+  installLlama(request: { source: LlamaSourceView; tag: string; backend: string; arch: "x64" | "arm64" }): Promise<LlamaInstallResult>;
+  /** On success main saves `binary.customPath`, `binary.customBuild` and `mode = "custom"`. */
+  checkLlamaExecutable(path: string): Promise<LlamaCheckResult>;
+  hfListFiles(link: string): Promise<HfListResult>;
+  /** `files` are paths from the listing; main re-lists to get sizes and checksums. */
+  hfDownload(request: { repo: string; revision: string; files: string[] }): Promise<HfDownloadResult>;
+  /** Downloads the files of `profile.hf` and writes the real relative paths back into the stored profile. */
+  downloadProfileModels(profileId: string): Promise<ProfileModelsResult>;
+  cancelLlamaDownload(job: "binary" | "model"): Promise<void>;
+  /** `profiles` plus the built-in llama presets whose id and model are absent (pure). */
+  restoreLlamaPresets(profiles: LlamaProfileView[]): Promise<LlamaProfileView[]>;
+  llamaStatus(): Promise<LlamaStatusView>;
+  onLlamaProgress(callback: (progress: LlamaProgressView) => void): () => void;
 }
 
 declare global {

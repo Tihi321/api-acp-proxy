@@ -3,7 +3,7 @@ import { mcpAddCommand, mcpEndpointUrl } from "./mcp-command.js";
 import { initUsageView } from "./usage-view.js";
 import type { ActivityView, GufoProfileView, InstallProgressView, LocalServerId, LocalServerStatusView, ProviderStatusView, SaveResult, SettingsPatchView, StateView } from "../shared/ipc.js";
 
-type Scope = "server" | "codex" | "antigravity" | "claude" | "gufo" | "strata";
+type Scope = "server" | "codex" | "antigravity" | "claude" | "gufo" | "strata" | "llama"; // T8: llama added by T1 only to keep the widened LocalServerId compiling
 interface FieldSpec { path: string; kind: "text" | "number" | "bool" | "select"; scope: Scope; optional?: boolean }
 
 const api = window.proxyApi;
@@ -111,7 +111,7 @@ const featureChips: Array<{ label: string; on: (status: ProviderStatusView) => b
 
 let state: StateView | undefined;
 let activity: ActivityView[] = [];
-const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, claude: false, gufo: false, strata: false };
+const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, claude: false, gufo: false, strata: false, llama: false }; // T8
 /** Launcher state of the local model servers, in the order gufo, strata. */
 let localServers: LocalServerStatusView[] = [];
 const usage = initUsageView({ api, showView: (name) => showView(name) });

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import path from "node:path";
 import { loadConfig } from "../src/config.js";
 import { createLogger } from "../src/logger.js";
-import { defaultSettings, defaultSettingsPath, mergeSettings, resolveConfig, restoreMissingPresets, SettingsStore, settingsSchema, type SecretCodec } from "../src/settings.js";
+import { defaultSettings, defaultSettingsPath, mergeSettings, resolveConfig, restoreMissingLlamaPresets, restoreMissingPresets, SettingsStore, settingsSchema, type SecretCodec } from "../src/settings.js";
 
 const dir = path.resolve(".claude/temp/settings-tests", String(process.pid));
 mkdirSync(dir, { recursive: true });
@@ -21,6 +21,14 @@ describe("local provider settings", () => {
     expect(parsed.providers.strata.port).toBe(8080);
     expect(parsed.providers.strata.command).toBe("D:\\Strata\\terminal\\run-unsloth-ud-iq4_xs.bat");
     expect(mergeSettings(defaultSettings(), { providers: { strata: { args: "--x" } } }).providers.strata.args).toBe("--x");
+    const llama = settingsSchema.parse({}).providers.llama;
+    expect([llama.port, llama.binary.backend, llama.binary.source, llama.binary.mode, llama.modelsDir, llama.binary.dir]).toEqual([8082, "rocm", "ggml-org", "managed", "D:\\LlamaCpp\\models", "D:\\LlamaCpp\\bin"]);
+    expect(llama.profiles.map((p) => [p.id, p.requires])).toEqual([["inkling-2-mini", { minBuild: 12607, sources: ["unsloth"] }], ["inkling-2-mini-dspark", { sources: ["unsloth"] }]]);
+    expect(llama.profiles[1]).toMatchObject({ specType: "draft-dspark", draftNMax: 3, draftGpuLayers: 99, vision: true });
+    const vision = { id: "v", label: "V", model: "v", modelFile: "v.gguf", vision: true };
+    expect(() => settingsSchema.parse({ providers: { llama: { profiles: [vision] } } })).toThrow(/mmproj/);
+    expect(settingsSchema.parse({ providers: { llama: { profiles: [{ ...vision, mmprojFile: "m.gguf" }] } } }).providers.llama.profiles[0]).toMatchObject({ gpuLayers: "auto", flashAttn: "auto", specType: "none", extraArgs: "" });
+    expect(restoreMissingLlamaPresets(llama.profiles.slice(0, 1))).toHaveLength(2);
   });
 });
 
@@ -136,8 +144,10 @@ describe("SettingsStore", () => {
     const file = fresh();
     const codec: SecretCodec = { encode: (plain) => Buffer.from(plain).toString("base64"), decode: (stored) => Buffer.from(stored, "base64").toString() };
     const store = new SettingsStore(file, codec);
-    await store.save(mergeSettings(defaultSettings(), { server: { apiKey: "sekret" }, providers: { antigravity: { apiKey: "gem" }, claude: { apiKey: "sk-ant-key", oauthToken: "oauth-tok" } } }));
+    await store.save(mergeSettings(defaultSettings(), { server: { apiKey: "sekret" }, providers: { antigravity: { apiKey: "gem" }, claude: { apiKey: "sk-ant-key", oauthToken: "oauth-tok" }, llama: { hfToken: "hf_tok" } } }));
     const onDisk = readFileSync(file, "utf8");
+    expect(onDisk).not.toContain("hf_tok");
+    expect(JSON.parse(onDisk).providers.llama.hfToken).toMatch(/^enc:/);
     expect(onDisk).not.toContain("sekret");
     expect(onDisk).not.toContain("sk-ant-key");
     expect(onDisk).not.toContain("oauth-tok");
@@ -147,6 +157,7 @@ describe("SettingsStore", () => {
     expect(loaded.providers.antigravity.apiKey).toBe("gem");
     expect(loaded.providers.claude.apiKey).toBe("sk-ant-key");
     expect(loaded.providers.claude.oauthToken).toBe("oauth-tok");
+    expect(loaded.providers.llama.hfToken).toBe("hf_tok");
     expect((await new SettingsStore(file, undefined, logger).load()).server.apiKey).toBeUndefined();
   });
 });
