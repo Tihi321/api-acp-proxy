@@ -40,7 +40,6 @@ const api: ProxyApi = {
   copyText: (text) => invoke("proxy:copyText", text),
   openExternal: (url) => invoke("proxy:openExternal", url),
   onState: (callback) => subscribe<StateView>("proxy:state", callback),
-  // T7: bridge methods added by T1 only to keep the ProxyApi type satisfied; main.ts handlers come with T7.
   pickDirectory: (title, defaultPath) => invoke("proxy:pickDirectory", title, defaultPath),
   llamaReleases: (source, refresh) => invoke("proxy:llamaReleases", source, refresh),
   installLlama: (request) => invoke("proxy:installLlama", request),
