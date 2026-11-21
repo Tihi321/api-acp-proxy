@@ -140,6 +140,7 @@ Settings (`providers.gufo`, `providers.strata`; no environment variables):
 - **Strata's `--open`.** The bat opens a browser tab. Point `command` at the venv python without `--open` to avoid it.
 - **Upstream.** The provider uses Node's `fetch`, not Electron's `net.fetch`, because Strata refuses a request that carries a browser `Origin` header.
 - **Token limit.** For these two the client's `max_tokens` / `max_completion_tokens` / `max_output_tokens` is also sent upstream as `max_tokens`, so the server stops itself (the proxy's own estimate-based cut still applies as described under Token limits).
+- **Thinking switch.** `reasoning_effort` and `chat_template_kwargs` are forwarded to Gufo, Strata and Llama.cpp as sent (AAP-42); what they do depends on the server (Strata and llama-server with a Qwen template turn thinking off with `reasoning_effort: none` or `chat_template_kwargs: {enable_thinking: false}`).
 
 ### Gufo profiles, auto-switch, vision and images (AAP-37)
 
