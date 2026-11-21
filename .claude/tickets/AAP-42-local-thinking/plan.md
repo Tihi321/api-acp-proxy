@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 request: creative-hub/REQ-0030
 repos: [api-acp-proxy]
 branch: AAP-42_local-thinking

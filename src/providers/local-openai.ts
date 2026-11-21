@@ -163,7 +163,7 @@ export class LocalOpenAiProvider implements Provider {
     const cancelled = (): GenerationResult => ({ text, stopReason: "cancelled", usage: null, ...(reasoning ? { reasoning } : {}) });
     try {
       let response: Response;
-      try { response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, { method: "POST", headers: this.headers(true), body: JSON.stringify({ model, messages: wire, stream: true, stream_options: { include_usage: true }, ...(options?.maxOutputTokens !== undefined ? { max_tokens: options.maxOutputTokens } : {}) }), signal: controller.signal }); }
+      try { response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, { method: "POST", headers: this.headers(true), body: JSON.stringify({ model, messages: wire, stream: true, stream_options: { include_usage: true }, ...(options?.maxOutputTokens !== undefined ? { max_tokens: options.maxOutputTokens } : {}), ...(options?.reasoningEffort !== undefined ? { reasoning_effort: options.reasoningEffort } : {}), ...(options?.chatTemplateKwargs !== undefined ? { chat_template_kwargs: options.chatTemplateKwargs } : {}) }), signal: controller.signal }); }
       catch (error) { if (controller.signal.aborted) return cancelled(); throw this.notRunning(error); }
       if (!response.ok) {
         const raw = await response.text().catch(() => "");

@@ -106,6 +106,25 @@ describe("LocalOpenAiProvider", () => {
     expect(bodies[0]?.max_tokens).toBe(50);
   }, 5000);
 
+  it.each([
+    ["both set", { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } }, { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } }],
+    ["neither set", {}, {}],
+    ["wrong types are ignored", { reasoning_effort: 3, chat_template_kwargs: [1] }, {}],
+  ])("forwards the thinking switch upstream: %s", async (_name, extra, expected) => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const base = await thinkingProxy((response) => {
+      sse(response, { choices: [{ delta: { content: "Hi" } }] });
+      sse(response, { choices: [{ delta: {}, finish_reason: "stop" }] });
+      response.end("data: [DONE]\r\n\r\n");
+    }, bodies as Array<{ max_tokens?: number }>);
+    const res = await fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...askBody, stream: false, ...extra }) });
+    expect(res.status).toBe(200);
+    expect(bodies[0]?.reasoning_effort).toEqual((expected as { reasoning_effort?: unknown }).reasoning_effort);
+    expect(bodies[0]?.chat_template_kwargs).toEqual((expected as { chat_template_kwargs?: unknown }).chat_template_kwargs);
+    expect("reasoning_effort" in (bodies[0] ?? {})).toBe("reasoning_effort" in expected);
+    expect("chat_template_kwargs" in (bodies[0] ?? {})).toBe("chat_template_kwargs" in expected);
+  }, 5000);
+
   it("delivers a reasoning chunk to the client before the upstream has finished", async () => {
     let seen!: () => void; const clientSawReasoning = new Promise<void>((resolve) => { seen = resolve; });
     const base = await thinkingProxy(async (response) => {

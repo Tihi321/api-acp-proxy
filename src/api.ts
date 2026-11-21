@@ -155,7 +155,7 @@ function rejectUnsupported(obj: Record<string, unknown>, fields: readonly string
 }
 
 /** `generateImages`: the request asked the agent for images (chat `modalities` with "image", Responses `image_generation` tool). */
-type NormalizedRequest = { /** The sampling fields the request sent and the proxy dropped (see `droppedChatFields`). */ ignoredParams: string[]; model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; generateImages: boolean; /** Set when the request asked for web search (chat `web_search_options`, a Responses `web_search` tool). */ webSearch?: WebSearchRequest; /** The function tools to hand the agent (absent without tools or with `tool_choice: "none"`). */ functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** The Responses `mcp` tools (matched with the settings by `resolveMcpServers`). */ mcpTools?: McpToolRequest[] };
+type NormalizedRequest = { /** The sampling fields the request sent and the proxy dropped (see `droppedChatFields`). */ ignoredParams: string[]; model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; /** The chat `reasoning_effort` / `chat_template_kwargs` the client sent (forwarded to local providers only). */ reasoningEffort?: string; chatTemplateKwargs?: Record<string, unknown>; generateImages: boolean; /** Set when the request asked for web search (chat `web_search_options`, a Responses `web_search` tool). */ webSearch?: WebSearchRequest; /** The function tools to hand the agent (absent without tools or with `tool_choice: "none"`). */ functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** The Responses `mcp` tools (matched with the settings by `resolveMcpServers`). */ mcpTools?: McpToolRequest[] };
 
 function unsupportedContent(message: string, param: string): ApiError { return new ApiError(400, "unsupported_content", message, param); }
 
@@ -401,7 +401,11 @@ export async function normalizeChat(raw: unknown, isKnownModel?: ModelCheck, opt
   const format = !rf || rf.type === "text" ? textFormat : jsonFormat(rf.type === "json_object" ? rf : { type: "json_schema", ...rf.json_schema });
   const maxOutputTokens = parsed.data.max_completion_tokens ?? parsed.data.max_tokens;
   const conversation = await Promise.all(parsed.data.messages.map((message) => convertChatMessage(message, options)));
-  return { ...parsed.data, model: parsed.data.model, conversation, format, generateImages, ignoredParams, ...toolSpec, ...(webSearch && !(parsed.data.tools != null && toolSpec.functionTools === undefined) ? { webSearch } : {}), ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}) };
+  const effort = parsed.data.reasoning_effort;
+  const templateKwargs = parsed.data.chat_template_kwargs;
+  const reasoningEffort = typeof effort === "string" && effort !== "" ? effort : undefined;
+  const chatTemplateKwargs = typeof templateKwargs === "object" && templateKwargs !== null && !Array.isArray(templateKwargs) ? templateKwargs as Record<string, unknown> : undefined;
+  return { ...parsed.data, model: parsed.data.model, conversation, format, generateImages, ignoredParams, ...toolSpec, ...(webSearch && !(parsed.data.tools != null && toolSpec.functionTools === undefined) ? { webSearch } : {}), ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}), ...(reasoningEffort !== undefined ? { reasoningEffort } : {}), ...(chatTemplateKwargs !== undefined ? { chatTemplateKwargs } : {}) };
 }
 
 /** Responses input items: messages, and `function_call` / `function_call_output` items. A `function_call` joins the assistant message right before it (its text, in the same response), else it is an assistant message of its own. */
