@@ -12,7 +12,7 @@ type Metric = "requests" | "tokens";
 const RANGE_KEY = "acp-proxy.usageRange";
 const METRIC_KEY = "acp-proxy.usageMetric";
 const RANGES: readonly UsageRangeKey[] = ["today", "last7", "last30", "allTime"];
-const KNOWN_SERIES = ["codex", "claude", "antigravity", "gufo", "strata"];
+const KNOWN_SERIES = ["codex", "claude", "antigravity", "gufo", "strata", "llama"];
 const STALE_MS = 60_000;
 
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });

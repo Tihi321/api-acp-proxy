@@ -57,7 +57,7 @@ describe("ProxyController", () => {
     const status = await controller.start();
     expect(status.server.state).toBe("running");
     expect(status.server.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
-    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", expect.stringMatching(/^(starting|ready)$/)], ["antigravity", "disabled"], ["claude", "disabled"], ["gufo", "disabled"], ["strata", "disabled"]]); // Codex lists its models through the agent, which starts with the proxy.
+    expect(status.providers.map((provider) => [provider.id, provider.state])).toEqual([["codex", expect.stringMatching(/^(starting|ready)$/)], ["antigravity", "disabled"], ["claude", "disabled"], ["gufo", "disabled"], ["strata", "disabled"], ["llama", "stopped"]]); // Codex lists its models through the agent, which starts with the proxy.
     expect(((await get(`${status.server.baseUrl}/models`)).data ?? []).map((model) => model.id)).toContain("gpt-6-luna");
     const chat = await fetch(`${status.server.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-6-luna", messages: [{ role: "user", content: "hi" }] }) });
     expect(((await chat.json()) as { choices: Array<{ message: { content: string } }> }).choices[0]?.message.content).toBe("fake response");
