@@ -203,11 +203,11 @@ export function parseUiPrefs(raw: string | null): UiPrefs {
   };
 }
 
-/** The proportional timing strip: `wait` (up to the first token, minus the thinking time), `think` and `write` (the rest), fractions that sum to 1. Without data it is all `write`. */
+/** The proportional timing strip: `wait` (up to the first token of any kind: `firstMs` is set by the first reasoning or content delta), `think` (after it) and `write` (the rest), fractions that sum to 1. Without data it is all `write`. */
 export function timingSegments(meta: { firstMs?: number; totalMs: number }, thoughtMs?: number): { wait: number; think: number; write: number } {
   const total = meta.totalMs;
   if (!(total > 0)) return { wait: 0, think: 0, write: 1 };
-  const think = clamp(thoughtMs ?? 0, 0, total);
-  const wait = clamp((meta.firstMs ?? 0) - think, 0, total - think);
+  const wait = clamp(meta.firstMs ?? 0, 0, total);
+  const think = clamp(thoughtMs ?? 0, 0, total - wait);
   return { wait: wait / total, think: think / total, write: (total - wait - think) / total };
 }

@@ -87,7 +87,7 @@ export function initComposer(host: ComposerHost): Composer {
   let busy = false;
   let loaded = false;
 
-  const setNotice = (text: string): void => { el("notice-text").textContent = text; el("notice").hidden = !text; };
+  const setNotice = (text: string): void => { el("notice-text").textContent = text; el("notice").hidden = !text; el("notice-action").hidden = true; };
 
   // ---- preferences (read-modify-write the whole JSON; only `stream` and `image` are ours) ----
   const prefs = (): UiPrefs => parseUiPrefs(storage.get(local, UI_KEY));

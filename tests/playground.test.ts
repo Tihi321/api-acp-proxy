@@ -179,7 +179,7 @@ describe("playground helpers", () => {
       const s = timingSegments(meta, thought);
       expect(s.wait + s.think + s.write).toBeCloseTo(1, 10);
     }
-    expect(timingSegments({ firstMs: 4000, totalMs: 8000 }, 3000)).toEqual({ wait: 0.125, think: 0.375, write: 0.5 });
+    expect(timingSegments({ firstMs: 4000, totalMs: 8000 }, 3000)).toEqual({ wait: 0.5, think: 0.375, write: 0.125 });
     expect(timingSegments({ firstMs: 1000, totalMs: 4000 })).toEqual({ wait: 0.25, think: 0, write: 0.75 });
   });
 
