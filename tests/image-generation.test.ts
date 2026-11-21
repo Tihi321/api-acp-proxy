@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
-import type { Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,10 @@ import { defaultRuntimeContext, type ProviderDescriptor } from "../src/provider.
 import { antigravityDescriptor } from "../src/providers/antigravity.js";
 import { codexDescriptor } from "../src/providers/codex.js";
 import { ProviderRouter } from "../src/router.js";
+import { LocalOpenAiProvider } from "../src/providers/local-openai.js";
+import { createLogger } from "../src/logger.js";
+import type { LocalModelCoordinator } from "../src/local-models.js";
+import type { GufoProfile } from "../src/settings.js";
 import { createProxyServer } from "../src/server.js";
 
 // Every Antigravity provider start runs the Windows orphan sweep, which is slow.
@@ -459,3 +463,92 @@ describe("request parsing", () => {
   });
 });
 
+describe("Gufo image passthrough", () => {
+  const logger = createLogger({ console: false });
+  const profile = (extra: Partial<GufoProfile> = {}): GufoProfile => ({ id: "qwen-image-2.1", label: "Qwen-Image", model: "qwen-image-2.1", kind: "image", vision: false, args: "serve image --port {port}", ...extra });
+  const llm: GufoProfile = { id: "flash-next-q4", label: "Flash", model: "flash-next-q4", kind: "llm", vision: true, args: "serve llm --port {port}" };
+
+  interface Seen { url: string; json?: any; form?: FormData }
+  /** A fake Gufo image server: records what arrives, answers after `delayMs`. */
+  async function gufo(seen: Seen[], delayMs = 0): Promise<number> {
+    const upstream = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk) => chunks.push(chunk));
+      request.on("end", async () => {
+        const body = Buffer.concat(chunks);
+        if (request.method === "GET") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ data: [] })); return; }
+        const type = request.headers["content-type"] ?? "";
+        seen.push({ url: request.url!, ...(type.startsWith("multipart/") ? { form: await new Response(new Uint8Array(body), { headers: { "content-type": type } }).formData() } : { json: JSON.parse(body.toString("utf8")) }) });
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ data: [{ b64_json: PNG_START }] }));
+      });
+    });
+    servers.push(upstream);
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    return (upstream.address() as AddressInfo).port;
+  }
+  async function proxy(port: number, profiles: GufoProfile[], coordinator?: unknown, timeoutMs = 25_000): Promise<string> {
+    const provider = new LocalOpenAiProvider({ id: "gufo", displayName: "Gufo", baseUrl: `http://127.0.0.1:${port}/v1`, logger, profiles, ...(coordinator ? { coordinator: coordinator as LocalModelCoordinator } : {}) });
+    const config: ProxyConfig = { host: "127.0.0.1", port: 0, maxBodyBytes: 1024 * 1024, timeoutMs, workRoot: root, acpArgs: [] };
+    const server = createProxyServer(config, new ProviderRouter({ providers: [provider] }));
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  }
+  const edit = (files: number, extra: Record<string, string> = {}): FormData => {
+    const form = new FormData();
+    form.append("model", "gufo/qwen-image-2.1"); form.append("prompt", "make it blue");
+    for (const [key, value] of Object.entries(extra)) form.append(key, value);
+    for (let index = 0; index < files; index++) form.append("image", new Blob([new Uint8Array([137, 80, 78, 71, index])], { type: "image/png" }), `in${index}.png`);
+    return form;
+  };
+
+  it("forwards generations and edits unchanged, rejects 11 files and a url response, and lists kind and vision", async () => {
+    const seen: Seen[] = [];
+    const base = await proxy(await gufo(seen), [profile(), llm]);
+
+    const fields = { model: "gufo/qwen-image-2.1", prompt: "a cat", size: "1024x768", steps: 8, seed: 7, negative_prompt: "blur", guidance_scale: 3.5 };
+    const generated = await send(base, "/v1/images/generations", fields);
+    expect(generated.status).toBe(200);
+    expect(seen[0]).toMatchObject({ url: "/v1/images/generations", json: { ...fields, model: "qwen-image-2.1" } });
+    expect(generated.body.data[0].b64_json).toBe(PNG_START);
+    expect(generated.body.output_format).toBe("png");
+    expect(typeof generated.body.created).toBe("number");
+    expect((await send(base, "/v1/images/generations", { ...fields, response_format: "url" })).status).toBe(400);
+
+    const post = (form: FormData) => fetch(`${base}/v1/images/edits`, { method: "POST", body: form });
+    const edited = await post(edit(2, { size: "512x512", steps: "4" }));
+    expect(edited.status).toBe(200);
+    const body = await edited.json() as any;
+    expect(body.data[0].b64_json).toBe(PNG_START);
+    expect(body.output_format).toBe("png");
+    const form = seen[1]!.form!;
+    expect(seen[1]!.url).toBe("/v1/images/edits");
+    expect(form.get("model")).toBe("qwen-image-2.1");
+    expect(form.get("size")).toBe("512x512");
+    expect(form.getAll("image").map((file) => (file as File).name)).toEqual(["in0.png", "in1.png"]);
+    expect((await post(edit(11))).status).toBe(400);
+    expect(seen).toHaveLength(2);
+
+    const models = await (await fetch(`${base}/v1/models`)).json() as any;
+    const listed = Object.fromEntries(models.data.map((entry: any) => [entry.id, entry]));
+    expect(listed["gufo/qwen-image-2.1"]).toMatchObject({ kind: "image", vision: false });
+    expect(listed["gufo/flash-next-q4"]).toMatchObject({ kind: "llm", vision: true });
+  });
+
+  it("does not count the lease wait against the request timer and times out an image by its profile timeout", async () => {
+    const seen: Seen[] = [];
+    let released = 0;
+    const coordinator = { acquire: async () => { await new Promise((resolve) => setTimeout(resolve, 150)); return { release: () => { released++; } }; } };
+    // Fast upstream: the 150 ms wait is longer than the 100 ms profile timeout, yet the request succeeds.
+    const fast = await proxy(await gufo(seen), [profile({ requestTimeoutMs: 100 })], coordinator);
+    expect((await send(fast, "/v1/images/generations", { model: "gufo/qwen-image-2.1", prompt: "a cat" })).status).toBe(200);
+    // Slow upstream: the generation itself exceeds the profile timeout.
+    const slow = await proxy(await gufo(seen, 300), [profile({ requestTimeoutMs: 100 })], coordinator);
+    const late = await send(slow, "/v1/images/generations", { model: "gufo/qwen-image-2.1", prompt: "a cat" });
+    expect(late.status).toBe(504);
+    expect(late.body.error.code).toBe("request_timeout");
+    expect(released).toBe(2);
+  });
+});

@@ -441,7 +441,8 @@ class CallStream {
   abandon(): void { this.stop(); if (this.open) this.response.end(); }
 }
 
-interface CallContext { request: IncomingMessage; signal: AbortSignal; local: boolean; trace: Trace; timedOut(): boolean; onText(): void; }
+/** `prepare` waits for a local model (the request timer is paused meanwhile and restarted with the model's own timeout); the lease it returns is released when the generation is over. */
+interface CallContext { request: IncomingMessage; signal: AbortSignal; local: boolean; trace: Trace; timedOut(): boolean; onText(): void; prepare(model: string, messages: Message[] | undefined): Promise<{ release(): void } | undefined>; }
 
 export class McpEndpoint {
   private readonly threads: ThreadStore;
@@ -570,7 +571,12 @@ export class McpEndpoint {
 
     const controller = new AbortController();
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, this.options.config.timeoutMs);
+    const { bridge, config } = this.options;
+    let timer: NodeJS.Timeout | undefined;
+    let spentMs = 0;
+    let armedAt = Date.now();
+    const arm = (totalMs: number): void => { clearTimeout(timer); armedAt = Date.now(); timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(1, totalMs - spentMs)); };
+    arm(config.timeoutMs);
     const key = this.cancelKey(request, rpcId);
     this.inflight.set(key, controller);
     const stream = new CallStream(response, rpcId, progressToken, this.keepaliveMs);
@@ -581,7 +587,15 @@ export class McpEndpoint {
     let failure: Failure | undefined;
     let cancelled = false;
     let firstText = true;
-    const context: CallContext = { request, signal: controller.signal, local: this.isLocal(request), trace, timedOut: () => timedOut, onText: () => { if (firstText) { firstText = false; stream.progress(); } } };
+    const context: CallContext = { request, signal: controller.signal, local: this.isLocal(request), trace, timedOut: () => timedOut, onText: () => { if (firstText) { firstText = false; stream.progress(); } },
+      prepare: async (model, messages) => {
+        if (!bridge.prepareModel) return undefined;
+        clearTimeout(timer); spentMs += Date.now() - armedAt;
+        const lease = await bridge.prepareModel(model, messages, controller.signal);
+        arm(bridge.requestTimeoutMs?.(model) ?? config.timeoutMs);
+        return lease;
+      },
+    };
     try {
       output = tool === "ask_model" ? await this.ask(asked!, context) : await this.generate(generated!, context);
     } catch (error) {
@@ -693,7 +707,10 @@ export class McpEndpoint {
       const user: Message = { role: "user", parts: [{ type: "text", text: args.prompt }, ...parts] };
       const history = thread ? thread.messages : args.system ? [textMessage("system", args.system)] : [];
       const messages = [...history, user];
-      const result = await raceAbort(bridge.generate(args.model, messages, { onText: () => context.onText() }, context.signal, args.webSearch ? { webSearch: {} } : {}), context.signal);
+      const lease = await context.prepare(args.model, messages);
+      let result: GenerationResult;
+      try { result = await raceAbort(bridge.generate(args.model, messages, { onText: () => context.onText() }, context.signal, args.webSearch ? { webSearch: {} } : {}), context.signal); }
+      finally { lease?.release(); }
       if (context.signal.aborted) throw new Aborted();
       const usage = openAiUsage(result, serializePrompt(messages));
       context.trace.inputTokens = usage.prompt;
@@ -730,7 +747,10 @@ export class McpEndpoint {
     const directory = args.saveTo !== undefined ? await this.saveDirectory(args.saveTo) : undefined;
     const { parts } = await this.loadImages(args.images, context);
     const user: Message = { role: "user", parts: [{ type: "text", text: args.text }, ...parts] };
-    const result = await raceAbort(bridge.generate(args.model, [user], { onText: () => context.onText() }, context.signal, { images: true }), context.signal);
+    const lease = await context.prepare(args.model, undefined);
+    let result: GenerationResult;
+    try { result = await raceAbort(bridge.generate(args.model, [user], { onText: () => context.onText() }, context.signal, { images: true }), context.signal); }
+    finally { lease?.release(); }
     if (context.signal.aborted) throw new Aborted();
     const usage = openAiUsage(result, serializePrompt([user]));
     context.trace.inputTokens = usage.prompt;
