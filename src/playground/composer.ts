@@ -88,11 +88,12 @@ export function initComposer(host: ComposerHost): Composer {
   const attachmentList = (): Array<{ file: File; url: string }> => lists[host.mode()];
   /** True while the chat list holds images and the model takes none (kept, but Send is blocked until they are removed). */
   const blocked = (): boolean => host.mode() === "chat" && host.vision() === false && lists.chat.length > 0;
-  let blockNotice = false;
+  /** The exact text this composer last put in the banner; it only clears the banner while that text is still showing. */
+  let ownedNotice = "";
   let busy = false;
   let loaded = false;
 
-  const setNotice = (text: string): void => { el("notice-text").textContent = text; el("notice").hidden = !text; el("notice-action").hidden = true; };
+  const setNotice = (text: string): void => { ownedNotice = text; el("notice-text").textContent = text; el("notice").hidden = !text; el("notice-action").hidden = true; };
 
   // ---- preferences (read-modify-write the whole JSON; only `stream` and `image` are ours) ----
   const prefs = (): UiPrefs => parseUiPrefs(storage.get(local, UI_KEY));
@@ -158,8 +159,11 @@ export function initComposer(host: ComposerHost): Composer {
   }
   function updateSend(): void { send.disabled = !input.value.trim() || blocked(); }
   function syncBlock(): void {
-    if (blocked()) { setNotice(`This model does not take images. Remove the ${lists.chat.length} attachment${lists.chat.length === 1 ? "" : "s"} or pick a vision or image model to send.`); blockNotice = true; }
-    else if (blockNotice) { setNotice(""); blockNotice = false; }
+    if (blocked()) { setNotice(`This model does not take images. Remove the ${lists.chat.length} attachment${lists.chat.length === 1 ? "" : "s"} or pick a vision or image model to send.`); }
+    else if (ownedNotice) {
+      if (!el("notice").hidden && el("notice-text").textContent === ownedNotice) setNotice("");
+      ownedNotice = "";
+    }
     updateSend();
   }
   input.addEventListener("input", () => { autogrow(); updateSend(); });
@@ -206,7 +210,7 @@ export function initComposer(host: ComposerHost): Composer {
   }
   async function addFiles(files: readonly File[]): Promise<void> {
     const state = attachEnabled();
-    if (!state.ok) { setNotice(state.title + "."); blockNotice = false; return; }
+    if (!state.ok) { if (blocked()) syncBlock(); else setNotice(state.title + "."); return; }
     const attachments = attachmentList();
     const pictures = files.filter((file) => file.type.startsWith("image/"));
     if (!pictures.length) { if (files.length) setNotice("Only image files can be attached."); return; }
@@ -219,6 +223,7 @@ export function initComposer(host: ComposerHost): Composer {
       if (url && attachments.length < MAX_IMAGES) attachments.push({ file, url });
     });
     if (attachments === attachmentList()) renderThumbs();
+    if (blocked()) syncBlock(); else updateSend();
   }
   attach.onclick = () => { if (!attach.disabled) fileInput.click(); };
   fileInput.onchange = () => { void addFiles([...(fileInput.files ?? [])]); fileInput.value = ""; };
