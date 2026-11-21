@@ -546,6 +546,26 @@
             <p class="msg" id="llama-profiles-msg" role="status"></p>
           </section>
 
+          <section class="card" id="llama-embed-card">
+            <div class="card-head">
+              <h2>Embeddings</h2>
+              <span class="badge push" id="llama-embed-badge" title="The embedding server process started by this app">stopped</span>
+              <button type="button" class="primary small" id="llama-embed-start">Start</button>
+              <button type="button" class="small" id="llama-embed-stop">Stop</button>
+            </div>
+            <p class="note">A second, small llama-server for <code>POST /v1/embeddings</code> (model <code>llama/nomic-embed-text-v1.5</code>). It runs beside the chat model and never replaces it; it starts with the first request. The client adds nomic's <code>search_document: </code> / <code>search_query: </code> prefixes itself.</p>
+            <label class="switch"><input id="providers.llama.embedding.enabled" type="checkbox"><span>Enabled</span></label>
+            <small data-note-for="providers.llama.embedding.enabled"></small>
+            <p class="error" id="llama-embed-error" hidden></p>
+            <p class="profile-warn" id="llama-embed-warn" hidden></p>
+            <p class="muted small-text" id="llama-embed-info"></p>
+            <div class="grid">
+              <div id="llama-embed-file"></div>
+              <label class="field"><span>Port</span><input id="providers.llama.embedding.port" type="number" min="1" max="65535"><small>Must differ from the Gufo, Strata and Llama.cpp ports.</small><small data-note-for="providers.llama.embedding.port"></small><small class="error" data-error-for="providers.llama.embedding.port"></small></label>
+              <label class="field"><span>Context per request (tokens)</span><input id="providers.llama.embedding.ctxSize" type="number" min="1"><small>The longest input one request may have; the server is started with this times the parallel requests (-np) as -c.</small><small data-note-for="providers.llama.embedding.ctxSize"></small><small class="error" data-error-for="providers.llama.embedding.ctxSize"></small></label>
+            </div>
+          </section>
+
           <section class="card" id="llama-hf-card">
             <div class="card-head"><h2>Download from Hugging Face</h2></div>
             <p class="note">Paste a link, list the files, pick what you want and download. Downloaded files appear under Models on disk.</p>

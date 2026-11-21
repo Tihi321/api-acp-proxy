@@ -454,7 +454,45 @@ async function handleImageEdits(request: IncomingMessage, response: ServerRespon
   await runPassthrough(request, response, config, bridge, trace, model, { kind: "edits", fields, files });
 }
 
-const ENDPOINTS = new Set(["GET /v1/models", "POST /v1/chat/completions", "POST /v1/images/generations", "POST /v1/images/edits", "POST /v1/responses"]);
+const MAX_EMBEDDING_ITEMS = 256;
+
+/** `POST /v1/embeddings` (AAP-43): float vectors from the provider's embedding model (Llama.cpp). Text goes to the model as sent: the client adds a model's own prefixes (nomic's `search_document: `). */
+async function handleEmbeddings(request: IncomingMessage, response: ServerResponse, config: ProxyConfig, bridge: AcpLike, trace: Trace): Promise<void> {
+  const body = await readBody(request, config.maxBodyBytes);
+  if (typeof body !== "object" || body === null || Array.isArray(body)) throw new ApiError(400, "invalid_request", "Request body must be a JSON object.");
+  const fields = body as { model?: unknown; input?: unknown; encoding_format?: unknown; dimensions?: unknown; user?: unknown };
+  if (typeof fields.model !== "string" || !fields.model) throw new ApiError(400, "invalid_request", "'model' is required.", "model");
+  trace.model = fields.model;
+  if (fields.encoding_format !== undefined && fields.encoding_format !== null && fields.encoding_format !== "float") throw new ApiError(400, "unsupported_parameter", "Only encoding_format 'float' is supported.", "encoding_format");
+  if (fields.dimensions !== undefined && fields.dimensions !== null) throw new ApiError(400, "unsupported_parameter", "Parameter 'dimensions' is not supported by this proxy.", "dimensions");
+  const input = typeof fields.input === "string" ? [fields.input] : fields.input;
+  if (!Array.isArray(input) || !input.every((item) => typeof item === "string")) throw new ApiError(400, "invalid_request", "'input' must be a string or an array of strings.", "input");
+  if (!input.length) throw new ApiError(400, "invalid_request", "'input' must not be empty.", "input");
+  if (input.length > MAX_EMBEDDING_ITEMS) throw new ApiError(400, "invalid_request", `'input' may have at most ${MAX_EMBEDDING_ITEMS} items.`, "input");
+  if (input.some((item) => item === "")) throw new ApiError(400, "invalid_request", "'input' must not contain an empty string.", "input");
+  if (bridge.hasModel && !bridge.hasModel(fields.model)) throw new ApiError(404, "model_not_found", `The model '${fields.model}' does not exist.`, "model");
+  if (!bridge.embed || !bridge.canEmbed?.(fields.model)) throw new ApiError(400, "model_not_capable", `The model '${fields.model}' is not an embedding model.`, "model");
+  const abortController = new AbortController();
+  let timedOut = false;
+  request.once("aborted", () => abortController.abort());
+  request.once("close", () => { if (!request.complete) abortController.abort(); });
+  response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
+  const timer = setTimeout(() => { timedOut = true; abortController.abort(); }, timeoutFor(bridge, fields.model, config));
+  try {
+    let result;
+    try { result = await bridge.embed(fields.model, input as string[], abortController.signal); }
+    catch (error) {
+      if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
+      if (abortController.signal.aborted) return;
+      throw error;
+    }
+    if (timedOut) throw new ApiError(504, "request_timeout", "The request exceeded the configured timeout.");
+    trace.inputTokens = result.promptTokens;
+    json(response, 200, { object: "list", data: result.embeddings.map((embedding, index) => ({ object: "embedding", index, embedding })), model: fields.model, usage: { prompt_tokens: result.promptTokens, total_tokens: result.promptTokens } });
+  } finally { clearTimeout(timer); }
+}
+
+const ENDPOINTS = new Set(["GET /v1/models", "POST /v1/chat/completions", "POST /v1/images/generations", "POST /v1/images/edits", "POST /v1/embeddings", "POST /v1/responses"]);
 
 /** Records the request in the activity log when its response is over (a closed connection counts too). Only the fields of `ActivityEntry`. */
 function track(activity: ActivityLog, bridge: AcpLike, response: ServerResponse, endpoint: string, trace: Trace): void {
@@ -510,6 +548,7 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
       if (method === "POST" && url.pathname === "/v1/chat/completions") { await handleChat(request, response, config, bridge, trace, options.fetch); return; }
       if (method === "POST" && url.pathname === "/v1/images/generations") { await handleImageGeneration(request, response, config, bridge, trace); return; }
       if (method === "POST" && url.pathname === "/v1/images/edits") { await handleImageEdits(request, response, config, bridge, trace); return; }
+      if (method === "POST" && url.pathname === "/v1/embeddings") { await handleEmbeddings(request, response, config, bridge, trace); return; }
       if (method === "POST" && url.pathname === "/v1/responses") { await handleResponses(request, response, config, bridge, trace, options.fetch); return; }
       trace.error = "not_found";
       json(response, 404, { error: { message: "Not found.", type: "invalid_request_error", code: "not_found", param: null } });

@@ -7,7 +7,7 @@ import { DEFAULT_COOLDOWN_MS, MAX_RESET_MS, UsageLimitError, exhaustedUntil, usa
 import { silentLogger, type Logger } from "./logger.js";
 import { ConcurrencyLimiter, QueueAbortedError, type LimiterStats } from "./limiter.js";
 import type { PlanLimitsView } from "./shared/ipc.js";
-import type { GenerateOptions, GenerationCallbacks, GenerationResult, ImagePassthrough, ModelInfo, Provider } from "./provider.js";
+import type { EmbeddingResult, GenerateOptions, GenerationCallbacks, GenerationResult, ImagePassthrough, ModelInfo, Provider } from "./provider.js";
 
 export interface RouterOptions {
   providers: Provider[];
@@ -67,7 +67,7 @@ export class ProviderRouter implements AcpLike {
       const parsed = JSON.parse(fs.readFileSync(this.options.cachePath, "utf8")) as { providers?: Record<string, unknown> };
       const out: Record<string, ModelInfo[]> = {};
       for (const [id, models] of Object.entries(parsed.providers ?? {})) {
-        if (Array.isArray(models)) out[id] = models.filter((m): m is ModelInfo => typeof m?.id === "string").map((m) => ({ id: m.id, ...(typeof m.name === "string" ? { name: m.name } : {}), ...(m.kind === "llm" || m.kind === "image" ? { kind: m.kind } : {}), ...(typeof m.vision === "boolean" ? { vision: m.vision } : {}) }));
+        if (Array.isArray(models)) out[id] = models.filter((m): m is ModelInfo => typeof m?.id === "string").map((m) => ({ id: m.id, ...(typeof m.name === "string" ? { name: m.name } : {}), ...(m.kind === "llm" || m.kind === "image" || m.kind === "embedding" ? { kind: m.kind } : {}), ...(typeof m.vision === "boolean" ? { vision: m.vision } : {}) }));
       }
       return out;
     } catch { return {}; }
@@ -161,6 +161,15 @@ export class ProviderRouter implements AcpLike {
     const target = this.resolve(id);
     if (!target?.provider.generateImage) throw new ApiError(404, "model_not_found", `The model '${id}' does not exist.`, "model");
     return target.provider.generateImage(target.model, request, signal);
+  }
+
+  /** True when the model is an embedding model its provider serves. */
+  canEmbed(id: string): boolean { const target = this.resolve(id); return target?.provider.embed !== undefined && target.provider.supportsEmbeddings?.(target.model) === true; }
+
+  async embed(id: string, input: string[], signal: AbortSignal): Promise<EmbeddingResult> {
+    const target = this.resolve(id);
+    if (!target?.provider.embed) throw new ApiError(404, "model_not_found", `The model '${id}' does not exist.`, "model");
+    return target.provider.embed(target.model, input, signal);
   }
 
   canCallTools(id: string): boolean { return this.resolve(id)?.provider.toolCalling === true; }
@@ -294,7 +303,9 @@ export class ProviderRouter implements AcpLike {
 
   /** Running and waiting requests per provider (only providers with a cap). */
   queueStats(): Record<string, LimiterStats> {
-    return Object.fromEntries([...this.limiters].map(([id, limiter]) => [id, limiter.stats()]));
+    const own = Object.fromEntries([...this.limiters].map(([id, limiter]) => [id, limiter.stats()]));
+    const extra = this.providers.reduce<Record<string, LimiterStats>>((all, provider) => ({ ...all, ...provider.extraQueueStats?.() }), {});
+    return { ...own, ...extra };
   }
 
   /** `status().authMethod` per provider, for the providers that report one. */

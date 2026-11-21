@@ -40,12 +40,14 @@ export class ProviderTermsRequiredError extends AcpUnavailableError {
   constructor(message: string) { super(message, undefined, "provider_terms_required"); this.name = "ProviderTermsRequiredError"; }
 }
 
-/** `kind` and `vision` are set for Gufo profile models (listed in /v1/models as extra fields). */
-export interface ModelInfo { id: string; name?: string; kind?: "llm" | "image"; vision?: boolean; }
+/** `kind` and `vision` are set for Gufo and Llama.cpp profile models (`embedding`: the Llama.cpp embedding model) (listed in /v1/models as extra fields). */
+export interface ModelInfo { id: string; name?: string; kind?: "llm" | "image" | "embedding"; vision?: boolean; }
 /** A request for an image server that the proxy forwards unchanged in meaning (Gufo): JSON generations or multipart edits. */
 export type ImagePassthrough =
   | { kind: "generations"; fields: Record<string, unknown> }
   | { kind: "edits"; fields: Record<string, string>; files: Array<{ field: string; name: string; type: string; data: Uint8Array }> };
+/** The vectors of an embedding request, one per input item in input order; `promptTokens` as the server counted them. */
+export interface EmbeddingResult { embeddings: number[][]; promptTokens: number; }
 /** "terminal" methods cannot be passed to authenticate. */
 export interface AuthMethodInfo { id: string; name: string; description?: string; type?: string; }
 export type ProviderState = "disabled" | "stopped" | "starting" | "ready" | "needs_login" | "not_installed" | "terms_required" | "error";
@@ -229,6 +231,12 @@ export interface Provider {
   requestTimeoutMs?(model: string): number | undefined;
   /** Image passthrough: present only on providers that proxy an image server. */
   generateImage?(model: string, request: ImagePassthrough, signal: AbortSignal): Promise<{ status: number; body: unknown }>;
+  /** Whether this model is an embedding model that `embed` serves (Llama.cpp, AAP-43). */
+  supportsEmbeddings?(model: string): boolean;
+  /** Embeds `input` (all items, in order): one vector per item. Present only on a provider that serves an embedding model. */
+  embed?(model: string, input: string[], signal: AbortSignal): Promise<EmbeddingResult>;
+  /** Queue counters of a server the provider runs besides its own (for /healthz), by name. */
+  extraQueueStats?(): Record<string, { active: number; queued: number; limit: number; maxQueue: number }>;
   generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   listModels(options?: { force?: boolean }): Promise<ModelInfo[]>;
   status(): ProviderStatus;

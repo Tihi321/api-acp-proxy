@@ -30,6 +30,13 @@ describe("local provider settings", () => {
     expect(() => settingsSchema.parse({ providers: { llama: { profiles: [vision] } } })).toThrow(/mmproj/);
     expect(settingsSchema.parse({ providers: { llama: { profiles: [{ ...vision, mmprojFile: "m.gguf" }] } } }).providers.llama.profiles[0]).toMatchObject({ gpuLayers: "auto", flashAttn: "auto", specType: "none", extraArgs: "" });
     expect(restoreMissingLlamaPresets(llama.profiles.slice(0, 1))).toHaveLength(2);
+    // AAP-43: the embedding server is off by default and its port may not be another local server's.
+    expect(llama.embedding).toEqual({ enabled: false, port: 8083, model: "nomic-embed-text-v1.5", modelFile: "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", ctxSize: 2048, gpuLayers: "all", maxConcurrent: 4, extraArgs: "" });
+    expect(mergeSettings(defaultSettings(), { providers: { llama: { embedding: { enabled: true, port: 9000 } as never } } }).providers.llama.embedding).toMatchObject({ enabled: true, port: 9000, ctxSize: 2048 });
+    for (const port of [8080, 8081, 8082]) expect(() => settingsSchema.parse({ providers: { llama: { embedding: { enabled: true, port } } } })).toThrow(/embedding port/);
+    // A file from before the ticket (a chat server on 8083, no embedding key) still loads; only an enabled embedding server must not share the port.
+    expect(settingsSchema.parse({ providers: { gufo: { port: 8083 } } }).providers.gufo.port).toBe(8083);
+    expect(() => settingsSchema.parse({ providers: { gufo: { port: 8083 }, llama: { embedding: { enabled: true } } } })).toThrow(/embedding port 8083/);
   });
 });
 

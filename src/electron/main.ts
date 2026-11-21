@@ -10,6 +10,7 @@ import { createLogger } from "../logger.js";
 import { claudeRegistration } from "../providers/claude.js";
 import { codexRegistration } from "../providers/codex.js";
 import { createGufoRegistration, createLlamaRegistration, createStrataRegistration } from "../providers/local-openai.js";
+import type { EmbedHost } from "../providers/local-openai.js";
 import { LocalModelCoordinator, targetKey } from "../local-models.js";
 import type { LocalModelTarget } from "../local-models.js";
 import { createLocalModelHost } from "../local-host.js";
@@ -24,7 +25,7 @@ import type { LlamaReleaseView } from "../llama-releases.js";
 import { installLlama, probeLlamaVersion } from "../llama-install.js";
 import { HF_POLICY, downloadHfFiles, listHfFiles, parseHfLink } from "../hf-models.js";
 import type { HfFile, HfFileGroup } from "../hf-models.js";
-import { buildLlamaArgs, checkBuild, checkLlamaFiles } from "../llama-args.js";
+import { buildEmbeddingArgs, buildLlamaArgs, checkBuild, checkEmbeddingFiles, checkLlamaFiles } from "../llama-args.js";
 import { customExePatch, installPatch } from "../llama-jobs.js";
 import { scanModelsDir } from "../llama-scan.js";
 import { antigravityRegistration, installAntigravity, readInstallInfo } from "./antigravity.js";
@@ -150,8 +151,28 @@ async function main(): Promise<void> {
       if (!settings) throw new Error("Settings are not loaded yet.");
       return { id: "gufo", command: settings.command, args: target.profile.args, cwd: settings.cwd, port: settings.port, profile: target.profile.id, startTimeoutMs: target.profile.startTimeoutMs };
     },
-    port: (server) => (server === "strata" ? strataSettings?.port : server === "gufo" ? gufoSettings?.port : llamaSettings?.port),
+    port: (server) => (server === "strata" ? strataSettings?.port : server === "gufo" ? gufoSettings?.port : server === "embed" ? llamaSettings?.embedding.port : llamaSettings?.port),
   });
+  /** The embedding server (AAP-43) runs beside the chat server: it is started and stopped on its own, never through the coordinator. */
+  const embedSpec = (): LocalServerSpec => {
+    const llama = llamaSettings;
+    if (!llama) throw new Error("Settings are not loaded yet.");
+    const binary = llamaBinary(llama);
+    if (!binary.command) throw new Error("Llama.cpp is not installed: download a build or choose your own llama-server.exe on the Llama.cpp page.");
+    const missing = checkEmbeddingFiles(llama.embedding, llama.modelsDir);
+    if (missing.length > 0) throw new Error(`File not found: ${missing[0]} (copy the nomic-embed-text-v1.5 GGUF there, or pick the file in the Embeddings card on the Llama.cpp page)`);
+    return { id: "embed", command: binary.command, args: buildEmbeddingArgs(llama.embedding, llama.modelsDir), cwd: path.dirname(binary.command), port: llama.embedding.port };
+  };
+  const embedHost: EmbedHost = {
+    ensureRunning: async (signal) => {
+      if (servers.list().find((entry) => entry.id === "embed")?.state === "ready") return;
+      const spec = embedSpec();
+      // A server started outside the app answers on the port: requests go straight to it, nothing is started or stopped.
+      if (await servers.answersExternally("embed", spec.port)) return;
+      await servers.start(spec);
+      await servers.waitReady("embed", signal);
+    },
+  };
   const coordinator = new LocalModelCoordinator(localHost, () => ({
     targets: [
       ...(gufoSettings?.profiles ?? []).map((profile): LocalModelTarget => ({ key: `gufo:${profile.id}`, server: "gufo", profile })),
@@ -165,7 +186,7 @@ async function main(): Promise<void> {
     settingsPath,
     logger,
     ...(secretCodec ? { secretCodec } : {}),
-    registry: [codexRegistration, antigravityRegistration, claudeRegistration, createGufoRegistration({ coordinator }), createStrataRegistration({ coordinator }), createLlamaRegistration({ coordinator })],
+    registry: [codexRegistration, antigravityRegistration, claudeRegistration, createGufoRegistration({ coordinator }), createStrataRegistration({ coordinator }), createLlamaRegistration({ coordinator, embed: embedHost })],
     ctx: {
       dataDir,
       nodeRuntime: { command: process.execPath, argsPrefix: ["--require", hideWindows], env: { ELECTRON_RUN_AS_NODE: "1", NODE_OPTIONS: nodeOptions } },
@@ -242,6 +263,7 @@ async function main(): Promise<void> {
   servers.on("change", (list: ReturnType<LocalServerManager["list"]>) => {
     pushLocalServers();
     for (const entry of list) {
+      if (entry.id === "embed") continue; // not a provider: nothing to refresh
       const before = lastLocalState.get(entry.id);
       lastLocalState.set(entry.id, entry.state);
       // Once per transition to ready, so the models of the freshly started server appear.
@@ -319,6 +341,7 @@ async function main(): Promise<void> {
       await refreshLocalSettings();
       // All servers start through the coordinator: it queues behind in-flight requests and resolves when ready (minutes for a large model); a queued or failed switch comes back as the error message.
       if (id === "strata") { await coordinator.switchTo(targetKey("strata")); return; }
+      if (id === "embed") { await embedHost.ensureRunning(new AbortController().signal); return; }
       const running = servers.list().find((candidate) => candidate.id === id)?.profile;
       if (id === "llama") {
         const profiles = llamaSettings!.profiles;
@@ -490,6 +513,7 @@ async function main(): Promise<void> {
         exists: Boolean(binary.command && fs.existsSync(binary.command)),
       },
       profiles,
+      embedding: { missingFiles: checkEmbeddingFiles(llama.embedding, llama.modelsDir) },
       jobs: { binary: Boolean(llamaJobs.binary), model: Boolean(llamaJobs.model) },
     };
   });

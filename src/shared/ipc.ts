@@ -80,9 +80,14 @@ export interface LlamaBinarySettingsView {
 /** `SettingsPatchView` replaces `profiles` and `binary` as whole values. */
 export interface LlamaProviderSettingsView {
   enabled: boolean; port: number; maxConcurrent?: number; switchWaitMs: number; modelsDir: string; hfToken?: string;
-  binary: LlamaBinarySettingsView; profiles: LlamaProfileView[];
+  binary: LlamaBinarySettingsView; profiles: LlamaProfileView[]; embedding: LlamaEmbeddingSettingsView;
 }
-export type LocalServerId = "gufo" | "strata" | "llama";
+/** The embedding server (AAP-43; see `LlamaEmbedding` in settings.ts). */
+export interface LlamaEmbeddingSettingsView {
+  enabled: boolean; port: number; model: string; modelFile: string; ctxSize: number; gpuLayers: LlamaLayersView; maxConcurrent: number; extraArgs: string;
+}
+/** `embed` is the embedding server: it runs beside the other local servers and is never stopped by them. */
+export type LocalServerId = "gufo" | "strata" | "llama" | "embed";
 export type LocalServerState = "stopped" | "starting" | "ready" | "error";
 export interface LocalServerStatusView {
   id: LocalServerId;
@@ -218,6 +223,8 @@ export interface HfFileGroupView { kind: "model" | "mmproj" | "draft"; label: st
 export interface LlamaStatusView {
   binary: { mode: "managed" | "custom"; command?: string; source: LlamaSourceView | "custom"; tag?: string; build?: number; backend?: string; exists: boolean };
   profiles: Record<string, { build: "ok" | "too_old" | "unknown"; buildMessage?: string; missingFiles: string[] }>;
+  /** The embedding server's model file when it is not on disk (absolute path). */
+  embedding: { missingFiles: string[] };
   /** Running jobs. */
   jobs: { binary: boolean; model: boolean };
 }

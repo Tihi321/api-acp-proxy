@@ -16,7 +16,7 @@ afterEach(() => {
 
 describe("LocalServerManager", () => {
   it("runs one server at a time, keeps the log and stops everything", async () => {
-    const ports: Record<number, LocalServerId> = { 18081: "gufo", 18080: "strata", 18082: "llama" };
+    const ports: Record<number, LocalServerId> = { 18081: "gufo", 18080: "strata", 18082: "llama", 18083: "embed" };
     const manager = new LocalServerManager({
       pollMs: 20,
       spawn: () => {
@@ -37,7 +37,7 @@ describe("LocalServerManager", () => {
     const cwd = path.resolve(".");
     const spec = (id: LocalServerId, port: number): LocalServerSpec => ({ id, command: process.execPath, args: "--port {port}", cwd, port });
 
-    expect(manager.list().map((s) => s.id)).toEqual(["gufo", "strata", "llama"]);
+    expect(manager.list().map((s) => s.id)).toEqual(["gufo", "strata", "llama", "embed"]);
     await manager.start(spec("gufo", 18081));
     await waitFor("gufo", "ready");
     const gufoChild = children[0];
@@ -53,12 +53,17 @@ describe("LocalServerManager", () => {
     await manager.start(spec("llama", 18082));
     expect(state("strata").state).toBe("stopped");
     await waitFor("llama", "ready");
+    // AAP-43: the embedding server stops nothing when it starts and survives the chat servers taking turns.
+    await manager.start(spec("embed", 18083));
+    await waitFor("embed", "ready");
+    expect(state("llama").state).toBe("ready");
     await manager.start(spec("gufo", 18081));
     await waitFor("gufo", "ready");
     expect(state("llama").state).toBe("stopped");
+    expect(state("embed").state).toBe("ready");
 
     await manager.stopAll();
-    expect(manager.list().map((s) => s.state)).toEqual(["stopped", "stopped", "stopped"]);
+    expect(manager.list().map((s) => s.state)).toEqual(["stopped", "stopped", "stopped", "stopped"]);
     expect(children.every((child) => child.exitCode !== null || child.signalCode !== null)).toBe(true);
   });
 

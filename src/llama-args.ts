@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import type { LlamaProfile, LlamaSource } from "./settings.js";
+import type { LlamaEmbedding, LlamaProfile, LlamaSource } from "./settings.js";
 
 /** Absolute paths stay; relative ones are resolved against the models folder. */
 export function resolveModelPath(modelsDir: string, file: string): string {
@@ -48,6 +48,30 @@ export function buildLlamaArgs(profile: LlamaProfile, modelsDir: string): string
   const extra = profile.extraArgs.trim();
   if (extra) parts.push(extra);
   return parts.join(" ");
+}
+
+/** The llama-server args of the embedding server (AAP-43); contains `{port}` for the launcher. */
+export function buildEmbeddingArgs(embedding: LlamaEmbedding, modelsDir: string): string {
+  const parts: string[] = [
+    `-m ${quoted(resolveModelPath(modelsDir, embedding.modelFile), "modelFile")}`,
+    "--host 127.0.0.1",
+    "--port {port}",
+    `--alias ${safe(embedding.model, "model")}`,
+    "--embedding --pooling mean",
+    // llama-server splits `-c` across the `-np` slots, so ctxSize (per request) is multiplied by the slots.
+    `-c ${embedding.ctxSize * embedding.maxConcurrent} -b ${embedding.ctxSize} -ub ${embedding.ctxSize}`,
+    `-ngl ${embedding.gpuLayers}`,
+    `-np ${embedding.maxConcurrent}`,
+  ];
+  const extra = embedding.extraArgs.trim();
+  if (extra) parts.push(extra);
+  return parts.join(" ");
+}
+
+/** The embedding model file as an absolute path when it does not exist (empty list otherwise). */
+export function checkEmbeddingFiles(embedding: LlamaEmbedding, modelsDir: string, exists: (p: string) => boolean = existsSync): string[] {
+  const full = resolveModelPath(modelsDir, embedding.modelFile);
+  return exists(full) ? [] : [full];
 }
 
 /** Absolute paths of the files the profile needs that do not exist (every shard of a split model). */
