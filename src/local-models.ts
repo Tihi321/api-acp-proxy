@@ -1,20 +1,26 @@
 import { ApiError } from "./api.js";
 import { QueueAbortedError } from "./limiter.js";
-import type { GufoProfile } from "./settings.js";
+import type { GufoProfile, LlamaProfile } from "./settings.js";
+import type { LocalServerId } from "./shared/ipc.js";
 
-/** Strata takes part in the coordinator as a profile of its own, so Gufo and Strata never kill each other mid-request. */
+/** Strata takes part in the coordinator as a target of its own, so the local servers never kill each other mid-request. */
 export const STRATA_PROFILE_ID = "strata";
-export type LocalModelTarget = GufoProfile | { id: typeof STRATA_PROFILE_ID };
+/** Coordinator keys are namespaced (`gufo:<id>`, `llama:<id>`, `strata`) so profiles of different servers may share an id. */
+export type LocalModelTarget =
+  | { key: `gufo:${string}`; server: "gufo"; profile: GufoProfile }
+  | { key: `llama:${string}`; server: "llama"; profile: LlamaProfile }
+  | { key: "strata"; server: "strata" };
+export const targetKey = (server: LocalServerId, profileId?: string): string => (server === "strata" ? "strata" : `${server}:${profileId}`);
 
 export interface LocalModelHost {
-  /** Current launcher state of whichever local server (Gufo profile or `strata`) is starting or ready. */
-  current(): { profile?: string; state: "stopped" | "starting" | "ready" | "error"; error?: string };
+  /** Current launcher state of whichever local server is starting or ready; `key` is the target key (`gufo:<id>`, `llama:<id>`, `strata`). */
+  current(): { key?: string; state: "stopped" | "starting" | "ready" | "error"; error?: string };
   /** Stop-if-different + start; resolves when spawned. */
   start(target: LocalModelTarget): Promise<void>;
   /** True when the app owns no process for the target's server and its port already answers (a server started outside the app): requests pass straight through, nothing is started or stopped. Optional. */
   external?(target: LocalModelTarget): Promise<boolean>;
   /** Rejects when the launcher goes to error/stopped. */
-  waitReady(profile: string, signal: AbortSignal): Promise<void>;
+  waitReady(key: string, signal: AbortSignal): Promise<void>;
 }
 
 export interface LocalModelCoordinatorDeps {
@@ -22,8 +28,13 @@ export interface LocalModelCoordinatorDeps {
   clearTimeout?: (handle: unknown) => void;
 }
 
+export interface LocalModelCoordinatorSettings {
+  targets: readonly LocalModelTarget[];
+  switchWaitMs(server: LocalServerId): number;
+}
+
 interface Waiter {
-  profile: string;
+  key: string;
   /** `switchTo` waiters take no lease after they are ready. */
   lease: boolean;
   resolve: (release: () => void) => void;
@@ -36,43 +47,44 @@ interface Waiter {
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
- * Serializes access to the single Gufo process: a FIFO queue of requests per profile, a switch only starts when the active
- * profile has no in-flight request, and a request that waits longer than `switchWaitMs` gets 503 `local_model_busy`.
- * Callers admitted while their profile is still starting count as in-flight, so nobody switches away from a model being loaded.
+ * Serializes access to the single local server process (Gufo, Strata or Llama.cpp): a FIFO queue of requests per target key, a switch only
+ * starts when the active target has no in-flight request, and a request that waits longer than `switchWaitMs` gets 503 `local_model_busy`.
+ * Callers admitted while their target is still starting count as in-flight, so nobody switches away from a model being loaded.
  */
 export class LocalModelCoordinator {
   private readonly queue: Waiter[] = [];
   private readonly inflight = new Map<string, number>();
-  private starting?: { profile: string; promise: Promise<void> };
+  private starting?: { key: string; promise: Promise<void> };
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
 
-  constructor(private readonly host: LocalModelHost, private readonly getSettings: () => { profiles: GufoProfile[]; switchWaitMs: number }, deps: LocalModelCoordinatorDeps = {}) {
+  constructor(private readonly host: LocalModelHost, private readonly getSettings: () => LocalModelCoordinatorSettings, deps: LocalModelCoordinatorDeps = {}) {
     this.setTimer = deps.setTimeout ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimer = deps.clearTimeout ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
   }
 
-  /** Resolves with a release when the profile is ready and the caller counts as in-flight. */
-  acquire(profileId: string, signal: AbortSignal): Promise<{ release(): void }> {
-    return this.enqueue(profileId, true, signal).then((release) => ({ release }));
+  /** Resolves with a release when the target is ready and the caller counts as in-flight. */
+  acquire(key: string, signal: AbortSignal): Promise<{ release(): void }> {
+    return this.enqueue(key, true, signal).then((release) => ({ release }));
   }
 
   /** Settings Start button: same queue, no in-flight lease; resolves when ready. */
-  switchTo(profileId: string): Promise<void> {
-    return this.enqueue(profileId, false).then((release) => release());
+  switchTo(key: string): Promise<void> {
+    return this.enqueue(key, false).then((release) => release());
   }
 
-  private enqueue(profileId: string, lease: boolean, signal?: AbortSignal): Promise<() => void> {
+  private enqueue(key: string, lease: boolean, signal?: AbortSignal): Promise<() => void> {
     if (signal?.aborted) return Promise.reject(new QueueAbortedError());
-    if (!this.target(profileId)) return Promise.reject(new ApiError(404, "model_not_found", `Unknown Gufo profile '${profileId}'.`));
+    const target = this.target(key);
+    if (!target) return Promise.reject(new ApiError(404, "model_not_found", `Unknown local model '${key}'.`));
     return new Promise((resolve, reject) => {
-      const waiter: Waiter = { profile: profileId, lease, resolve, reject, signal };
-      const waitMs = this.getSettings().switchWaitMs;
+      const waiter: Waiter = { key, lease, resolve, reject, signal };
+      const waitMs = this.getSettings().switchWaitMs(target.server);
       waiter.timer = this.setTimer(() => {
         if (!this.remove(waiter)) return;
         this.detach(waiter);
         const seconds = Math.max(1, Math.round(waitMs / 1000));
-        reject(new ApiError(503, "local_model_busy", `The local model server is busy with another model; waited ${seconds} s for '${profileId}'. Try again later.`, undefined, { retryAfterSeconds: Math.min(seconds, 60) }));
+        reject(new ApiError(503, "local_model_busy", `The local model server is busy with another model; waited ${seconds} s for '${key}'. Try again later.`, undefined, { retryAfterSeconds: Math.min(seconds, 60) }));
         this.pump();
       }, waitMs);
       if (signal) {
@@ -89,8 +101,8 @@ export class LocalModelCoordinator {
     });
   }
 
-  private target(id: string): LocalModelTarget | undefined {
-    return id === STRATA_PROFILE_ID ? { id: STRATA_PROFILE_ID } : this.getSettings().profiles.find((profile) => profile.id === id);
+  private target(key: string): LocalModelTarget | undefined {
+    return this.getSettings().targets.find((target) => target.key === key);
   }
 
   private remove(waiter: Waiter): boolean {
@@ -105,19 +117,19 @@ export class LocalModelCoordinator {
     if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
   }
 
-  private activeProfile(): string | undefined {
-    if (this.starting) return this.starting.profile;
+  private activeKey(): string | undefined {
+    if (this.starting) return this.starting.key;
     const current = this.host.current();
-    return current.state === "starting" || current.state === "ready" ? current.profile : undefined;
+    return current.state === "starting" || current.state === "ready" ? current.key : undefined;
   }
 
-  /** Admits queue heads in FIFO order: the active profile joins at once, another profile only when the active one is idle. */
+  /** Admits queue heads in FIFO order: the active target joins at once, another target only when the active one is idle. */
   private pump(): void {
     while (this.queue.length) {
       const head = this.queue[0]!;
-      const active = this.activeProfile();
-      // A profile still starting is never switched away from, even with nobody in flight yet (a leaver must not kill a half-loaded model).
-      if (active !== undefined && head.profile !== active && ((this.inflight.get(active) ?? 0) > 0 || this.starting !== undefined || this.host.current().state === "starting")) return;
+      const active = this.activeKey();
+      // A target still starting is never switched away from, even with nobody in flight yet (a leaver must not kill a half-loaded model).
+      if (active !== undefined && head.key !== active && ((this.inflight.get(active) ?? 0) > 0 || this.starting !== undefined || this.host.current().state === "starting")) return;
       this.queue.shift();
       this.detach(head);
       this.admit(head);
@@ -125,14 +137,14 @@ export class LocalModelCoordinator {
   }
 
   private admit(waiter: Waiter): void {
-    const profile = this.target(waiter.profile);
-    if (!profile) { waiter.reject(new ApiError(404, "model_not_found", `Unknown Gufo profile '${waiter.profile}'.`)); return; }
-    this.inflight.set(profile.id, (this.inflight.get(profile.id) ?? 0) + 1);
+    const target = this.target(waiter.key);
+    if (!target) { waiter.reject(new ApiError(404, "model_not_found", `Unknown local model '${waiter.key}'.`)); return; }
+    this.inflight.set(target.key, (this.inflight.get(target.key) ?? 0) + 1);
     let released = false;
     const release = () => {
       if (released) return;
       released = true;
-      this.inflight.set(profile.id, Math.max(0, (this.inflight.get(profile.id) ?? 1) - 1));
+      this.inflight.set(target.key, Math.max(0, (this.inflight.get(target.key) ?? 1) - 1));
       this.pump();
     };
     let settled = false;
@@ -143,7 +155,7 @@ export class LocalModelCoordinator {
       waiter.reject(new QueueAbortedError());
     };
     waiter.signal?.addEventListener("abort", onAbort, { once: true });
-    this.ensureReady(profile, waiter.lease).then(
+    this.ensureReady(target, waiter.lease).then(
       () => {
         if (settled) return;
         settled = true;
@@ -156,27 +168,27 @@ export class LocalModelCoordinator {
         settled = true;
         waiter.signal?.removeEventListener("abort", onAbort);
         release();
-        waiter.reject(error instanceof ApiError ? error : new ApiError(503, "local_model_start_failed", `Could not start the local model '${profile.id}': ${messageOf(error)}`, undefined, { retryAfterSeconds: 30 }));
+        waiter.reject(error instanceof ApiError ? error : new ApiError(503, "local_model_start_failed", `Could not start the local model '${target.key}': ${messageOf(error)}`, undefined, { retryAfterSeconds: 30 }));
       },
     );
   }
 
-  private async ensureReady(profile: LocalModelTarget, lease: boolean): Promise<void> {
-    if (this.starting?.profile === profile.id) return this.starting.promise;
+  private async ensureReady(target: LocalModelTarget, lease: boolean): Promise<void> {
+    if (this.starting?.key === target.key) return this.starting.promise;
     const current = this.host.current();
-    if (current.profile === profile.id && current.state === "ready") return;
+    if (current.key === target.key && current.state === "ready") return;
     // A request (not the Settings Start button) to a server the app does not own goes straight upstream, as before AAP-37.
-    if (lease && this.host.external && !this.starting && await this.host.external(profile).catch(() => false)) return;
-    return this.startAndWait(profile, current);
+    if (lease && this.host.external && !this.starting && await this.host.external(target).catch(() => false)) return;
+    return this.startAndWait(target, current);
   }
 
-  private startAndWait(profile: LocalModelTarget, current: ReturnType<LocalModelHost["current"]>): Promise<void> {
-    if (this.starting?.profile === profile.id) return this.starting.promise;
+  private startAndWait(target: LocalModelTarget, current: ReturnType<LocalModelHost["current"]>): Promise<void> {
+    if (this.starting?.key === target.key) return this.starting.promise;
     // Never cancelled by a leaver: this signal is not tied to any request.
     const never = new AbortController().signal;
-    if (current.profile === profile.id && current.state === "starting") return this.host.waitReady(profile.id, never);
-    const entry: { profile: string; promise: Promise<void> } = { profile: profile.id, promise: Promise.resolve() };
-    entry.promise = this.host.start(profile).then(() => this.host.waitReady(profile.id, never));
+    if (current.key === target.key && current.state === "starting") return this.host.waitReady(target.key, never);
+    const entry: { key: string; promise: Promise<void> } = { key: target.key, promise: Promise.resolve() };
+    entry.promise = this.host.start(target).then(() => this.host.waitReady(target.key, never));
     this.starting = entry;
     const clear = () => { if (this.starting === entry) { this.starting = undefined; this.pump(); } };
     entry.promise.then(clear, clear);

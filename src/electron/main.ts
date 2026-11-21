@@ -10,8 +10,9 @@ import { createLogger } from "../logger.js";
 import { claudeRegistration } from "../providers/claude.js";
 import { codexRegistration } from "../providers/codex.js";
 import { createGufoRegistration, createStrataRegistration } from "../providers/local-openai.js";
-import { LocalModelCoordinator, STRATA_PROFILE_ID } from "../local-models.js";
-import type { LocalModelHost } from "../local-models.js";
+import { LocalModelCoordinator, targetKey } from "../local-models.js";
+import type { LocalModelTarget } from "../local-models.js";
+import { createLocalModelHost } from "../local-host.js";
 import { LocalServerManager } from "../local-servers.js";
 import type { LocalServerSpec } from "../local-servers.js";
 import { listMcpServers } from "../mcp-servers.js";
@@ -102,51 +103,26 @@ async function main(): Promise<void> {
   type StrataSettings = Awaited<ReturnType<ProxyController["getSettings"]>>["effective"]["providers"]["strata"];
   let strataSettings: StrataSettings | undefined;
   const refreshLocalSettings = async (): Promise<void> => { const providers = (await proxy.getSettings()).effective.providers; gufoSettings = providers.gufo; strataSettings = providers.strata; };
-  const gufoHost: LocalModelHost = {
-    // Strata counts as the profile `strata`; only one of the two servers runs at a time.
-    current: () => {
-      const list = servers.list();
-      const strata = list.find((candidate) => candidate.id === "strata");
-      if (strata && (strata.state === "starting" || strata.state === "ready")) return { profile: STRATA_PROFILE_ID, state: strata.state };
-      const entry = list.find((candidate) => candidate.id === "gufo");
-      return { profile: entry?.profile, state: entry?.state ?? "stopped", error: entry?.error };
-    },
-    start: async (target) => {
-      if (target.id === STRATA_PROFILE_ID) {
+  // T7: replaced by the full specFor (gufo, strata, llama) when main.ts is rewritten.
+  const gufoHost = createLocalModelHost(servers, {
+    specFor: (target): LocalServerSpec => {
+      if (target.server === "strata") {
         const strata = strataSettings;
         if (!strata) throw new Error("Settings are not loaded yet.");
-        await servers.start({ id: "strata", command: strata.command, args: strata.args, cwd: strata.cwd, port: strata.port });
-        return;
+        return { id: "strata", command: strata.command, args: strata.args, cwd: strata.cwd, port: strata.port };
       }
-      const profile = target as GufoProfile;
+      if (target.server === "llama") throw new Error("Llama.cpp is not wired yet."); // T7
       const settings = gufoSettings;
       if (!settings) throw new Error("Settings are not loaded yet.");
-      await servers.start({ id: "gufo", command: settings.command, args: profile.args, cwd: settings.cwd, port: settings.port, profile: profile.id, startTimeoutMs: profile.startTimeoutMs });
+      return { id: "gufo", command: settings.command, args: target.profile.args, cwd: settings.cwd, port: settings.port, profile: target.profile.id, startTimeoutMs: target.profile.startTimeoutMs };
     },
-    external: async (target) => {
-      const isStrata = target.id === STRATA_PROFILE_ID;
-      const port = isStrata ? strataSettings?.port : gufoSettings?.port;
-      return port !== undefined && servers.answersExternally(isStrata ? "strata" : "gufo", port);
-    },
-    waitReady: (profile, signal) => new Promise<void>((resolve, reject) => {
-      const serverId = profile === STRATA_PROFILE_ID ? "strata" : "gufo";
-      const name = serverId === "strata" ? "Strata" : "Gufo";
-      const check = (): boolean => {
-        const entry = servers.list().find((candidate) => candidate.id === serverId);
-        if (!entry || (serverId === "gufo" && entry.profile !== profile)) { reject(new Error(`${name} was switched away from '${profile}' while it started.`)); return true; }
-        if (entry.state === "ready") { resolve(); return true; }
-        if (entry.state === "error" || entry.state === "stopped") { reject(new Error(entry.error ?? entry.log[entry.log.length - 1] ?? `${name} '${profile}' stopped before it was ready.`)); return true; }
-        return false;
-      };
-      if (check()) return;
-      const onChange = (): void => { if (check()) cleanup(); };
-      const onAbort = (): void => { cleanup(); reject(new Error("Aborted")); };
-      const cleanup = (): void => { servers.off("change", onChange); signal.removeEventListener("abort", onAbort); };
-      servers.on("change", onChange);
-      if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
-    }),
-  };
-  const coordinator = new LocalModelCoordinator(gufoHost, () => ({ profiles: gufoSettings?.profiles ?? [], switchWaitMs: gufoSettings?.switchWaitMs ?? 30 * 60 * 1000 }));
+    port: (server) => (server === "strata" ? strataSettings?.port : server === "gufo" ? gufoSettings?.port : undefined),
+  });
+  // T7: targets for llama profiles and per-server switchWaitMs.
+  const coordinator = new LocalModelCoordinator(gufoHost, () => ({
+    targets: [...(gufoSettings?.profiles ?? []).map((profile): LocalModelTarget => ({ key: `gufo:${profile.id}`, server: "gufo", profile })), { key: "strata", server: "strata" } as LocalModelTarget],
+    switchWaitMs: () => gufoSettings?.switchWaitMs ?? 30 * 60 * 1000,
+  }));
 
   const proxy = new ProxyController({
     settingsPath,
@@ -304,11 +280,11 @@ async function main(): Promise<void> {
     return action(async () => {
       await refreshLocalSettings();
       // Both servers start through the coordinator: it queues behind in-flight requests and resolves when ready (minutes for a large model); a queued or failed switch comes back as the error message.
-      if (id === "strata") { await coordinator.switchTo(STRATA_PROFILE_ID); return; }
+      if (id === "strata") { await coordinator.switchTo(targetKey("strata")); return; }
       const profiles = gufoSettings!.profiles;
       const chosen = typeof profileId === "string" && profileId ? profileId : servers.list().find((candidate) => candidate.id === "gufo")?.profile ?? profiles.find((candidate) => candidate.kind === "llm")?.id ?? profiles[0]?.id;
       if (!chosen) throw new Error("No Gufo profile is configured.");
-      await coordinator.switchTo(chosen);
+      await coordinator.switchTo(targetKey("gufo", chosen)); // T7
     });
   });
   handle("proxy:restoreGufoPresets", (profiles: unknown): GufoProfileView[] => Array.isArray(profiles) ? restoreMissingPresets(profiles as GufoProfile[]) : []);

@@ -1,7 +1,7 @@
 import type { StopReason, Usage } from "@agentclientprotocol/sdk";
 import { ApiError, messageText, type Message } from "../api.js";
 import type { ProviderRegistration } from "../controller.js";
-import { STRATA_PROFILE_ID, type LocalModelCoordinator } from "../local-models.js";
+import { STRATA_PROFILE_ID, targetKey, type LocalModelCoordinator } from "../local-models.js";
 import type { Logger } from "../logger.js";
 import { AcpUnavailableError, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type ImagePassthrough, type ModelInfo, type Provider, type ProviderState, type ProviderStatus } from "../provider.js";
 import type { GufoProfile } from "../settings.js";
@@ -87,7 +87,7 @@ export class LocalOpenAiProvider implements Provider {
       if (profile?.kind === "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' generates images; it does not answer chat requests.`, "model");
       if (messages.some((message) => message.parts.some((part) => part.type === "image")) && !(profile?.kind === "llm" && profile.vision)) throw new ApiError(400, "unsupported_content", `The model '${this.id}/${model}' does not accept image input.`, "messages");
     } else if (profile && profile.kind !== "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' does not generate images.`, "model");
-    const leaseId = profile?.id ?? this.leaseProfile;
+    const leaseId = profile ? targetKey(this.id as "gufo" | "strata" | "llama", profile.id) : this.leaseProfile; // T6: namespaced key
     if (!leaseId || !this.coordinator) return undefined;
     return this.coordinator.acquire(leaseId, signal);
   }

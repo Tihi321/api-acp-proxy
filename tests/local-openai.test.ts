@@ -167,7 +167,7 @@ describe("LocalOpenAiProvider", () => {
   it("sends image parts to a vision profile only, refuses them elsewhere before any switch, and lists every profile with kind and vision", async () => {
     const { router, bodies, acquired } = await gufo();
     const lease = await router.prepareModel("gufo/flash-next-q4", withImage, abort);
-    expect(acquired).toEqual(["flash-next-q4"]);
+    expect(acquired).toEqual(["gufo:flash-next-q4"]); // T6: namespaced key
     lease?.release();
     await router.generate("gufo/flash-next-q4", withImage);
     expect(JSON.parse(bodies[0]!).messages[0].content).toEqual([{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } }]);
@@ -179,7 +179,7 @@ describe("LocalOpenAiProvider", () => {
     await expect(router.prepareModel("gufo/deepseek4", withImage, abort)).rejects.toMatchObject({ status: 400, code: "unsupported_content" });
     const strata = new LocalOpenAiProvider({ id: "strata", displayName: "Strata", baseUrl: "http://127.0.0.1:1/v1", logger });
     await expect(new ProviderRouter({ providers: [strata] }).prepareModel("strata/x", withImage, abort)).rejects.toMatchObject({ status: 400, code: "unsupported_content" });
-    expect(acquired).toEqual(["flash-next-q4"]);
+    expect(acquired).toEqual(["gufo:flash-next-q4"]); // T6: namespaced key
 
     // Listed while the upstream is down too: the profiles, not the server, decide.
     const down = createServer(); const port = await listen(down); await new Promise<void>((resolve) => down.close(() => resolve()));

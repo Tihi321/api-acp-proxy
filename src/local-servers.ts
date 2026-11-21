@@ -16,7 +16,7 @@ export function commandLine(spec: LocalServerSpec): string {
   return args ? `"${spec.command}" ${args}` : `"${spec.command}"`;
 }
 
-const PATH_FLAGS = /(?:^|\s)--(?:model|mtp-model|dspark-model|dflash-model|mmproj)\s+("[^"]*"|\S+)/g;
+const PATH_FLAGS = /(?:^|\s)(?:-m|-md|-mm|--(?:model|model-draft|spec-draft-model|mtp-model|dspark-model|dflash-model|mmproj))\s+("[^"]*"|\S+)/g;
 
 /** Throws when a model-file flag in the args points at a path (drive letter or leading `/`) that does not exist. IDs are not checked. */
 function checkModelFiles(spec: LocalServerSpec): void {
