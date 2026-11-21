@@ -61,6 +61,14 @@ export function foundFileFixes(profile: LlamaProfileView, files: readonly LlamaL
   return fixes;
 }
 
+/** Missing files of an edited (unsaved) profile: a relative path is present when a complete scanned entry has it; an absolute one is missing when `statusMissing` (the last status result) lists it. Mirrors the launcher: mmproj counts with vision, the draft with a spec type. */
+export function draftMissingFiles(profile: LlamaProfileView, files: readonly LlamaLocalFileView[], statusMissing: readonly string[]): string[] {
+  const complete = new Set(files.filter((file) => file.complete).map((file) => norm(file.path)));
+  const stale = new Set(statusMissing.map(norm));
+  const used = [profile.modelFile, profile.vision ? profile.mmprojFile : undefined, profile.specType !== "none" ? profile.draftFile : undefined];
+  return used.filter((value): value is string => !!value && (isAbsolute(value) ? stale.has(norm(value)) : !complete.has(norm(value))));
+}
+
 /** Sets `field` to the file's path; a model fix also swaps the old quant for the new one in the label when the label contains it. */
 export function applyFix(profile: LlamaProfileView, field: FileField, file: LlamaLocalFileView): LlamaProfileView {
   const next: LlamaProfileView = { ...profile, [field]: file.path };

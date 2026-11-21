@@ -2,7 +2,7 @@ import type {
   Failure, HfFileGroupView, HfListResult, LlamaBinarySettingsView, LlamaLayersView, LlamaLocalFileView, LlamaProfileView, LlamaProgressView,
   LlamaProviderSettingsView, LlamaReleaseView, LlamaScanResult, LlamaSourceView, LlamaStatusView, LocalServerStatusView, ProxyApi,
 } from "../shared/ipc.js";
-import { applyFix, foundFileFixes, profileFromFile, specTypeForDraft, usedBy } from "./llama-models.js";
+import { applyFix, draftMissingFiles, foundFileFixes, profileFromFile, specTypeForDraft, usedBy } from "./llama-models.js";
 import type { FileField } from "./llama-models.js";
 
 /** Page logic of the Llama.cpp settings page (build install, models on disk, profiles, Hugging Face downloads). The shared save/dirty plumbing stays in settings.ts. */
@@ -216,6 +216,8 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
 
   let scanFiles: LlamaLocalFileView[] = [];
   let scanning = false;
+  /** True once a scan has succeeded; until then the draft cannot be checked against the scan. */
+  let scanOk = false;
   let scanAgain = false;
   /** The saved models folder at the start of the last scan; a different saved folder (after a Save) triggers a scan. */
   let scannedFor: string | undefined;
@@ -267,7 +269,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   function applyScan(result: LlamaScanResult): void {
     const status = el("llama-scan-status");
     if (!result.ok) { flash(status, failureText(result), true); return; }
-    scanFiles = result.files;
+    scanFiles = result.files; scanOk = true;
     const text = result.missingDir ? "Folder does not exist yet."
       : result.files.length === 0 ? `No .gguf files found in ${result.modelsDir}.`
       : result.truncated ? `Stopped after ${result.files.length} files (limit reached) in ${result.modelsDir}.`
@@ -466,11 +468,12 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
           select.append(group);
         }
       }
-      const known = value && scanFiles.find((file) => file.complete && norm(file.path) === norm(value));
-      if (value && !known) select.append(new Option(`${value} (not found)`, value));
+      // The stored value is always the selected option: a scanned file of another kind gets an extra option, a file that is on neither disk nor scan says "(not found)".
+      const match = value ? scanFiles.find((file) => norm(file.path) === norm(value)) : undefined;
+      const selected = match ? match.path : value;
+      if (selected && ![...select.options].some((item) => item.value === selected)) select.append(new Option(match ? selected : `${selected} (not found)`, selected));
       select.append(new Option("Custom path…", CUSTOM));
-      select.value = customMode ? CUSTOM : known ? known.path : value;
-      if (select.value !== (customMode ? CUSTOM : known ? known.path : value)) select.value = "";
+      select.value = customMode ? CUSTOM : selected;
       customRow.hidden = !customMode;
       if (document.activeElement !== custom) custom.value = value;
     };
@@ -481,18 +484,26 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       set(select.value); dirty(); onPicked(key, select.value, had);
       rebuild();
     });
+    // Typing stores the path; leaving the field (change) applies the same vision / spec type logic as picking. `hadBefore` is read when editing starts.
+    let hadBefore = false;
+    custom.addEventListener("focus", () => { hadBefore = current() !== ""; });
     custom.addEventListener("input", () => { set(custom.value); dirty(); });
+    custom.addEventListener("change", () => { onPicked(key, current(), hadBefore); hadBefore = current() !== ""; });
+    const message = make("small", "muted");
     browse.onclick = async () => {
-      const result = await api.pickModelFile();
-      if (!result.path) return;
-      const had = current() !== "";
-      customMode = false; set(result.path); dirty(); onPicked(key, result.path, had);
-      rebuild();
+      flash(message, "");
+      try {
+        const result = await api.pickModelFile();
+        if (!result.path) return;
+        const had = current() !== "";
+        customMode = false; set(result.path); dirty(); onPicked(key, result.path, had);
+        rebuild();
+      } catch (error) { flash(message, errorText(error), true); }
     };
     rebuild();
     pickerRebuilds.push(rebuild);
     const wrap = make("div", "field");
-    wrap.append(make("span", "", labelText), select, customRow);
+    wrap.append(make("span", "", labelText), select, customRow, message);
     return wrap;
   }
 
@@ -511,7 +522,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     const warnings = make("div"); warnings.dataset.role = "profile-warnings";
 
     const vision = make("input"); vision.type = "checkbox"; vision.checked = profile.vision;
-    vision.addEventListener("change", () => { profile.vision = vision.checked; dirty(); });
+    vision.addEventListener("change", () => { profile.vision = vision.checked; dirty(); updateProfileButtons(); });
     const visionLabel = make("label", "switch"); visionLabel.append(vision, make("span", "", "Accepts images (vision; needs the mmproj file)"));
 
     const flash2 = make("select");
@@ -522,7 +533,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     const spec = make("select");
     for (const value of SPEC_TYPES) spec.append(new Option(value === "draft-mtp" ? "draft-mtp (MTP heads)" : value, value));
     spec.value = SPEC_TYPES.includes(profile.specType as typeof SPEC_TYPES[number]) ? profile.specType : "none";
-    spec.addEventListener("change", () => { profile.specType = spec.value; dirty(); });
+    spec.addEventListener("change", () => { profile.specType = spec.value; dirty(); updateProfileButtons(); });
 
     const extra = make("textarea"); extra.rows = 2; extra.spellcheck = false; extra.value = profile.extraArgs;
     extra.addEventListener("input", () => { profile.extraArgs = extra.value; dirty(); });
@@ -536,7 +547,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
         profile.specType = specTypeForDraft(baseName(value));
         spec.value = SPEC_TYPES.includes(profile.specType as typeof SPEC_TYPES[number]) ? profile.specType : "none";
       }
-      renderScanTable();
+      renderScanTable(); updateProfileButtons();
     };
 
     const grid = make("div", "grid");
@@ -612,12 +623,14 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       if (mine && launcher) deps.setBadge(badge, launcher.state);
       const lines: string[] = [];
       const entry = status?.profiles[profile.id];
+      // With unsaved edits the saved-settings status is stale: check the draft against the last scan (absolute paths keep the status result).
+      const missing = deps.isDirty() && scanOk ? draftMissingFiles(profile, scanFiles, entry?.missingFiles ?? []) : entry?.missingFiles ?? [];
       if (entry?.build === "too_old") lines.push(`Needs a newer build${entry.buildMessage ? `: ${entry.buildMessage}` : "."}`);
       else if (entry?.build === "unknown") lines.push("Build unknown.");
-      if (entry?.missingFiles.length) lines.push(`Missing: ${entry.missingFiles.join(", ")}`);
+      if (missing.length) lines.push(`Missing: ${missing.join(", ")}`);
       const host = node.querySelector<HTMLElement>('[data-role="profile-warnings"]')!;
       const warnings: HTMLElement[] = lines.map((line) => make("p", "profile-warn", line));
-      if (entry?.missingFiles.length && profile.hf) {
+      if (missing.length && profile.hf) {
         const find = make("button", "small", "Find on Hugging Face"); find.type = "button";
         find.title = "Fills the link in Download from Hugging Face and lists the files; nothing is downloaded";
         find.onclick = () => findOnHuggingFace(profile);
@@ -728,6 +741,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       fillVersions();
       renderProfiles();
       updateModelButtons();
+      void refreshStatus();
       // A Save that changed the models folder: scan the new one (only once the page has scanned before; shown() does the first scan).
       if (scannedFor !== undefined && scannedFor !== savedModelsDir) void scan();
     },

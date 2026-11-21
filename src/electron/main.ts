@@ -452,8 +452,9 @@ async function main(): Promise<void> {
     } catch (error) { return llamaFailure(error); }
   });
   handle("proxy:pickModelFile", async (): Promise<PickResult> => {
-    await refreshLocalSettings();
-    const modelsDir = llamaSettings!.modelsDir;
+    // A settings read error only loses the default folder of the dialog.
+    let modelsDir = "";
+    try { await refreshLocalSettings(); modelsDir = llamaSettings!.modelsDir; } catch { /* dialog opens without a start folder */ }
     const parent = win.browserWindow;
     const options: Electron.OpenDialogOptions = {
       title: "Select a model file", ...(modelsDir && fs.existsSync(modelsDir) ? { defaultPath: modelsDir } : {}), properties: ["openFile"],

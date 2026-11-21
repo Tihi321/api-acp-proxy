@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyFix, foundFileFixes, profileFromFile } from "../src/renderer/llama-models.js";
+import { applyFix, draftMissingFiles, foundFileFixes, profileFromFile } from "../src/renderer/llama-models.js";
 import { LLAMA_PRESETS } from "../src/settings.js";
 import type { LlamaLocalFileView, LlamaProfileView } from "../src/shared/ipc.js";
 
@@ -31,5 +31,11 @@ describe("llama-models", () => {
     const ambiguous = profileFromFile(model, [model, mmproj, second], new Set());
     expect(ambiguous.mmprojFile).toBeUndefined();
     expect(ambiguous.vision).toBe(false);
+  });
+
+  it("computes the missing files of a draft profile from the scan, keeping the status result for absolute paths", () => {
+    expect(draftMissingFiles({ ...preset, modelFile: model.path, vision: false }, [model], [])).toEqual([]);
+    expect(draftMissingFiles({ ...preset, modelFile: "x/gone.gguf", vision: false }, [model], [])).toEqual(["x/gone.gguf"]);
+    expect(draftMissingFiles({ ...preset, modelFile: "D:/m/a.gguf", vision: false }, [], ["d:/m/a.gguf"])).toEqual(["D:/m/a.gguf"]);
   });
 });
