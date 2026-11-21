@@ -8,8 +8,9 @@ import { afterAll, describe, expect, it } from "vitest";
 import { DownloadError } from "../src/download.js";
 import { installLlama } from "../src/llama-install.js";
 import { buildNumber, fetchReleases, parseReleases } from "../src/llama-releases.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
-const root = path.resolve(".claude/temp/llama-install-tests");
+const root = tempRoot("llama-install");
 const asset = (name: string, size = 10) => ({ name, size, digest: `sha256:${"a".repeat(64)}`, browser_download_url: `https://github.com/x/y/releases/download/t/${name}` });
 
 describe("llama.cpp releases and install", () => {

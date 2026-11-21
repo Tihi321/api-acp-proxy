@@ -5,8 +5,9 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterAll, describe, expect, it } from "vitest";
 import { DownloadError, downloadResumable } from "../src/download.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
-const root = path.resolve(".claude/temp/download-tests");
+const root = tempRoot("download");
 const content = Buffer.alloc(300_000, "resumable-fixture-");
 const sha = createHash("sha256").update(content).digest("hex");
 

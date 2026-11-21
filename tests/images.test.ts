@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import fsp from "node:fs/promises";
 import { createServer as createHttpServer, request as httpRequest, type IncomingHttpHeaders, type Server } from "node:http";
@@ -13,9 +13,11 @@ import { loadConfig, type ProxyConfig } from "../src/config.js";
 import { ImageError, loadImageFile, MAX_IMAGE_BYTES, sniffImage } from "../src/images.js";
 import { defaultRuntimeContext, type ProviderDescriptor } from "../src/provider.js";
 import { createProxyServer } from "../src/server.js";
+import { tempRoot } from "./helpers/temp-root.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-acp.mjs", import.meta.url));
-const workRoot = path.resolve(".claude/temp/image-tests");
+const workRoot = tempRoot("image");
+afterAll(() => { rmSync(workRoot, { recursive: true, force: true }); });
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 const png = Buffer.from(PNG_B64, "base64");
 const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("JFIF-test-image-bytes")]);
