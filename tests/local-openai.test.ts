@@ -213,5 +213,9 @@ describe("LocalOpenAiProvider", () => {
     await expect(router.generateImage("gufo/qwen-image-2.1", { kind: "generations", fields: { prompt: "x", response_format: "url" } }, abort)).rejects.toMatchObject({ status: 400 });
     status = 400;
     await expect(router.generateImage("gufo/qwen-image-2.1", { kind: "generations", fields: { prompt: "x", steps: 99 } }, abort)).rejects.toMatchObject({ status: 400, code: "invalid_request", message: "steps must be between 1 and 8" });
+    status = 401;
+    await expect(router.generateImage("gufo/qwen-image-2.1", { kind: "generations", fields: { prompt: "x" } }, abort)).rejects.toMatchObject({ status: 502, code: "local_upstream_auth", message: expect.stringContaining("API key") });
+    status = 404;
+    await expect(router.generateImage("gufo/qwen-image-2.1", { kind: "generations", fields: { prompt: "x" } }, abort)).rejects.toMatchObject({ status: 502, code: "upstream_error" });
   });
 });

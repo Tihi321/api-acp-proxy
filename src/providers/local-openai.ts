@@ -1,7 +1,7 @@
 import type { StopReason, Usage } from "@agentclientprotocol/sdk";
 import { ApiError, messageText, type Message } from "../api.js";
 import type { ProviderRegistration } from "../controller.js";
-import type { LocalModelCoordinator } from "../local-models.js";
+import { STRATA_PROFILE_ID, type LocalModelCoordinator } from "../local-models.js";
 import type { Logger } from "../logger.js";
 import { AcpUnavailableError, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type ImagePassthrough, type ModelInfo, type Provider, type ProviderState, type ProviderStatus } from "../provider.js";
 import type { GufoProfile } from "../settings.js";
@@ -17,6 +17,8 @@ export interface LocalOpenAiOptions {
   profiles?: GufoProfile[];
   /** Gufo: switches/queues the single server to the profile a request names. Without it requests go straight to the upstream. */
   coordinator?: LocalModelCoordinator;
+  /** Coordinator profile every request of this provider holds a lease on (Strata: `strata`); Gufo derives it from the model's profile. */
+  leaseProfile?: string;
 }
 
 const DEFAULT_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
@@ -43,6 +45,7 @@ export class LocalOpenAiProvider implements Provider {
   readonly staticModels?: ModelInfo[];
   private readonly profiles?: GufoProfile[];
   private readonly coordinator?: LocalModelCoordinator;
+  private readonly leaseProfile?: string;
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly logger: Logger;
@@ -58,6 +61,7 @@ export class LocalOpenAiProvider implements Provider {
     this.baseUrl = options.baseUrl.replace(/\/+$/, ""); this.apiKey = options.apiKey || undefined; this.logger = options.logger;
     this.fetchImpl = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.coordinator = options.coordinator;
+    this.leaseProfile = options.leaseProfile;
     if (options.profiles) {
       this.profiles = options.profiles;
       this.staticModels = options.profiles.map((profile) => ({ id: profile.model, name: profile.label, kind: profile.kind, vision: profile.kind === "llm" && profile.vision }));
@@ -83,8 +87,9 @@ export class LocalOpenAiProvider implements Provider {
       if (profile?.kind === "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' generates images; it does not answer chat requests.`, "model");
       if (messages.some((message) => message.parts.some((part) => part.type === "image")) && !(profile?.kind === "llm" && profile.vision)) throw new ApiError(400, "unsupported_content", `The model '${this.id}/${model}' does not accept image input.`, "messages");
     } else if (profile && profile.kind !== "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' does not generate images.`, "model");
-    if (!profile || !this.coordinator) return undefined;
-    return this.coordinator.acquire(profile.id, signal);
+    const leaseId = profile?.id ?? this.leaseProfile;
+    if (!leaseId || !this.coordinator) return undefined;
+    return this.coordinator.acquire(leaseId, signal);
   }
 
   status(): ProviderStatus {
@@ -200,7 +205,7 @@ export class LocalOpenAiProvider implements Provider {
     }
   }
 
-  /** Forwards an image request to the Gufo image server (Node fetch, bearer key, the request's signal). Upstream 4xx -> 400 `invalid_request`, 5xx -> 502 `upstream_error`, no connection -> 503 `local_server_not_running`. */
+  /** Forwards an image request to the Gufo image server (Node fetch, bearer key, the request's signal). Upstream 401/403 -> 502 `local_upstream_auth`, 404 -> 502, 413 -> 413, other 4xx -> 400 `invalid_request`, 5xx -> 502 `upstream_error`, no connection -> 503 `local_server_not_running`. */
   async generateImage(model: string, request: ImagePassthrough, signal: AbortSignal): Promise<{ status: number; body: unknown }> {
     const profile = this.profileOf(model);
     if (profile?.kind !== "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' does not generate images.`, "model");
@@ -238,7 +243,11 @@ export class LocalOpenAiProvider implements Provider {
       if (!response.ok) {
         const error = (parsed as { error?: { message?: unknown } | string } | undefined)?.error;
         const detail = typeof error === "string" ? error : typeof error?.message === "string" ? error.message : raw.slice(0, 300);
-        if (response.status >= 400 && response.status < 500) throw new ApiError(400, "invalid_request", detail || `${this.displayName} answered HTTP ${response.status}`);
+        const status = response.status;
+        if (status === 401 || status === 403) throw new ApiError(502, "local_upstream_auth", `${this.displayName} rejected the request (HTTP ${status}); check the ${this.displayName} API key in Settings.${detail ? ` ${detail}` : ""}`);
+        if (status === 404) throw new ApiError(502, "upstream_error", `${this.displayName} answered HTTP 404: endpoint or model not found${detail ? ` (${detail})` : ""}.`);
+        if (status === 413) throw new ApiError(413, "invalid_request", detail || `${this.displayName} answered HTTP 413: the request is too large.`);
+        if (status >= 400 && status < 500) throw new ApiError(400, "invalid_request", detail || `${this.displayName} answered HTTP ${status}`);
         throw new ApiError(502, "upstream_error", `${this.displayName} answered HTTP ${response.status}: ${detail}`);
       }
       this.setState("ready");
@@ -266,11 +275,13 @@ function registration(id: "gufo" | "strata", displayName: string, host: GufoHost
   return {
     id, displayName,
     // Node's global fetch on purpose, not ctx.fetch (Electron net.fetch): Strata refuses a POST that carries a browser Origin header.
-    create: ({ providerSettings, ctx }) => new LocalOpenAiProvider({ id, displayName, baseUrl: `http://127.0.0.1:${providerSettings.port as number}/v1`, ...(typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? { apiKey: providerSettings.apiKey } : {}), logger: ctx.logger.child(id), ...(id === "gufo" && Array.isArray(providerSettings.profiles) ? { profiles: providerSettings.profiles as GufoProfile[] } : {}), ...(id === "gufo" && host.coordinator ? { coordinator: host.coordinator } : {}) }),
+    create: ({ providerSettings, ctx }) => new LocalOpenAiProvider({ id, displayName, baseUrl: `http://127.0.0.1:${providerSettings.port as number}/v1`, ...(typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? { apiKey: providerSettings.apiKey } : {}), logger: ctx.logger.child(id), ...(id === "gufo" && Array.isArray(providerSettings.profiles) ? { profiles: providerSettings.profiles as GufoProfile[] } : {}), ...(host.coordinator ? { coordinator: host.coordinator, ...(id === "strata" ? { leaseProfile: STRATA_PROFILE_ID } : {}) } : {}) }),
   };
 }
 
 /** Gufo with its profiles; `host.coordinator` (the app) switches the single server to the model a request names. */
 export function createGufoRegistration(host: GufoHost = {}): ProviderRegistration { return registration("gufo", "Gufo", host); }
 export const gufoRegistration: ProviderRegistration = createGufoRegistration();
-export const strataRegistration: ProviderRegistration = registration("strata", "Strata");
+/** Strata; `host.coordinator` (the app) makes each request hold a lease on the `strata` profile so a Gufo switch cannot kill it mid-generation. */
+export function createStrataRegistration(host: GufoHost = {}): ProviderRegistration { return registration("strata", "Strata", host); }
+export const strataRegistration: ProviderRegistration = createStrataRegistration();

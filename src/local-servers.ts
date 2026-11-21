@@ -77,7 +77,10 @@ interface Run {
   partial: Record<"stdout" | "stderr", string>;
 }
 
-interface Entry { view: LocalServerStatusView; run?: Run; logTimer?: NodeJS.Timeout; startGen: number }
+interface Entry { view: LocalServerStatusView; run?: Run; logTimer?: NodeJS.Timeout; startGen: number; /** Generation of the latest start() claim; a stop() bumps startGen without it. */ claimGen: number }
+
+/** A start that a later start() of the same server replaced before it spawned. */
+class SupersededError extends Error {}
 
 export class LocalServerManager extends EventEmitter {
   private readonly entries = new Map<LocalServerId, Entry>();
@@ -103,7 +106,7 @@ export class LocalServerManager extends EventEmitter {
     this.releaseTimeoutMs = deps.releaseTimeoutMs ?? 30_000;
     this.maxLogLines = deps.maxLogLines ?? 200;
     this.logger = deps.logger;
-    for (const id of LOCAL_SERVER_IDS) this.entries.set(id, { view: { id, name: LOCAL_SERVER_NAMES[id], state: "stopped", log: [] }, startGen: 0 });
+    for (const id of LOCAL_SERVER_IDS) this.entries.set(id, { view: { id, name: LOCAL_SERVER_NAMES[id], state: "stopped", log: [] }, startGen: 0, claimGen: 0 });
   }
 
   list(): LocalServerStatusView[] {
@@ -118,14 +121,18 @@ export class LocalServerManager extends EventEmitter {
     if (this.closed) return;
     checkModelFiles(spec);
     let stoppedAny = false;
-    if (entry.run || entry.view.state === "starting" || entry.view.state === "ready") {
-      if (entry.view.profile === spec.profile) return;
-      stoppedAny = true;
-      await this.stop(spec.id);
-    }
-    // Claim the slot synchronously so a concurrent start of the same id is a no-op.
-    entry.view = { ...entry.view, state: "starting", port: spec.port, profile: spec.profile, error: undefined, pid: undefined, readyAt: undefined, startedAt: undefined, commandLine: commandLine(spec), log: [] };
+    const hadPrevious = Boolean(entry.run) || entry.view.state === "starting" || entry.view.state === "ready";
+    if (hadPrevious && entry.view.profile === spec.profile) return;
+    // Claim the generation before awaiting anything: the latest start() wins, an earlier one still in flight is superseded.
     const gen = ++entry.startGen;
+    entry.claimGen = gen;
+    if (hadPrevious) {
+      stoppedAny = true;
+      // A previous start still before its spawn has no run: the bump above already cancelled it.
+      if (entry.run) await this.stop(spec.id);
+      if (entry.startGen !== gen) { if (this.closed) return; throw new SupersededError(`${LOCAL_SERVER_NAMES[spec.id]} start for '${spec.profile ?? spec.id}' was replaced by a newer start.`); }
+    }
+    entry.view = { ...entry.view, state: "starting", port: spec.port, profile: spec.profile, error: undefined, pid: undefined, readyAt: undefined, startedAt: undefined, commandLine: commandLine(spec), log: [] };
     this.emitChange();
     try {
       await Promise.all(LOCAL_SERVER_IDS.filter((id) => { const other = this.entries.get(id)!; return id !== spec.id && (other.run || other.view.state === "starting"); }).map((id) => {
@@ -134,20 +141,29 @@ export class LocalServerManager extends EventEmitter {
       }));
       // The new server needs spec.port: after stopping a server of ours, give the port time to free up instead of refusing.
       if (stoppedAny) await this.waitPortReleased(spec.port, () => entry.startGen !== gen || this.closed);
-      if (entry.startGen !== gen || this.closed) return;
+      if (this.cancelled(entry, gen, spec)) return;
       if (await this.probeOnce(spec.port)) throw new Error(`Port ${spec.port} already answers (a server started outside the app?). Stop it first.`);
       // stop()/stopAll() during this pre-spawn phase bumped startGen: do not spawn, the state is already stopped.
-      if (entry.startGen !== gen || this.closed) return;
+      if (this.cancelled(entry, gen, spec)) return;
       const line = commandLine(spec);
       let child: ChildProcess;
       try { child = this.spawnFn(spec, line); } catch (error) { throw new Error(error instanceof Error ? error.message : String(error)); }
       this.attach(entry, spec, child);
     } catch (error) {
+      if (error instanceof SupersededError) throw error;
       if (entry.startGen !== gen) return;
       if (!entry.run) entry.view = { ...entry.view, state: "stopped", error: undefined };
       this.emitChange();
       throw error;
     }
+  }
+
+  /** True when this start must not spawn; a replacement by a newer start() throws instead of returning silently. */
+  private cancelled(entry: Entry, gen: number, spec: LocalServerSpec): boolean {
+    if (this.closed) return true;
+    if (entry.startGen === gen) return false;
+    if (entry.claimGen !== gen) throw new SupersededError(`${LOCAL_SERVER_NAMES[spec.id]} start for '${spec.profile ?? spec.id}' was replaced by a newer start.`);
+    return true;
   }
 
   async stop(id: LocalServerId): Promise<void> {

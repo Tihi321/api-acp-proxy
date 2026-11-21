@@ -2,11 +2,15 @@ import { ApiError } from "./api.js";
 import { QueueAbortedError } from "./limiter.js";
 import type { GufoProfile } from "./settings.js";
 
+/** Strata takes part in the coordinator as a profile of its own, so Gufo and Strata never kill each other mid-request. */
+export const STRATA_PROFILE_ID = "strata";
+export type LocalModelTarget = GufoProfile | { id: typeof STRATA_PROFILE_ID };
+
 export interface LocalModelHost {
-  /** Current launcher state of gufo. */
+  /** Current launcher state of whichever local server (Gufo profile or `strata`) is starting or ready. */
   current(): { profile?: string; state: "stopped" | "starting" | "ready" | "error"; error?: string };
   /** Stop-if-different + start; resolves when spawned. */
-  start(profile: GufoProfile): Promise<void>;
+  start(target: LocalModelTarget): Promise<void>;
   /** Rejects when the launcher goes to error/stopped. */
   waitReady(profile: string, signal: AbortSignal): Promise<void>;
 }
@@ -58,7 +62,7 @@ export class LocalModelCoordinator {
 
   private enqueue(profileId: string, lease: boolean, signal?: AbortSignal): Promise<() => void> {
     if (signal?.aborted) return Promise.reject(new QueueAbortedError());
-    if (!this.getSettings().profiles.some((profile) => profile.id === profileId)) return Promise.reject(new ApiError(404, "model_not_found", `Unknown Gufo profile '${profileId}'.`));
+    if (!this.target(profileId)) return Promise.reject(new ApiError(404, "model_not_found", `Unknown Gufo profile '${profileId}'.`));
     return new Promise((resolve, reject) => {
       const waiter: Waiter = { profile: profileId, lease, resolve, reject, signal };
       const waitMs = this.getSettings().switchWaitMs;
@@ -81,6 +85,10 @@ export class LocalModelCoordinator {
       this.queue.push(waiter);
       this.pump();
     });
+  }
+
+  private target(id: string): LocalModelTarget | undefined {
+    return id === STRATA_PROFILE_ID ? { id: STRATA_PROFILE_ID } : this.getSettings().profiles.find((profile) => profile.id === id);
   }
 
   private remove(waiter: Waiter): boolean {
@@ -106,7 +114,8 @@ export class LocalModelCoordinator {
     while (this.queue.length) {
       const head = this.queue[0]!;
       const active = this.activeProfile();
-      if (active !== undefined && head.profile !== active && (this.inflight.get(active) ?? 0) > 0) return;
+      // A profile still starting is never switched away from, even with nobody in flight yet (a leaver must not kill a half-loaded model).
+      if (active !== undefined && head.profile !== active && ((this.inflight.get(active) ?? 0) > 0 || this.starting !== undefined || this.host.current().state === "starting")) return;
       this.queue.shift();
       this.detach(head);
       this.admit(head);
@@ -114,7 +123,7 @@ export class LocalModelCoordinator {
   }
 
   private admit(waiter: Waiter): void {
-    const profile = this.getSettings().profiles.find((candidate) => candidate.id === waiter.profile);
+    const profile = this.target(waiter.profile);
     if (!profile) { waiter.reject(new ApiError(404, "model_not_found", `Unknown Gufo profile '${waiter.profile}'.`)); return; }
     this.inflight.set(profile.id, (this.inflight.get(profile.id) ?? 0) + 1);
     let released = false;
@@ -150,7 +159,7 @@ export class LocalModelCoordinator {
     );
   }
 
-  private ensureReady(profile: GufoProfile): Promise<void> {
+  private ensureReady(profile: LocalModelTarget): Promise<void> {
     if (this.starting?.profile === profile.id) return this.starting.promise;
     const current = this.host.current();
     if (current.profile === profile.id && current.state === "ready") return Promise.resolve();

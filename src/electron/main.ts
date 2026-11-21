@@ -9,8 +9,8 @@ import type { ControllerStatus } from "../controller.js";
 import { createLogger } from "../logger.js";
 import { claudeRegistration } from "../providers/claude.js";
 import { codexRegistration } from "../providers/codex.js";
-import { createGufoRegistration, strataRegistration } from "../providers/local-openai.js";
-import { LocalModelCoordinator } from "../local-models.js";
+import { createGufoRegistration, createStrataRegistration } from "../providers/local-openai.js";
+import { LocalModelCoordinator, STRATA_PROFILE_ID } from "../local-models.js";
 import type { LocalModelHost } from "../local-models.js";
 import { LocalServerManager } from "../local-servers.js";
 import type { LocalServerSpec } from "../local-servers.js";
@@ -99,22 +99,38 @@ async function main(): Promise<void> {
   // The coordinator reads the effective Gufo settings synchronously; the cache is filled before the proxy starts and after every save.
   type GufoSettings = Awaited<ReturnType<ProxyController["getSettings"]>>["effective"]["providers"]["gufo"];
   let gufoSettings: GufoSettings | undefined;
+  type StrataSettings = Awaited<ReturnType<ProxyController["getSettings"]>>["effective"]["providers"]["strata"];
+  let strataSettings: StrataSettings | undefined;
+  const refreshLocalSettings = async (): Promise<void> => { const providers = (await proxy.getSettings()).effective.providers; gufoSettings = providers.gufo; strataSettings = providers.strata; };
   const gufoHost: LocalModelHost = {
+    // Strata counts as the profile `strata`; only one of the two servers runs at a time.
     current: () => {
-      const entry = servers.list().find((candidate) => candidate.id === "gufo");
+      const list = servers.list();
+      const strata = list.find((candidate) => candidate.id === "strata");
+      if (strata && (strata.state === "starting" || strata.state === "ready")) return { profile: STRATA_PROFILE_ID, state: strata.state };
+      const entry = list.find((candidate) => candidate.id === "gufo");
       return { profile: entry?.profile, state: entry?.state ?? "stopped", error: entry?.error };
     },
-    start: async (profile: GufoProfile) => {
+    start: async (target) => {
+      if (target.id === STRATA_PROFILE_ID) {
+        const strata = strataSettings;
+        if (!strata) throw new Error("Settings are not loaded yet.");
+        await servers.start({ id: "strata", command: strata.command, args: strata.args, cwd: strata.cwd, port: strata.port });
+        return;
+      }
+      const profile = target as GufoProfile;
       const settings = gufoSettings;
       if (!settings) throw new Error("Settings are not loaded yet.");
       await servers.start({ id: "gufo", command: settings.command, args: profile.args, cwd: settings.cwd, port: settings.port, profile: profile.id, startTimeoutMs: profile.startTimeoutMs });
     },
     waitReady: (profile, signal) => new Promise<void>((resolve, reject) => {
+      const serverId = profile === STRATA_PROFILE_ID ? "strata" : "gufo";
+      const name = serverId === "strata" ? "Strata" : "Gufo";
       const check = (): boolean => {
-        const entry = servers.list().find((candidate) => candidate.id === "gufo");
-        if (!entry || entry.profile !== profile) { reject(new Error(`Gufo was switched away from '${profile}' while it started.`)); return true; }
+        const entry = servers.list().find((candidate) => candidate.id === serverId);
+        if (!entry || (serverId === "gufo" && entry.profile !== profile)) { reject(new Error(`${name} was switched away from '${profile}' while it started.`)); return true; }
         if (entry.state === "ready") { resolve(); return true; }
-        if (entry.state === "error" || entry.state === "stopped") { reject(new Error(entry.error ?? entry.log[entry.log.length - 1] ?? `Gufo '${profile}' stopped before it was ready.`)); return true; }
+        if (entry.state === "error" || entry.state === "stopped") { reject(new Error(entry.error ?? entry.log[entry.log.length - 1] ?? `${name} '${profile}' stopped before it was ready.`)); return true; }
         return false;
       };
       if (check()) return;
@@ -131,7 +147,7 @@ async function main(): Promise<void> {
     settingsPath,
     logger,
     ...(secretCodec ? { secretCodec } : {}),
-    registry: [codexRegistration, antigravityRegistration, claudeRegistration, createGufoRegistration({ coordinator }), strataRegistration],
+    registry: [codexRegistration, antigravityRegistration, claudeRegistration, createGufoRegistration({ coordinator }), createStrataRegistration({ coordinator })],
     ctx: {
       dataDir,
       nodeRuntime: { command: process.execPath, argsPrefix: ["--require", hideWindows], env: { ELECTRON_RUN_AS_NODE: "1", NODE_OPTIONS: nodeOptions } },
@@ -257,7 +273,7 @@ async function main(): Promise<void> {
     if (typeof patch !== "object" || patch === null || Array.isArray(patch)) return { ok: false, errors: [{ path: "", message: "Invalid settings patch" }] };
     try {
       await proxy.applySettings(patch as SettingsPatch);
-      gufoSettings = (await proxy.getSettings()).effective.providers.gufo;
+      await refreshLocalSettings();
       applyLoginItem((await proxy.getSettings()).effective.server.launchAtLogin);
       return { ok: true };
     } catch (error) {
@@ -281,19 +297,13 @@ async function main(): Promise<void> {
   handle("proxy:startLocalServer", async (id: unknown, profileId?: unknown): Promise<ActionResult> => {
     if (id !== "gufo" && id !== "strata") return { ok: false, message: "Invalid server" };
     return action(async () => {
-      const providers = (await proxy.getSettings()).effective.providers;
-      if (id === "gufo") {
-        // Resolves when the model is ready (minutes for a large one); a queued or failed switch comes back as the error message.
-        gufoSettings = providers.gufo;
-        const profiles = providers.gufo.profiles;
-        const chosen = typeof profileId === "string" && profileId ? profileId : gufoHost.current().profile ?? profiles.find((candidate) => candidate.kind === "llm")?.id ?? profiles[0]?.id;
-        if (!chosen) throw new Error("No Gufo profile is configured.");
-        await coordinator.switchTo(chosen);
-        return;
-      }
-      const settings = providers.strata;
-      const spec: LocalServerSpec = { id, command: settings.command, args: settings.args, cwd: settings.cwd, port: settings.port };
-      await servers.start(spec);
+      await refreshLocalSettings();
+      // Both servers start through the coordinator: it queues behind in-flight requests and resolves when ready (minutes for a large model); a queued or failed switch comes back as the error message.
+      if (id === "strata") { await coordinator.switchTo(STRATA_PROFILE_ID); return; }
+      const profiles = gufoSettings!.profiles;
+      const chosen = typeof profileId === "string" && profileId ? profileId : servers.list().find((candidate) => candidate.id === "gufo")?.profile ?? profiles.find((candidate) => candidate.kind === "llm")?.id ?? profiles[0]?.id;
+      if (!chosen) throw new Error("No Gufo profile is configured.");
+      await coordinator.switchTo(chosen);
     });
   });
   handle("proxy:restoreGufoPresets", (profiles: unknown): GufoProfileView[] => Array.isArray(profiles) ? restoreMissingPresets(profiles as GufoProfile[]) : []);
@@ -352,7 +362,7 @@ async function main(): Promise<void> {
     return action(() => shell.openExternal(parsed.href));
   });
 
-  gufoSettings = (await proxy.getSettings()).effective.providers.gufo;
+  await refreshLocalSettings();
   const status = await proxy.start();
   applyLoginItem((await proxy.getSettings()).effective.server.launchAtLogin);
   if (status.server.state === "error") logger.warn(`Server failed to start: ${status.server.error?.message}`);

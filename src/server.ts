@@ -198,12 +198,13 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}), ...(parsed.maxOutputTokens !== undefined ? { maxOutputTokens: parsed.maxOutputTokens } : {}) };
   // Refuse an oversized prompt with a real HTTP 400 before a stream starts.
   bridge.checkPrompt?.(parsed.model, parsed.conversation, options);
+  // Before the lease: a throw here must not leave a lease or timer behind.
+  const promptText = serializePrompt(parsed.conversation, options.instructions);
   // A local model is switched to (and waited for) before the timer starts, so the wait does not count against it.
   const lease = await prepare(bridge, parsed.model, parsed.conversation, abortController.signal);
   if (lease === null) return;
   const timer = setTimeout(() => { timedOut = true; abortController.abort(); }, timeoutFor(bridge, parsed.model, config));
   const asJson = parsed.format.type === "json";
-  const promptText = serializePrompt(parsed.conversation, options.instructions);
   /** `url_citation` annotations of the answer (only for a request with web search; none otherwise). */
   const chatAnnotations = (result: GenerationResult) => parsed.webSearch ? extractCitations(finalText(parsed.format, result)).map(({ url, title, start_index, end_index }) => ({ type: "url_citation", url_citation: { start_index, end_index, url, title } })) : undefined;
   const chatToolCalls = (result: GenerationResult) => (result.toolCalls ?? []).map((call, index) => ({ index, id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } }));
@@ -212,9 +213,9 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   if (parsed.stream) {
     const includeUsage = (parsed.stream_options as { include_usage?: boolean } | null | undefined)?.include_usage === true;
     const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) => writeSse(response, { id: chatId, object: "chat.completion.chunk", created, model: parsed.model, choices, ...(includeUsage ? { usage: null } : {}), ...extra });
-    beginSse(response);
-    chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }]);
     try {
+      beginSse(response);
+      chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }]);
       const delta = (text: string) => chunk([{ index: 0, delta: { content: text }, finish_reason: null }]);
       const thinking = (text: string) => chunk([{ index: 0, delta: { reasoning_content: text }, finish_reason: null }]);
       const result = await runGeneration(bridge, parsed.model, parsed.conversation, options, parsed.maxOutputTokens, asJson ? undefined : delta, abortController.signal, thinking);
@@ -274,6 +275,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
   const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(mcpServers ? { mcpServers } : {}), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}), ...(parsed.maxOutputTokens !== undefined ? { maxOutputTokens: parsed.maxOutputTokens } : {}) };
+  const promptText = serializePrompt(parsed.conversation, options.instructions);
   let lease: { release(): void } | undefined | null;
   try {
     bridge.checkPrompt?.(parsed.model, parsed.conversation, options);
@@ -285,7 +287,6 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   const withTools = parsed.functionTools !== undefined;
   // The message item comes after the generated images, the web searches and the MCP calls, so its text is not streamed live (it is only known when the turn is over).
   const deferred = parsed.generateImages || mcpServers !== undefined || parsed.webSearch !== undefined;
-  const promptText = serializePrompt(parsed.conversation, options.instructions);
   /** A `function_call` output item per tool call the agent made; they come after the message. */
   const callItems = (result: GenerationResult) => (result.toolCalls ?? []).map((call) => ({ id: id("fc"), type: "function_call", status: "completed", call_id: call.id, name: call.name, arguments: call.arguments }));
   /** An `image_generation_call` item per generated image; they come before the message. */
@@ -302,8 +303,6 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   if (parsed.stream) {
     let sequenceNumber = 0;
     const event = (type: string, payload: Record<string, unknown>) => writeSse(response, { type, sequence_number: sequenceNumber++, ...payload }, type);
-    beginSse(response);
-    event("response.created", { response: { id: responseId, object: "response", created_at: created, status: "in_progress", model: parsed.model, output: [], usage: null, store: false } });
     // With images the message comes after them, so its events (and its text) wait until the generation is over; otherwise it is item 0 and streams live.
     const openMessage = (index: number) => {
       event("response.output_item.added", { output_index: index, item: { id: messageId, type: "message", status: "in_progress", role: "assistant", content: [] } });
@@ -311,8 +310,10 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
     };
     // With function tools the message item opens with the first text, since a response that goes straight to tool calls has none.
     let messageOpen = false;
-    if (!deferred && !withTools) openMessage(0);
     try {
+      beginSse(response);
+      event("response.created", { response: { id: responseId, object: "response", created_at: created, status: "in_progress", model: parsed.model, output: [], usage: null, store: false } });
+      if (!deferred && !withTools) openMessage(0);
       const delta = (text: string, index = 0) => {
         if (withTools && !deferred && !messageOpen) { messageOpen = true; openMessage(0); }
         event("response.output_text.delta", { item_id: messageId, output_index: index, content_index: 0, delta: text });

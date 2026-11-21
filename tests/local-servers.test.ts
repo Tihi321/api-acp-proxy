@@ -125,4 +125,15 @@ describe("LocalServerManager", () => {
     expect(view().profile).toBe("B");
     await manager.stopAll();
   });
+
+  it("lets the latest start of a server win and tells the replaced one", async () => {
+    const spawned: string[] = [];
+    const manager = new LocalServerManager({ spawn: (spec) => { spawned.push(spec.profile ?? ""); throw new Error("stop here"); }, probe: () => new Promise((resolve) => setTimeout(() => resolve(false), 50)) });
+    const spec = (profile: string): LocalServerSpec => ({ id: "gufo", command: process.execPath, args: "", cwd: path.resolve("."), port: 18084, profile });
+    const first = manager.start(spec("A"));
+    const second = manager.start(spec("B"));
+    await expect(first).rejects.toThrow("replaced by a newer start");
+    await expect(second).rejects.toThrow("stop here");
+    expect(spawned).toEqual(["B"]);
+  });
 });

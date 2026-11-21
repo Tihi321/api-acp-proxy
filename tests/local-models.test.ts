@@ -74,4 +74,32 @@ describe("LocalModelCoordinator", () => {
     expect(starts).toEqual(["B", "C"]);
     for (const failed of [c1, c2]) expect(failed.error).toMatchObject({ status: 503, code: "local_model_start_failed", message: expect.stringContaining("File not found") });
   });
+
+  it("never switches away from a profile that is still starting, and treats strata as a profile", async () => {
+    const { host, starts, markReady } = fakeHost();
+    const coordinator = new LocalModelCoordinator(host, () => ({ profiles: ["A", "B"].map(profile), switchWaitMs: 1000 }));
+    const leaver = new AbortController();
+    const first = coordinator.acquire("B", leaver.signal).catch((error) => error);
+    await flush();
+    expect(starts).toEqual(["B"]);
+    const waitingForA = coordinator.acquire("A", new AbortController().signal);
+    leaver.abort();
+    await flush();
+    expect(await first).toBeInstanceOf(QueueAbortedError);
+    expect(starts).toEqual(["B"]);
+    markReady();
+    await flush();
+    expect(starts).toEqual(["B", "A"]);
+    markReady();
+    const lease = await waitingForA;
+
+    const strata = coordinator.acquire("strata", new AbortController().signal);
+    await flush();
+    expect(starts).toEqual(["B", "A"]);
+    lease.release();
+    await flush();
+    expect(starts).toEqual(["B", "A", "strata"]);
+    markReady();
+    (await strata).release();
+  });
 });
