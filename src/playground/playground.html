@@ -99,7 +99,7 @@
             <button id="attach" class="icon-btn" type="button" aria-label="Attach images" title="Attach images"><svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg></button>
 
             <div class="pop-anchor" id="tools-anchor">
-              <button id="tools-button" class="icon-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="tools-pop" aria-label="Tools" title="Tools"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg></button>
+              <button id="tools-button" class="icon-btn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="tools-pop" aria-label="Tools" title="Tools"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg></button>
               <div id="tools-pop" class="pop tools-pop" role="group" aria-label="Tools" hidden>
                 <label class="switch-row"><span class="switch-text">Stream</span><input id="stream" class="switch" type="checkbox" role="switch" checked></label>
                 <label class="switch-row" title="Lets the agent search the web (web_search_options)"><span class="switch-text"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg>Web search</span><input id="search" class="switch" type="checkbox" role="switch"></label>
@@ -141,7 +141,7 @@
               <button id="model-button" class="pill" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-pop" title="Choose a model"><span id="model-label" class="pill-label">Loading models…</span><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>
               <div id="model-pop" class="pop model-pop" hidden>
                 <div class="model-head">
-                  <input id="model-search" type="search" autocomplete="off" spellcheck="false" placeholder="Search models" aria-label="Search models" role="combobox" aria-expanded="true" aria-controls="model-list" aria-autocomplete="list">
+                  <input id="model-search" type="search" autocomplete="off" spellcheck="false" placeholder="Search models" aria-label="Search models" role="combobox" aria-expanded="false" aria-controls="model-list" aria-autocomplete="list">
                   <button id="model-refresh" class="icon-btn" type="button" aria-label="Reload the model list" title="Reload the model list"><svg class="icon" aria-hidden="true"><use href="#i-retry"/></svg></button>
                 </div>
                 <div id="model-list" class="model-list" role="listbox" aria-label="Models"></div>

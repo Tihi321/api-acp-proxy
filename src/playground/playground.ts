@@ -100,7 +100,7 @@ async function loadModels(): Promise<void> {
       ...(typeof item.vision === "boolean" ? { vision: item.vision } : {}),
       ...(typeof item.exhausted_until === "string" || typeof item.exhausted_until === "number" ? { exhausted_until: item.exhausted_until } : {}),
     })));
-    notice("");
+    if (data.length) notice(""); else notice("No models available. Log in to a provider in the app, then reload the list.");
   } catch (error) {
     kinds.clear();
     visionOf.clear();

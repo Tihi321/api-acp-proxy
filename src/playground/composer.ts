@@ -30,7 +30,7 @@ export interface ImageFields {
 export interface Composer {
   setModels(list: readonly ComposerModel[]): void;
   setBusy(busy: boolean): void;
-  /** Clears the text and the attachments. */
+  /** Clears the text and the current mode's attachments. */
   clear(): void;
   /** Clears the text only (image runs keep their reference images, as today). */
   clearText(): void;
@@ -83,7 +83,12 @@ export function initComposer(host: ComposerHost): Composer {
   const images = el<HTMLInputElement>("images");
 
   let models: ComposerModel[] = [];
-  const attachments: Array<{ file: File; url: string }> = [];
+  // One list per mode: chat attachments are image_url parts, image-mode ones are edit references. Switching mode shows that mode's own list.
+  const lists: Record<"chat" | "image", Array<{ file: File; url: string }>> = { chat: [], image: [] };
+  const attachmentList = (): Array<{ file: File; url: string }> => lists[host.mode()];
+  /** True while the chat list holds images and the model takes none (kept, but Send is blocked until they are removed). */
+  const blocked = (): boolean => host.mode() === "chat" && host.vision() === false && lists.chat.length > 0;
+  let blockNotice = false;
   let busy = false;
   let loaded = false;
 
@@ -111,7 +116,7 @@ export function initComposer(host: ComposerHost): Composer {
 
   // ---- popovers ----
   const popovers: Popover[] = [];
-  function popover(buttonId: string, popId: string, anchorId: string, focusTarget: () => HTMLElement | null, onOpen: () => void = () => {}): Popover {
+  function popover(buttonId: string, popId: string, anchorId: string, focusTarget: () => HTMLElement | null, onOpen: () => void = () => {}, onClose: () => void = () => {}): Popover {
     const button = el(buttonId), pop = el(popId), anchor = el(anchorId);
     const api: Popover = {
       button, pop, anchor, onOpen,
@@ -127,6 +132,7 @@ export function initComposer(host: ComposerHost): Composer {
         if (pop.hidden) return;
         pop.hidden = true;
         button.setAttribute("aria-expanded", "false");
+        onClose();
         if (restoreFocus) button.focus();
       },
     };
@@ -150,7 +156,12 @@ export function initComposer(host: ComposerHost): Composer {
     input.style.height = "auto";
     input.style.height = `${input.scrollHeight}px`;
   }
-  function updateSend(): void { send.disabled = !input.value.trim(); }
+  function updateSend(): void { send.disabled = !input.value.trim() || blocked(); }
+  function syncBlock(): void {
+    if (blocked()) { setNotice(`This model does not take images. Remove the ${lists.chat.length} attachment${lists.chat.length === 1 ? "" : "s"} or pick a vision or image model to send.`); blockNotice = true; }
+    else if (blockNotice) { setNotice(""); blockNotice = false; }
+    updateSend();
+  }
   input.addEventListener("input", () => { autogrow(); updateSend(); });
   input.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !event.shiftKey && host.busy()) { event.preventDefault(); host.stop(); return; }
@@ -163,13 +174,14 @@ export function initComposer(host: ComposerHost): Composer {
     if (host.busy()) return;
     const text = input.value.trim();
     if (!text) return;
+    if (blocked()) { syncBlock(); return; }
     if (host.mode() === "image") {
       const values = imageFields();
-      const problem = validateImageForm({ size: values.size, steps: values.steps, files: attachments.length });
+      const problem = validateImageForm({ size: values.size, steps: values.steps, files: attachmentList().length });
       if (problem) { setNotice(problem); return; }
       setNotice("");
     }
-    host.send(text, attachments.map((item) => item.url));
+    host.send(text, attachmentList().map((item) => item.url));
   }
 
   // ---- attachments ----
@@ -179,6 +191,7 @@ export function initComposer(host: ComposerHost): Composer {
     return { ok: true, title: "Attach images" };
   }
   function renderThumbs(): void {
+    const attachments = attachmentList();
     thumbs.replaceChildren(...attachments.map((item) => {
       const box = make("div", "thumb");
       const remove = make("button", "thumb-remove");
@@ -186,14 +199,15 @@ export function initComposer(host: ComposerHost): Composer {
       remove.title = "Remove this image";
       remove.setAttribute("aria-label", "Remove this image");
       remove.append(icon("close"));
-      remove.onclick = () => { attachments.splice(attachments.indexOf(item), 1); renderThumbs(); input.focus(); };
+      remove.onclick = () => { attachments.splice(attachments.indexOf(item), 1); renderThumbs(); syncBlock(); input.focus(); };
       box.append(Object.assign(make("img"), { src: item.url, alt: item.file.name }), remove);
       return box;
     }));
   }
   async function addFiles(files: readonly File[]): Promise<void> {
     const state = attachEnabled();
-    if (!state.ok) { setNotice(state.title + "."); return; }
+    if (!state.ok) { setNotice(state.title + "."); blockNotice = false; return; }
+    const attachments = attachmentList();
     const pictures = files.filter((file) => file.type.startsWith("image/"));
     if (!pictures.length) { if (files.length) setNotice("Only image files can be attached."); return; }
     const room = MAX_IMAGES - attachments.length;
@@ -204,7 +218,7 @@ export function initComposer(host: ComposerHost): Composer {
       const url = urls[index];
       if (url && attachments.length < MAX_IMAGES) attachments.push({ file, url });
     });
-    renderThumbs();
+    if (attachments === attachmentList()) renderThumbs();
   }
   attach.onclick = () => { if (!attach.disabled) fileInput.click(); };
   fileInput.onchange = () => { void addFiles([...(fileInput.files ?? [])]); fileInput.value = ""; };
@@ -281,7 +295,7 @@ export function initComposer(host: ComposerHost): Composer {
   let visible: string[] = [];
   const optionId = (index: number): string => `model-opt-${index}`;
 
-  const picker = popover("model-button", "model-pop", "model-anchor", () => modelSearch, () => { modelSearch.value = ""; renderModels(true); });
+  const picker = popover("model-button", "model-pop", "model-anchor", () => modelSearch, () => { modelSearch.value = ""; modelSearch.setAttribute("aria-expanded", "true"); renderModels(true); }, () => modelSearch.setAttribute("aria-expanded", "false"));
   function setActive(index: number): void {
     if (!visible.length) { active = 0; modelSearch.removeAttribute("aria-activedescendant"); modelList.removeAttribute("aria-activedescendant"); return; }
     active = (index + visible.length) % visible.length;
@@ -332,7 +346,7 @@ export function initComposer(host: ComposerHost): Composer {
       }
       return wrap;
     });
-    if (!children.length) children.push(make("div", "model-empty", models.length ? "No model matches." : "No models (log in to a provider in the app)."));
+    if (!children.length) children.push(make("div", "model-empty", models.length ? "No model matches." : "No models."));
     modelList.replaceChildren(...children);
     setActive(selectCurrent && visible.includes(current) ? visible.indexOf(current) : 0);
   }
@@ -364,7 +378,8 @@ export function initComposer(host: ComposerHost): Composer {
     attach.disabled = !state.ok;
     attach.title = state.title;
     attach.setAttribute("aria-label", state.title);
-    if (!state.ok && attachments.length) { attachments.length = 0; renderThumbs(); }
+    renderThumbs();
+    syncBlock();
     const id = host.model();
     modelLabel.textContent = id ? shortName(id) : loaded ? (models.length ? "Choose a model" : "No models") : "Loading models…";
     el("model-button").title = id ? `Model: ${id}` : "Choose a model";
@@ -389,7 +404,7 @@ export function initComposer(host: ComposerHost): Composer {
       send.hidden = busy;
       stop.hidden = !busy;
     },
-    clear() { input.value = ""; attachments.length = 0; renderThumbs(); autogrow(); updateSend(); },
+    clear() { input.value = ""; attachmentList().length = 0; renderThumbs(); autogrow(); updateSend(); },
     clearText() { input.value = ""; autogrow(); updateSend(); },
     focus() { input.focus(); },
     fill(text) {
@@ -400,7 +415,7 @@ export function initComposer(host: ComposerHost): Composer {
       input.setSelectionRange(text.length, text.length);
     },
     imageFields,
-    files: () => attachments.map((item) => item.file),
+    files: () => attachmentList().map((item) => item.file),
     prefs,
     refreshMode,
   };
