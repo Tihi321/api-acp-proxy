@@ -25,6 +25,8 @@ import { installLlama, probeLlamaVersion } from "../llama-install.js";
 import { HF_POLICY, downloadHfFiles, listHfFiles, parseHfLink } from "../hf-models.js";
 import type { HfFile, HfFileGroup } from "../hf-models.js";
 import { buildLlamaArgs, checkBuild, checkLlamaFiles } from "../llama-args.js";
+import { customExePatch, installPatch, profileFilesPatch } from "../llama-jobs.js";
+import type { ProfileFiles } from "../llama-jobs.js";
 import { antigravityRegistration, installAntigravity, readInstallInfo } from "./antigravity.js";
 import { SettingsWindow } from "./settings-window.js";
 import { TrayController } from "./tray.js";
@@ -384,11 +386,12 @@ async function main(): Promise<void> {
     if (typeof r !== "object" || r === null || !isLlamaSource(r.source) || !shortString(r.tag, 200) || !shortString(r.backend, 100) || (r.arch !== "x64" && r.arch !== "arm64")) return { ok: false, message: "Invalid install request" };
     const { source, tag, backend, arch } = r;
     await refreshLocalSettings();
-    const llama = llamaSettings!;
-    const outcome = await runLlamaJob("binary", (signal) => installLlama({ source, tag, backend, arch, binDir: llama.binary.dir, fetch: fetch as typeof fetch, signal, onProgress: llamaProgress }));
+    const binDir = llamaSettings!.binary.dir;
+    const outcome = await runLlamaJob("binary", (signal) => installLlama({ source, tag, backend, arch, binDir, fetch: fetch as typeof fetch, signal, onProgress: llamaProgress }));
     if (!outcome.ok) return outcome;
     try {
-      await proxy.applySettings({ providers: { llama: { binary: { ...llama.binary, mode: "managed", source, backend, arch, installed: outcome.value } } } });
+      // Job results are saved without a proxy restart (in-flight requests keep running), patched onto what is stored now.
+      await proxy.persistSettings((current) => installPatch(current.providers.llama, { source, backend, arch, info: outcome.value }));
       await refreshLocalSettings();
       pushState();
       return { ok: true, info: outcome.value };
@@ -400,9 +403,7 @@ async function main(): Promise<void> {
       const stat = await fs.promises.stat(file).catch(() => undefined);
       if (!stat?.isFile()) return { ok: false, message: `File not found: ${file}` };
       const probe = await probeLlamaVersion(file);
-      await refreshLocalSettings();
-      const { customBuild: _old, ...binary } = llamaSettings!.binary;
-      await proxy.applySettings({ providers: { llama: { binary: { ...binary, mode: "custom", customPath: file, ...(probe.build !== undefined ? { customBuild: probe.build } : {}) } } } });
+      await proxy.persistSettings((current) => customExePatch(current.providers.llama, file, probe.build));
       await refreshLocalSettings();
       pushState();
       return { ok: true, ...(probe.build !== undefined ? { build: probe.build } : {}), version: probe.text };
@@ -467,13 +468,11 @@ async function main(): Promise<void> {
       const draft = hf.draft ? byName("draft", hf.draft) : undefined;
       const files = [...model.files, ...(mmproj ? [mmproj] : []), ...(draft ? [draft] : [])];
       const paths = await downloadHfFiles({ repo: hf.repo, revision: hf.revision, files, modelsDir, fetch: fetch as typeof fetch, signal, onProgress: llamaProgress, ...(token ? { token } : {}) });
-      return { modelFile: paths[0]!, ...(mmproj ? { mmprojFile: paths[model.files.length]! } : {}), ...(draft ? { draftFile: paths[paths.length - 1]! } : {}) };
+      return { modelFile: paths[0]!, ...(mmproj ? { mmprojFile: paths[model.files.length]! } : {}), ...(draft ? { draftFile: paths[paths.length - 1]! } : {}) } satisfies ProfileFiles;
     });
     if (!outcome.ok) return outcome;
     try {
-      await refreshLocalSettings();
-      const profiles = llamaSettings!.profiles.map((candidate) => candidate.id === profileId ? { ...candidate, ...outcome.value } : candidate);
-      await proxy.applySettings({ providers: { llama: { profiles } } });
+      await proxy.persistSettings((current) => profileFilesPatch(current.providers.llama, profileId, outcome.value));
       await refreshLocalSettings();
       pushState();
       const view = llamaProfileView(profileId);

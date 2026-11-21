@@ -7,6 +7,7 @@ import { silentLogger, type Logger } from "./logger.js";
 import type { ToolBridgeHub } from "./tool-bridge.js";
 import type { ParsedPlanLimits } from "./plan-limits.js";
 import type { PlanLimitsView, RateLimitHintView } from "./shared/ipc.js";
+import type { ProviderSettings } from "./settings.js";
 
 /** An image the agent generated: base64 `data` as taken from the agent's update; Codex also reports the prompt it actually used. */
 export interface GeneratedImage { mimeType: string; data: string; revisedPrompt?: string; }
@@ -238,6 +239,8 @@ export interface Provider {
   planLimits?(signal?: AbortSignal): Promise<PlanLimitsView>;
   /** The last rate-limit hint the agent pushed (Claude), if any. */
   rateLimitHint?(): RateLimitHintView | undefined;
+  /** Takes changed provider settings without a restart (`ProxyController.persistSettings`); only what the provider can apply live. Absent: changes need a restart. */
+  updateSettings?(providerSettings: ProviderSettings): void;
   onStatus(listener: (status: ProviderStatus) => void): () => void;
   close(): Promise<void>;
 }

@@ -90,6 +90,21 @@ describe("ProxyController", () => {
     expect(JSON.parse(readFileSync(controller.settingsPath, "utf8")).server.port).toBe(second);
   });
 
+  it("persists a job result without a restart: the server keeps running and /v1/models shows the new profile", async () => {
+    const profile = { id: "text", label: "Text", model: "text", modelFile: "m.gguf" };
+    const controller = make({ providers: { llama: { profiles: [profile] } } });
+    const status = await controller.start();
+    const states: string[] = [];
+    controller.on("status", (next) => states.push(next.server.state));
+    const vision = async () => ((await get(`${status.server.baseUrl}/models`)).data as Array<{ id: string; vision?: boolean }>).find((model) => model.id === "llama/text")?.vision;
+    expect(await vision()).toBe(false);
+    const after = await controller.persistSettings((current) => ({ providers: { llama: { profiles: current.providers.llama.profiles.map((entry) => ({ ...entry, mmprojFile: "p.gguf", vision: true })) } } }));
+    expect(after.server).toMatchObject({ state: "running", port: status.server.port });
+    expect(states).not.toContain("starting");
+    expect(await vision()).toBe(true);
+    expect(JSON.parse(readFileSync(controller.settingsPath, "utf8")).providers.llama.profiles[0].vision).toBe(true);
+  });
+
   it("recovers from a port conflict by applying a new port", async () => {
     const [busy, free] = [await freePort(), await freePort()];
     await block(busy);

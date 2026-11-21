@@ -197,11 +197,36 @@ export class ProxyController extends EventEmitter {
 
   /** Persists a patch without a restart; serialized with the other lifecycle operations. */
   private saveSettings(patch: SettingsPatch): Promise<void> {
+    return this.exclusive(() => this.save(patch));
+  }
+
+  private async save(patch: SettingsPatch): Promise<void> {
+    await this.load();
+    const merged = mergeSettings(this.settings!, patch);
+    await this.store.save(merged);
+    this.settings = merged;
+  }
+
+  /**
+   * Persists a patch without restarting the server, so in-flight requests keep running. A function patch is built from the stored settings
+   * inside the lifecycle queue (a job that finishes after a long download patches only its own fields of what is saved now). Running providers
+   * that take settings live (`updateSettings`, e.g. the local profiles) get their new settings, and the router their new model list.
+   */
+  persistSettings(patch: SettingsPatch | ((current: Settings) => SettingsPatch)): Promise<ControllerStatus> {
     return this.exclusive(async () => {
       await this.load();
-      const merged = mergeSettings(this.settings!, patch);
-      await this.store.save(merged);
-      this.settings = merged;
+      await this.save(typeof patch === "function" ? patch(this.settings!) : patch);
+      const { providers: providerSettings } = await this.load();
+      const running = this.running;
+      if (running) {
+        for (const provider of running.providers) {
+          const next = providerSettings[provider.id];
+          if (!provider.updateSettings || !next) continue;
+          provider.updateSettings(next);
+          running.router.syncStaticModels(provider.id);
+        }
+      }
+      return this.publish();
     });
   }
 

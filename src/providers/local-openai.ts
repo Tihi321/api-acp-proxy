@@ -51,8 +51,8 @@ export class LocalOpenAiProvider implements Provider {
   readonly displayName: string;
   readonly ownedBy: string;
   readonly exposeUnprefixed = false;
-  readonly staticModels?: ModelInfo[];
-  private readonly profiles?: ProfileEntry[];
+  staticModels?: ModelInfo[];
+  private profiles?: ProfileEntry[];
   private readonly coordinator?: LocalModelCoordinator;
   private readonly leaseProfile?: string;
   private readonly baseUrl: string;
@@ -71,11 +71,19 @@ export class LocalOpenAiProvider implements Provider {
     this.fetchImpl = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.coordinator = options.coordinator;
     this.leaseProfile = options.leaseProfile;
-    if (options.profiles) {
-      this.profiles = (options.profiles as Array<GufoProfile | LlamaProfile>).map(toEntry);
-      this.staticModels = this.profiles.map((profile) => ({ id: profile.model, name: profile.label, kind: profile.kind, vision: profile.kind === "llm" && profile.vision }));
-      this.models = this.staticModels;
-    }
+    if (options.profiles) this.setProfiles(options.profiles);
+  }
+
+  private setProfiles(profiles: GufoProfile[] | LlamaProfile[]): void {
+    this.profiles = (profiles as Array<GufoProfile | LlamaProfile>).map(toEntry);
+    this.staticModels = this.profiles.map((profile) => ({ id: profile.model, name: profile.label, kind: profile.kind, vision: profile.kind === "llm" && profile.vision }));
+    this.models = this.staticModels;
+  }
+
+  /** A saved profile change (e.g. model files and vision after a download) takes effect without a restart; a provider without profiles (Strata) keeps its upstream list. */
+  updateSettings(providerSettings: Record<string, unknown>): void {
+    if (!this.profiles || !Array.isArray(providerSettings.profiles)) return;
+    this.setProfiles(providerSettings.profiles as GufoProfile[] | LlamaProfile[]);
   }
 
   private profileOf(model: string): ProfileEntry | undefined { return this.profiles?.find((profile) => profile.model === model); }
