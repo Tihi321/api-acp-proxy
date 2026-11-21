@@ -25,7 +25,7 @@ Outcome: a third local server `llama` ("Llama.cpp") with `llama/<model>` profile
 - `listHfFiles` returns `{ groups, quant? }`; groups carry `selectable` (also added to `HfFileGroupView`).
 - `checkBuild`: an own exe with a sources-only requirement (DSpark preset) warns ("unknown") instead of failing, since an own exe may be an Unsloth build.
 - A CUDA install refuses with `llama_no_digest` when the cudart zip has no digest.
-- `proxy:hfListFiles` runs inside the model job (counts for `download_busy`); release and listing requests use timeouts.
+- `proxy:hfListFiles` does not count as the model job and never answers `download_busy` (only the renderer disables List while a model job runs); release and listing requests use timeouts.
 - The UI saves unsaved edits before download, list, check and profile download, not only before Start.
 - The controller test expects llama `stopped` (enabled by default per C1), not disabled.
 - `tests/local-servers.test.ts` needed a second id-list line (post-stopAll state) updated.

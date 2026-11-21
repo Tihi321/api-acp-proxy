@@ -336,12 +336,15 @@ export function defaultSettingsPath(env: NodeJS.ProcessEnv = process.env): strin
 function isPlain(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 
 export function mergeSettings(current: Settings, patch: SettingsPatch): Settings {
-  const merge = (base: Record<string, unknown>, change: Record<string, unknown>): Record<string, unknown> => {
+  const merge = (base: Record<string, unknown>, change: Record<string, unknown>, where = ""): Record<string, unknown> => {
     const out = { ...base };
     for (const [key, value] of Object.entries(change)) {
       if (value === undefined) continue;
+      const here = where ? `${where}.${key}` : key;
       if (value === null) delete out[key];
-      else if (isPlain(value) && isPlain(out[key])) out[key] = merge(out[key] as Record<string, unknown>, value);
+      // providers.llama.binary is replaced as a whole value (contract C1), so omitted keys are cleared.
+      else if (here === "providers.llama.binary") out[key] = value;
+      else if (isPlain(value) && isPlain(out[key])) out[key] = merge(out[key] as Record<string, unknown>, value, here);
       else out[key] = value;
     }
     return out;

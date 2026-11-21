@@ -47,7 +47,7 @@ export function parseHfLink(input: string): HfRef {
 }
 
 export interface HfFile { path: string; size: number; sha256?: string; saveAs: string }
-/** `selectable` is false for split models with missing shards (their label ends in "(incomplete)"); the view type does not carry it, main/UI should drop or disable such groups. */
+/** `selectable` is false for split models with missing shards (their label ends in "(incomplete)"); the view type carries it too, and the UI disables such groups. */
 export interface HfFileGroup { kind: "model" | "mmproj" | "draft"; label: string; quant?: string; files: HfFile[]; totalSize: number; split: boolean; selectable: boolean }
 type TreeEntry = { type: string; path: string; size?: number; lfs?: { oid?: string; size?: number } };
 

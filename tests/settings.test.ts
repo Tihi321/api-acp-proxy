@@ -243,6 +243,11 @@ describe("helpers", () => {
     expect(next.providers.antigravity).toEqual({ enabled: true, purgeSessions: true });
     expect(next.providers.codex.enabled).toBe(true);
     expect(() => mergeSettings(base, { server: { port: -1 } })).toThrow();
+    const withBuild = mergeSettings(defaultSettings(), { providers: { llama: { binary: { ...defaultSettings().providers.llama.binary, mode: "custom", customPath: "a.exe", customBuild: 5 } } } });
+    expect(withBuild.providers.llama.binary.customBuild).toBe(5);
+    const replaced = mergeSettings(withBuild, { providers: { llama: { binary: { ...withBuild.providers.llama.binary, customPath: "b.exe", customBuild: undefined } } } });
+    expect(replaced.providers.llama.binary.customPath).toBe("b.exe");
+    expect(replaced.providers.llama.binary.customBuild).toBeUndefined();
     expect(existsSync(dir)).toBe(true);
   });
 });
