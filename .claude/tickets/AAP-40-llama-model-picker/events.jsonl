@@ -1,0 +1,14 @@
+{"ts":"2026-11-21T16:33:00Z","actor":"director-scribe","type":"plan.created","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"planner returned the plan (tasks T1-T4)"}
+{"ts":"2026-11-21T16:33:00Z","actor":"director-scribe","type":"attention.opened","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"A-001 approve the AAP-40 plan and its decisions","data":{"id":"A-001"}}
+{"ts":"2026-11-21T16:34:00Z","actor":"director-scribe","type":"attention.answered","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"A-001 answered: yes, implement as written","data":{"id":"A-001"}}
+{"ts":"2026-11-21T16:34:00Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"user approved the plan"}
+{"ts":"2026-11-21T16:32:54Z","actor":"implement","type":"implement.started","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"branch AAP-40_llama-model-picker from master"}
+{"ts":"2026-11-21T16:33:00Z","actor":"implement","type":"slice.started","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"implementer: shared rules, scanner, IPC, renderer helpers","data":{"tasks":["T1","T2"]}}
+{"ts":"2026-11-21T16:37:11Z","actor":"implement","type":"slice.done","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"T1 cc78b8d, T2 98d82ab; 505 tests pass","data":{"tasks":["T1","T2"]}}
+{"ts":"2026-11-21T16:37:11Z","actor":"implement","type":"slice.started","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"implementer: Llama.cpp page","data":{"tasks":["T3"]}}
+{"ts":"2026-11-21T16:37:11Z","actor":"implement","type":"slice.started","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"implementer: README and ROADMAP","data":{"tasks":["T4"]}}
+{"ts":"2026-11-21T16:42:24Z","actor":"implement","type":"slice.done","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"T3 7b2b057; typecheck, build, tests pass","data":{"tasks":["T3"]}}
+{"ts":"2026-11-21T16:42:24Z","actor":"implement","type":"slice.done","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"T4 docs, committed by implement as c995679","data":{"tasks":["T4"]}}
+{"ts":"2026-11-21T16:42:24Z","actor":"implement","type":"verify.passed","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"505 tests pass (1 skipped), typecheck and build pass, rg proofs clean","data":{"tests":505,"skipped":1}}
+{"ts":"2026-11-21T16:42:44Z","actor":"implement","type":"changelog.written","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"changelog for T1-T4; status stays in-progress for checker"}
+{"ts":"2026-11-21T17:05:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0008","ticket":"AAP-40-llama-model-picker","detail":"checker PASS (505 tests x2; M1-M8 untested)","data":{"verdict":"PASS","round":0}}

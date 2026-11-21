@@ -1,0 +1,4 @@
+- 2026-11-21 implementer: new files are committed with LF while git autocrlf warns they become CRLF on next touch; harmless, no line endings changed (src/llama-scan.ts) - suggested: add a .gitattributes eol rule if consistency matters
+- 2026-11-21 implementer: llama.load() runs before renderFields, so the modelsDir input is stale during load; T3 reads settings.modelsDir from the argument instead (src/renderer/settings.ts:267) - suggested: no action unless load starts reading inputs
+- 2026-11-21 implementer: .claude/temp holds many old scratch files from earlier tickets plus t3a.py, t3b.py, t3_models.ts (.claude/temp/) - suggested: clean up when convenient
+- 2026-11-21 implementer: a few very long README lines in the Llama.cpp section were not read in full for stale per-profile download text; grep for the removed phrases is clean (README.md:47) - suggested: skim once during the checker pass

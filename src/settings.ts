@@ -114,7 +114,7 @@ const llamaProfileSchema = profileBase.extend({
   draftGpuLayers: layers.optional(),
   /** Appended verbatim after the generated flags. */
   extraArgs: z.string().default(""),
-  /** Where "Download model files" fetches from. */
+  /** Where "Find on Hugging Face" points (the download card is filled with this repository and quant). */
   hf: z.object({
     repo: z.string().min(1),
     revision: z.string().min(1).default("main"),
@@ -130,7 +130,7 @@ const llamaProfileSchema = profileBase.extend({
 export type LlamaProfile = z.infer<typeof llamaProfileSchema>;
 
 const INKLING_SAMPLING = "--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0";
-/** The built-in llama.cpp profiles (editable; the exact file names are inferred and corrected by "Download model files"). */
+/** The built-in llama.cpp profiles (editable; the exact file names are inferred; pick the files you have, or use "Use found files"). */
 export const LLAMA_PRESETS: readonly LlamaProfile[] = [
   {
     id: "inkling-2-mini", label: "Inkling 2 Mini (Q8_0, vision)", model: "inkling-2-mini", vision: true,

@@ -214,3 +214,6 @@ dialog a { color: var(--accent); }
 }
 .log { margin: 0; max-height: 240px; overflow: auto; padding: var(--space-2) var(--space-3); background: var(--surface-2); border-radius: var(--radius-md); font-size: var(--text-xs); white-space: pre-wrap; word-break: break-all; }
 .profile-warn { color: var(--warn); font-size: var(--text-sm); margin: 0; }
+.row > select { flex: 1; min-width: 0; }
+.fix-row { flex-wrap: wrap; }
+.table td .badge { margin-left: var(--space-1); }
