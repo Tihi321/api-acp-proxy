@@ -701,13 +701,18 @@ export class McpEndpoint {
     const thread = args.threadId ? this.threads.acquire(args.threadId, args.model) : undefined;
     try {
       if (args.webSearch && bridge.canSearchWeb && !bridge.canSearchWeb(args.model)) throw new McpToolError("model_not_capable", `The model '${args.model}' cannot search the web.`);
-      if (args.images.length && bridge.acceptsImages?.(args.model) === false) throw new McpToolError("model_not_capable", `The model '${args.model}' does not accept images.${await this.modelsThat("do", (id) => bridge.acceptsImages?.(id) === true)}`);
+      /** The refusal for images to a model that does not take them, the same before and after a local model's load. */
+      const noImages = async (): Promise<McpToolError> => new McpToolError("model_not_capable", `The model '${args.model}' does not accept images.${await this.modelsThat("do", (id) => bridge.acceptsImages?.(id) === true)}`);
+      if (args.images.length && bridge.acceptsImages?.(args.model) === false) throw await noImages();
       const { parts, bytes } = await this.loadImages(args.images, context);
       this.threads.checkRoom(thread, parts.length, bytes);
       const user: Message = { role: "user", parts: [{ type: "text", text: args.prompt }, ...parts] };
       const history = thread ? thread.messages : args.system ? [textMessage("system", args.system)] : [];
       const messages = [...history, user];
-      const lease = await context.prepare(args.model, messages);
+      let lease: { release(): void } | undefined;
+      // Strata knows whether it reads images only once it is loaded: its refusal after the lease is the same tool error as the check above.
+      try { lease = await context.prepare(args.model, messages); }
+      catch (error) { if (parts.length && error instanceof ApiError && error.code === "unsupported_content") throw await noImages(); throw error; }
       let result: GenerationResult;
       try { result = await raceAbort(bridge.generate(args.model, messages, { onText: () => context.onText() }, context.signal, args.webSearch ? { webSearch: {} } : {}), context.signal); }
       finally { lease?.release(); }

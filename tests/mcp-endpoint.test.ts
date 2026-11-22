@@ -490,7 +490,7 @@ describe("ask_model (images)", () => {
     expect(unknown.calls).toHaveLength(1);
   });
 
-  it("forwards an image to Strata before its first load: the early check does not refuse an unknown answer", async () => {
+  it("forwards an image to Strata before its first load, and refuses one with model_not_capable when Strata's list says it reads none",async () => {
     const bodies: string[] = [];
     const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
     const fetchImpl = (async (url: string, init?: { body?: string }) => {
@@ -502,6 +502,17 @@ describe("ask_model (images)", () => {
     const reply = await ask(env, { model: "strata/qwen-flash", images: [dataImage()] });
     expect(reply.result.isError).toBeUndefined();
     expect(JSON.parse(bodies[0]!).messages[0].content[1]).toEqual({ type: "image_url", image_url: { url: `data:image/png;base64,${PNG_B64}` } });
+
+    const textBodies: string[] = [];
+    const textOnlyFetch = (async (url: string, init?: { body?: string }) => {
+      if (String(url).endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "qwen-flash", architecture: { input_modalities: ["text"] } }] }), { headers: { "content-type": "application/json" } });
+      textBodies.push(String(init?.body)); return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+    const textOnly = new LocalOpenAiProvider({ id: "strata", displayName: "Strata", baseUrl: "http://127.0.0.1:1/v1", logger: createLogger({ console: false }), fetch: textOnlyFetch });
+    const env2 = await start(new ProviderRouter({ providers: [textOnly] }));
+    const refused = await ask(env2, { model: "strata/qwen-flash", images: [dataImage()] });
+    expect(textOf(refused.result)).toMatch(/^model_not_capable:.*does not accept images/);
+    expect(textBodies).toHaveLength(0);
   });
 });
 

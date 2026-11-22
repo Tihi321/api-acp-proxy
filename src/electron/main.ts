@@ -616,8 +616,8 @@ async function main(): Promise<void> {
     installing = true;
     try {
       const info = await installAntigravity({ dataDir, fetch: net.fetch as unknown as typeof fetch, logger, onProgress: (progress) => win.send("proxy:installProgress", progress) });
-      await proxy.applySettings({});
-      await refreshLocalSettings(); // restart so the provider picks up install.json
+      await proxy.applySettings({}); // restart so the provider picks up install.json
+      await refreshLocalSettings();
       return { ok: true, info: toInstallView(info) };
     } catch (error) {
       logger.error(`Antigravity install failed: ${error instanceof Error ? error.message : String(error)}`);
