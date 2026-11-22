@@ -80,7 +80,9 @@ export function applyFix(profile: LlamaProfileView, field: FileField, file: Llam
 }
 
 /** Ids of the profiles that use `path` as model, mmproj or draft file. */
-export function usedBy(path: string, profiles: readonly LlamaProfileView[]): string[] {
+export function usedBy(path: string, profiles: readonly LlamaProfileView[], embeddingFile?: string): string[] {
   const wanted = norm(path);
-  return profiles.filter((profile) => [profile.modelFile, profile.mmprojFile, profile.draftFile].some((value) => value !== undefined && norm(value) === wanted)).map((profile) => profile.id);
+  const ids = profiles.filter((profile) => [profile.modelFile, profile.mmprojFile, profile.draftFile].some((value) => value !== undefined && norm(value) === wanted)).map((profile) => profile.id);
+  if (embeddingFile && norm(embeddingFile) === wanted) ids.push("embeddings");
+  return ids;
 }

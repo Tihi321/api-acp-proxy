@@ -561,8 +561,8 @@
             <p class="muted small-text" id="llama-embed-info"></p>
             <div class="grid">
               <div id="llama-embed-file"></div>
-              <label class="field"><span>Port</span><input id="providers.llama.embedding.port" type="number" min="1" max="65535"><small>Must differ from the Gufo, Strata and Llama.cpp ports.</small><small data-note-for="providers.llama.embedding.port"></small><small class="error" data-error-for="providers.llama.embedding.port"></small></label>
-              <label class="field"><span>Context per request (tokens)</span><input id="providers.llama.embedding.ctxSize" type="number" min="1"><small>The longest input one request may have; the server is started with this times the parallel requests (-np) as -c.</small><small data-note-for="providers.llama.embedding.ctxSize"></small><small class="error" data-error-for="providers.llama.embedding.ctxSize"></small></label>
+              <label class="field"><span>Port</span><input id="providers.llama.embedding.port" type="number" min="1" max="65535"><small>Must differ from the Gufo, Strata and Llama.cpp ports and from the proxy's own port.</small><small data-note-for="providers.llama.embedding.port"></small><small class="error" data-error-for="providers.llama.embedding.port"></small></label>
+              <label class="field"><span>Context per request (tokens)</span><input id="providers.llama.embedding.ctxSize" type="number" min="1"><small>The longest input one request may have; the server is started with this times the parallel requests (-np) as -c. nomic-embed-text-v1.5 is made for 2048 tokens: keep 2048 or less.</small><small data-note-for="providers.llama.embedding.ctxSize"></small><small class="error" data-error-for="providers.llama.embedding.ctxSize"></small></label>
             </div>
           </section>
 

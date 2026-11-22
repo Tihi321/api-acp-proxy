@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyFix, draftMissingFiles, foundFileFixes, profileFromFile } from "../src/renderer/llama-models.js";
+import { applyFix, draftMissingFiles, foundFileFixes, profileFromFile, usedBy } from "../src/renderer/llama-models.js";
 import { LLAMA_PRESETS } from "../src/settings.js";
 import type { LlamaLocalFileView, LlamaProfileView } from "../src/shared/ipc.js";
 
@@ -31,6 +31,11 @@ describe("llama-models", () => {
     const ambiguous = profileFromFile(model, [model, mmproj, second], new Set());
     expect(ambiguous.mmprojFile).toBeUndefined();
     expect(ambiguous.vision).toBe(false);
+  });
+
+  it("names the embeddings card under Used by for the embedding file", () => {
+    expect(usedBy(model.path, [{ ...preset, modelFile: model.path }], model.path)).toEqual([preset.id, "embeddings"]);
+    expect(usedBy(model.path, [], mmproj.path)).toEqual([]);
   });
 
   it("computes the missing files of a draft profile from the scan, keeping the status result for absolute paths", () => {

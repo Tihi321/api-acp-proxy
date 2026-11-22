@@ -68,6 +68,13 @@ export function buildEmbeddingArgs(embedding: LlamaEmbedding, modelsDir: string)
   return parts.join(" ");
 }
 
+/** Everything that decides how the embedding server is started: when it changes, a running server is out of date. */
+export function embeddingServerKey(embedding: LlamaEmbedding, modelsDir: string): string {
+  let args: string;
+  try { args = buildEmbeddingArgs(embedding, modelsDir); } catch { args = "invalid"; }
+  return JSON.stringify({ enabled: embedding.enabled, port: embedding.port, args });
+}
+
 /** The embedding model file as an absolute path when it does not exist (empty list otherwise). */
 export function checkEmbeddingFiles(embedding: LlamaEmbedding, modelsDir: string, exists: (p: string) => boolean = existsSync): string[] {
   const full = resolveModelPath(modelsDir, embedding.modelFile);

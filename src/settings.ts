@@ -188,6 +188,8 @@ const llamaEmbeddingSchema = z.object({
   maxConcurrent: positive(4),
   /** Appended verbatim after the generated flags. */
   extraArgs: z.string().default(""),
+  /** Expected vector length; a different one is refused (502). 0 = not checked. nomic-embed-text-v1.5 gives 768. */
+  dimensions: z.number().int().min(0).default(768),
 }).default({});
 export type LlamaEmbedding = z.infer<typeof llamaEmbeddingSchema>;
 
@@ -335,6 +337,7 @@ export const settingsSchema = z.object({
 }).superRefine((settings, ctx) => {
   const { gufo, strata, llama } = settings.providers;
   const taken = new Map<number, string>([[gufo.port, "Gufo"], [strata.port, "Strata"], [llama.port, "Llama.cpp"]]);
+  if (settings.server.port !== 0) taken.set(settings.server.port, "proxy server");
   const clash = llama.embedding.enabled ? taken.get(llama.embedding.port) : undefined;
   if (clash) ctx.addIssue({ code: "custom", path: ["providers", "llama", "embedding", "port"], message: `The embedding port ${llama.embedding.port} is already the ${clash} port.` });
 });

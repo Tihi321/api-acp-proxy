@@ -27,7 +27,7 @@ async function start(upstream: (url: string, body: { model?: string; input?: str
   }) as typeof fetch;
   const provider = new LocalOpenAiProvider({
     id: "llama", displayName: "Llama.cpp", baseUrl: "http://127.0.0.1:8082/v1", logger: createLogger(), fetch: fakeFetch, profiles: [chatProfile],
-    embedding: { enabled: true, model: "nomic-embed-text-v1.5", port: 8083, maxConcurrent: 2 },
+    embedding: { enabled: true, model: "nomic-embed-text-v1.5", port: 8083, maxConcurrent: 2, dimensions: 768 },
   });
   const config: ProxyConfig = { host: "127.0.0.1", port: 0, maxBodyBytes: 1024 * 1024, timeoutMs: 10_000, workRoot: ".", acpArgs: [] };
   const server = createProxyServer(config, new ProviderRouter({ providers: [provider] }));
@@ -72,6 +72,11 @@ describe("POST /v1/embeddings (llama embedding server)", () => {
       expect([name, answer.status, answer.body?.error?.code]).toEqual([name, status, code]);
     }
     expect(calls).toHaveLength(2); // nothing refused reached the embedding server
+
+    // AAP-44: a vector of another length than providers.llama.embedding.dimensions (768) never reaches the client.
+    const wrong = await start((_url, body) => Response.json({ data: body.input!.map((_item, index) => ({ index, embedding: [0.1, 0.2, 0.3] })) }));
+    const short = await post(wrong.base, "/v1/embeddings", { model: MODEL, input: "x" });
+    expect([short.status, short.body.error.code, short.body.error.message]).toEqual([502, "upstream_error", expect.stringContaining("dimensions")]);
 
     // The embedding model is not a chat model, and it is listed as one of its own kind.
     const chat = await post(base, "/v1/chat/completions", { model: MODEL, messages: [{ role: "user", content: "hi" }] });
