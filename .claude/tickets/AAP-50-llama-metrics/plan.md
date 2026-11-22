@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 request: creative-hub/REQ-0030
 repos: [api-acp-proxy]
 branch: AAP-50_llama-metrics
