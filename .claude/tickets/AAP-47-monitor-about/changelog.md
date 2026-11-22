@@ -35,4 +35,14 @@ Outcome: read-only Monitor and About pages for the local model the proxy holds (
 
 - ROADMAP "Monitor second cut" line (sparklines, reasoning tokens, llama `--metrics`, Gufo status, external server).
 
+### Polish 1
+
+- N1: `src/renderer/monitor-view.ts` `tick()` catches a render error (keeps the last rendered state) and always schedules the next poll; the generation/visibility guards are unchanged. `src/local-monitor.ts` drops a request `time` outside 2000-01-01..2100-01-01 in ms (the row stays, without `time`); `EngineRequestView.time` in `src/shared/ipc.ts` became optional for that, and the request table shows a dash.
+- N2, N5: dashes with a reason: Decode, Prefill and Prompt reused show "no request yet" when Strata is ready and has served nothing (no `speed`, reuse totals 0); the Model tile (Monitor and About) shows "provider is off in the proxy" (Strata) or "model id unknown" when there is no model id.
+- N3: `tests/local-monitor.test.ts` test 1 plants `SECRET-TEXT` in unknown fields of `live`, `live.slots[]`, `totals`, `hardware` and `hardware_static`, and asserts that a request with `time: 1e13` maps to a row without `time`.
+
+### UNTESTED
+
+- llama context = n_ctx of slot 0 times the slot count: if llama-server reports the full context on every slot (unified KV), the tile overstates it; to be read against the real 8082 server in hub K1.
+
 Commit status: committed in 964d535 (code); ticket records in the next commit; not merged, not pushed.

@@ -252,7 +252,7 @@ export interface LlamaLocalFileView {
 export type LlamaScanResult = { ok: true; modelsDir: string; missingDir?: boolean; truncated?: boolean; files: LlamaLocalFileView[] } | Failure;
 
 /** One engine request as Strata reports it: counts and timings only. */
-export interface EngineRequestView { time: number /* epoch ms */; durationS: number; finish?: string; promptTokens: number; reused: number; outputTokens: number; prefillTokS?: number; decodeTokS?: number }
+export interface EngineRequestView { time?: number /* epoch ms; absent when the engine's time is not a plausible one */; durationS: number; finish?: string; promptTokens: number; reused: number; outputTokens: number; prefillTokS?: number; decodeTokS?: number }
 export interface EngineSlotView { id: number; busy: boolean; tokens: number; ctx?: number }
 export interface EngineView {
   kind: "strata" | "llama";

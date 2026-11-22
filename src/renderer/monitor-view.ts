@@ -71,7 +71,8 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     let view: MonitorView | undefined;
     try { view = await deps.api.getMonitor(); } catch { view = undefined; }
     if (mine !== generation || !active()) return;
-    render(view);
+    // A render error (for example a time the clock cannot format) keeps the last rendered state; the next poll is always scheduled.
+    try { render(view); } catch { /* keep the last state */ }
     timer = setTimeout(() => void tick(), POLL_MS);
   }
   function restart(): void { generation += 1; stopTimer(); void tick(); }
@@ -86,6 +87,15 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     el("mon-updated").textContent = view ? `updated ${clock.format(view.at)}` : "";
     renderMonitor(view);
     renderAbout(view);
+  }
+
+  /** Sub-line of a Model tile: the model id under a label, or the reason there is no model id. */
+  function modelSub(local: MonitorView["local"] | undefined): string | undefined {
+    if (!local) return undefined;
+    if (local.label) return local.modelId;
+    if (local.state === "none") return "No local model loaded";
+    if (local.modelId === undefined) return local.server === "strata" ? "provider is off in the proxy" : "model id unknown";
+    return undefined;
   }
 
   /** Why the engine tiles have no numbers. */
@@ -113,7 +123,7 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
 
     const queue = local?.queue;
     el("mon-model").replaceChildren(
-      tile("Model", local?.label ?? local?.modelId, local?.label ? local.modelId : local?.state === "none" ? "No local model loaded" : undefined),
+      tile("Model", local?.label ?? local?.modelId, modelSub(local)),
       tile("State", local && local.state !== "none" ? local.state : undefined, local?.error),
       tile("Engine", engine ? (engine.state === "unknown" ? undefined : engine.state) : undefined, engine ? undefined : why),
       tile("Since", local?.readyAt !== undefined ? clock.format(local.readyAt) : undefined, local?.startedAt !== undefined && local.readyAt === undefined ? `started ${clock.format(local.startedAt)}` : undefined),
@@ -125,10 +135,13 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     const speed = engine?.speed;
     const reuse = engine?.reuse;
     const busySlots = engine?.slots.filter((slot) => slot.busy).length;
+    /** Strata is up but has served nothing yet: the speed and reuse tiles are dashes for that reason. */
+    const reuseEmpty = reuse !== undefined && reuse.prompt === 0 && reuse.reused === 0;
+    const noRequest = engine?.kind === "strata" && !speed && (!reuse || reuseEmpty);
     el("mon-engine").replaceChildren(
-      tile("Decode", fromStrata(speed?.decodeTokS !== undefined ? `${rateText(speed.decodeTokS)} t/s` : undefined), dashSub(true)),
-      tile("Prefill", fromStrata(speed?.prefillTokS !== undefined ? `${rateText(speed.prefillTokS)} t/s` : undefined), dashSub(true)),
-      tile("Prompt reused", fromStrata(reuse ? `${whole.format(reuse.reused)} of ${whole.format(reuse.prompt)}` : undefined), reuse && engine?.kind === "strata" ? `${reuse.prompt > 0 ? Math.round((100 * reuse.reused) / reuse.prompt) : 0}% over ${reuse.requests} requests` : dashSub(true)),
+      tile("Decode", fromStrata(speed?.decodeTokS !== undefined ? `${rateText(speed.decodeTokS)} t/s` : undefined), !speed && noRequest ? "no request yet" : dashSub(true)),
+      tile("Prefill", fromStrata(speed?.prefillTokS !== undefined ? `${rateText(speed.prefillTokS)} t/s` : undefined), !speed && noRequest ? "no request yet" : dashSub(true)),
+      tile("Prompt reused", fromStrata(reuse && !reuseEmpty ? `${whole.format(reuse.reused)} of ${whole.format(reuse.prompt)}` : undefined), reuse && !reuseEmpty && engine?.kind === "strata" ? `${reuse.prompt > 0 ? Math.round((100 * reuse.reused) / reuse.prompt) : 0}% over ${reuse.requests} requests` : noRequest ? "no request yet" : dashSub(true)),
       tile("Context", engine?.context !== undefined ? `${whole.format(engine.context)} tokens` : undefined, engine?.context !== undefined ? undefined : dashSub(false)),
       tile("Slots busy", engine && engine.slots.length ? `${busySlots} / ${engine.slots.length}` : undefined, engine?.slots.length ? undefined : dashSub(false)),
     );
@@ -170,7 +183,7 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
       const row = make("tr");
       const cell = (text: string, className = ""): HTMLTableCellElement => make("td", className, text);
       row.append(
-        cell(clock.format(request.time), "mono"), cell(request.finish ?? "-"),
+        cell(request.time !== undefined ? clock.format(request.time) : "-", "mono"), cell(request.finish ?? "-"),
         cell(whole.format(request.promptTokens), "num"), cell(whole.format(request.reused), "num"), cell(whole.format(request.outputTokens), "num"),
         cell(rateText(request.prefillTokS), "num"), cell(rateText(request.decodeTokS), "num"), cell(seconds(request.durationS), "num"),
       );
@@ -215,7 +228,7 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     const profileNote = (engineValue: unknown): string | undefined => (engineValue === undefined && facts ? fromProfile : undefined);
 
     el("about-model").replaceChildren(
-      tile("Model", local?.label ?? local?.modelId, local?.label ? local.modelId : local?.state === "none" ? "No local model loaded" : undefined),
+      tile("Model", local?.label ?? local?.modelId, modelSub(local)),
       tile("Engine", engineName, local?.profile && local.server === "gufo" ? `profile ${local.profile}` : undefined),
       tile("Context", context !== undefined ? `${whole.format(context)} tokens` : undefined, context !== undefined ? profileNote(engine?.context) : why ?? "no source"),
       tile("Images", images === undefined ? undefined : images ? "yes" : "no", images !== undefined ? profileNote(engine?.images) : why ?? "no source"),

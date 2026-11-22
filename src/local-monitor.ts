@@ -6,6 +6,9 @@ import type { EngineRequestView, EngineSlotView, EngineView, LocalServerStatusVi
 
 export const MAX_ENGINE_REQUESTS = 12;
 const MAX_TEXT = 64;
+/** A request time is kept only when it is a plausible epoch in ms: 2000-01-01 to 2100-01-01. */
+const MIN_EPOCH_MS = Date.UTC(2000, 0, 1);
+const MAX_EPOCH_MS = Date.UTC(2100, 0, 1);
 const STATES: readonly EngineView["state"][] = ["idle", "reading", "generating", "queued", "unloaded", "busy", "error"];
 
 type Obj = Record<string, unknown>;
@@ -38,14 +41,15 @@ export function mapStrataMetrics(json: unknown): EngineView {
 
   const requests: EngineRequestView[] = (Array.isArray(root["requests"]) ? root["requests"] : []).flatMap((entry): EngineRequestView[] => {
     const request = obj(entry);
-    const time = num(request?.["time"]);
-    if (!request || time === undefined) return [];
+    const seconds = num(request?.["time"]);
+    if (!request || seconds === undefined) return [];
+    const ms = Math.round(seconds * 1000);
     return [compact({
-      time: Math.round(time * 1000), durationS: num(request["duration_s"]) ?? 0, finish: text(request["finish"]),
+      time: ms >= MIN_EPOCH_MS && ms <= MAX_EPOCH_MS ? ms : undefined, durationS: num(request["duration_s"]) ?? 0, finish: text(request["finish"]),
       promptTokens: num(request["prompt_tokens"]) ?? 0, reused: num(request["reused"]) ?? 0, outputTokens: num(request["output_tokens"]) ?? 0,
       prefillTokS: rate(num(request["prompt_read"]), num(request["prompt_ms"])), decodeTokS: num(request["decode_tok_s"]),
     })];
-  }).sort((a, b) => b.time - a.time).slice(0, MAX_ENGINE_REQUESTS);
+  }).sort((a, b) => (b.time ?? 0) - (a.time ?? 0)).slice(0, MAX_ENGINE_REQUESTS);
 
   const promptTokens = num(totals?.["prompt_tokens"]);
   const reused = num(totals?.["reused"]);

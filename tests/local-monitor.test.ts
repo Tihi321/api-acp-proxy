@@ -9,12 +9,12 @@ const strataRequest = (n: number) => ({
 });
 const strataMetrics = (extra: Record<string, unknown> = {}) => ({
   engine: { model: "SECRET-TEXT", version: "0.1.52", context: 131072, images: true, kv: "int8", kv_resident: 32768, expert_slots: 24576, expert_cache_mib: 56762, drafting: "mtp", ...extra },
-  live: { state: "idle", queued: 0, slots: [{ slot: 0, state: "idle", held_tokens: 0 }, { slot: 1, state: "generating", held_tokens: 900 }] },
-  totals: { requests: 1, prompt_tokens: 16, reused: 0, output_tokens: 2, prompt_ms: 358.6, decode_ms: 122.2 },
+  live: { state: "idle", queued: 0, extra: "SECRET-TEXT", slots: [{ slot: 0, state: "idle", held_tokens: 0, note: "SECRET-TEXT" }, { slot: 1, state: "generating", held_tokens: 900 }] },
+  totals: { requests: 1, prompt_tokens: 16, reused: 0, output_tokens: 2, prompt_ms: 358.6, decode_ms: 122.2, extra: "SECRET-TEXT" },
   // Oldest first, 13 entries: only the newest 12 are kept.
   requests: Array.from({ length: 13 }, (_, n) => strataRequest(n)),
-  hardware: { gpu_util: 3, gpu_temp: 36, gpu_power: 25, gpu_mem_used: 67903684608, gpu_mem_total: 68719476736, cpu: 7.5, disk_read_mb: 0.39 },
-  hardware_static: { gpu_name: "AMD Radeon(TM) 8060S Graphics", cpu_name: "AMD RYZEN AI MAX+ 395", threads: 32 },
+  hardware: { gpu_util: 3, gpu_temp: 36, gpu_power: 25, gpu_mem_used: 67903684608, gpu_mem_total: 68719476736, cpu: 7.5, disk_read_mb: 0.39, extra: "SECRET-TEXT" },
+  hardware_static: { gpu_name: "AMD Radeon(TM) 8060S Graphics", cpu_name: "AMD RYZEN AI MAX+ 395", threads: 32, extra: "SECRET-TEXT" },
 });
 const llamaProps = { build_info: "b12613-362ac9297", model_alias: "SECRET-TEXT", total_slots: 2, modalities: { vision: false } };
 const llamaSlots = [
@@ -39,6 +39,10 @@ describe("local model monitor", () => {
     expect(view.requests[0]).toMatchObject({ time: 1795359112000, prefillTokS: 44.6, decodeTokS: 16.4 });
     expect(view.requests.at(-1)?.time).toBe(1795359101000);
     expect(JSON.stringify(view)).not.toContain("SECRET");
+    // A time that is not a plausible epoch in ms (here seconds read as 1e16 ms) is dropped; the row stays.
+    const odd = mapStrataMetrics({ ...strataMetrics(), requests: [{ ...strataRequest(0), time: 1e13 }] });
+    expect(odd.requests).toHaveLength(1);
+    expect(odd.requests[0]).not.toHaveProperty("time");
   });
 
   it("maps llama-server's props and slots, busy when a slot processes, never text", () => {
