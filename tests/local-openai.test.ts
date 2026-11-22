@@ -92,15 +92,17 @@ describe("LocalOpenAiProvider", () => {
     expect(usage?.prompt_tokens_details.cached_tokens).toBe(80);
     const oddBase = await thinkingProxy((response) => {
       sse(response, { choices: [{ delta: { content: "Hi" } }] });
-      sse(response, { choices: [], usage: { prompt_tokens: 100, prompt_tokens_details: { cached_tokens: "80" }, completion_tokens: "9", total_tokens: "x" } });
+      // Raw text: JSON.stringify would turn Infinity into null, but a real upstream can send 1e999, which JSON.parse reads as Infinity.
+      response.write('data:{"choices":[],"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":"80"},"completion_tokens":"9","total_tokens":"x","completion_tokens_details":{"reasoning_tokens":1e999}}}\r\n\r\n');
       response.end("data: [DONE]\r\n\r\n");
     });
     const oddRes = await fetch(`${oddBase}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...askBody, stream: true, stream_options: { include_usage: true } }) });
-    const oddUsage = (await oddRes.text()).split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)) as { usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; prompt_tokens_details: { cached_tokens: number } } | null }).at(-1)?.usage;
+    const oddUsage = (await oddRes.text()).split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)) as { usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; prompt_tokens_details: { cached_tokens: number }; completion_tokens_details?: { reasoning_tokens?: number } } | null }).at(-1)?.usage;
     expect(oddUsage?.prompt_tokens).toBe(100);
     expect(oddUsage?.prompt_tokens_details.cached_tokens).toBe(0);
     expect(oddUsage?.completion_tokens).toBe(0);
     expect(oddUsage?.total_tokens).toBe(100);
+    expect(Number.isFinite(oddUsage?.completion_tokens_details?.reasoning_tokens ?? 0)).toBe(true);
   });
 
   it("estimates reasoning_tokens from the reasoning text when the local server reports none", async () => {

@@ -90,6 +90,9 @@ describe("local model monitor", () => {
     const idle = mapLlama(llamaProps, llamaSlots, "llamacpp:prompt_tokens_total 0\nllamacpp:prompt_seconds_total 0\nllamacpp:tokens_predicted_total 0\nllamacpp:tokens_predicted_seconds_total 0\n");
     expect(idle).toMatchObject({ speedMissing: "no-request" });
     expect(idle).not.toHaveProperty("speed");
+    const hostile = mapLlama(llamaProps, llamaSlots, "llamacpp:tokens_predicted_total 1e308\nllamacpp:tokens_predicted_seconds_total 1e-10\n");
+    expect(hostile.speed?.decodeTokS).toBeUndefined();
+    expect(JSON.stringify(hostile)).not.toMatch(/Infinity|null/);
   });
 
   it("keeps keys in the request header, reports an unreachable port and does not call Gufo", async () => {

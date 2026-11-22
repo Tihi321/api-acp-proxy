@@ -18,3 +18,11 @@ Verification: `yarn typecheck` (three configs) exit 0; `yarn test` 520 passed, 1
 UNTESTED: the window (no Electron harness); b12613's real `/metrics` text; per-slot `n_ctx` with `-np` auto on a chat server; unsloth build with `--metrics`; external server without `--metrics`. Hub K1.
 
 Commit: committed on AAP-50_llama-metrics (not merged, not pushed).
+
+## Polish 1
+
+1. A speed is shown only when it is a finite number above 0 (`rate()` in `src/local-monitor.ts`, Strata and Llama paths); test in `tests/local-monitor.test.ts`. AAP-47/49/50 Monitor.
+2. Thinking tokens from the upstream `reasoning_tokens` count only when finite (`src/providers/local-openai.ts`); test in `tests/local-openai.test.ts`. AAP-48.
+3. README Monitor paragraph: the opening parenthesis now agrees with the AAP-50 sentence (Llama.cpp shows slots and speed). AAP-50.
+4. Llama Prefill or Decode dash gets the reason "no prompt read yet" or "no reply yet" when the other speed exists (`src/renderer/monitor-view.ts`). AAP-50.
+5. A flat sparkline sits on the baseline at the scale minimum, at the top at a given maximum, mid-height only with no bounds (`spark()` in `src/renderer/monitor-view.ts`). AAP-47/49/50 Monitor.

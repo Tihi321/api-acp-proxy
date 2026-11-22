@@ -19,7 +19,11 @@ const text = (value: unknown): string | undefined => (typeof value === "string" 
 const round1 = (value: number): number => Math.round(value * 10) / 10;
 /** Defined entries only, so the view carries no `undefined` keys. */
 const compact = <T extends object>(value: T): T => Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
-const rate = (tokens: number | undefined, ms: number | undefined): number | undefined => (tokens !== undefined && ms !== undefined && ms > 0 && tokens > 0 ? round1(tokens / (ms / 1000)) : undefined);
+const rate = (tokens: number | undefined, ms: number | undefined): number | undefined => {
+  if (tokens === undefined || ms === undefined || !(ms > 0) || !(tokens > 0)) return undefined;
+  const value = round1(tokens / (ms / 1000));
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+};
 
 /** Points per history series: Strata keeps one sample a second for 60 s. */
 export const HISTORY_POINTS = 60;
