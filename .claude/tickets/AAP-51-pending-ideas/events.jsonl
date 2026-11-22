@@ -7,3 +7,6 @@
 {"ts":"2026-11-22T21:27:33Z","actor":"implement","type":"slice.done","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"worker C reported done","data":{"tasks":["C"]}}
 {"ts":"2026-11-22T21:28:48Z","actor":"implement","type":"verify.passed","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"yarn test 523 passed 1 skipped; typecheck 0; style and GB greps empty"}
 {"ts":"2026-11-22T21:29:22Z","actor":"implement","type":"changelog.written","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"changelog.md written; status stays in-progress for the checker"}
+{"ts":"2026-11-22T21:58:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"round 1 PASS, 11 of 11 criteria; findings F1, F3, F4, F5","data":{"round":1,"verdict":"PASS","criteria":"11/11"}}
+{"ts":"2026-11-22T21:58:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"re-check PASS on polish 4465a82","data":{"round":"re-check","verdict":"PASS","commit":"4465a82"}}
+{"ts":"2026-11-22T21:58:00Z","actor":"director-scribe","type":"ticket.done","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"done after PASS and re-check; branch not merged"}
