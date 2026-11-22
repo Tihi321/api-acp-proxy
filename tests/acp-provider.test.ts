@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpProvider, type AcpProviderOptions } from "../src/acp-provider.js";
@@ -188,7 +188,8 @@ describe("AcpProvider session reuse", () => {
     const provider = make({}, { reuseSessions: true });
     const controller = new AbortController();
     const pending = provider.generate(model, user, {}, controller.signal);
-    await sleep(250);
+    for (let n = 0; n < 500 && !(existsSync(log) && methodCount(log, "session/prompt") > 0); n++) await sleep(20);
+    expect(methodCount(log, "session/prompt")).toBe(1);
     controller.abort();
     expect((await pending).stopReason).toBe("cancelled");
     expect(keptCount(provider)).toBe(0);

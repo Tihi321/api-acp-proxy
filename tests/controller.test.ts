@@ -92,7 +92,7 @@ describe("ProxyController", () => {
   });
 
   it("persists a job result without a restart: the server keeps running and /v1/models shows the new profile", async () => {
-    const profile = { id: "text", label: "Text", model: "text", modelFile: "m.gguf" };
+    const profile = { id: "text", label: "Text", model: "text", modelFile: "m.gguf", vision: false, gpuLayers: "auto" as const, extraArgs: "", flashAttn: "auto" as const, specType: "none" as const };
     const controller = make({ providers: { llama: { profiles: [profile] } } });
     const status = await controller.start();
     const states: string[] = [];
