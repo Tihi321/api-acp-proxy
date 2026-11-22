@@ -130,7 +130,14 @@ async function main(): Promise<void> {
   let strataSettings: StrataSettings | undefined;
   type LlamaSettings = Awaited<ReturnType<ProxyController["getSettings"]>>["effective"]["providers"]["llama"];
   let llamaSettings: LlamaSettings | undefined;
-  const refreshLocalSettings = async (): Promise<void> => { const providers = (await proxy.getSettings()).effective.providers; gufoSettings = providers.gufo; strataSettings = providers.strata; llamaSettings = providers.llama; };
+  // Whether the proxy asks clients for a key (the Monitor's About line); cached here so the 2 s monitor poll does not reload the settings.
+  let serverKeySet = false;
+  const refreshLocalSettings = async (): Promise<void> => {
+    const effective = (await proxy.getSettings()).effective;
+    const providers = effective.providers;
+    gufoSettings = providers.gufo; strataSettings = providers.strata; llamaSettings = providers.llama;
+    serverKeySet = Boolean(effective.server.apiKey);
+  };
   const localHost = createLocalModelHost(servers, {
     specFor: (target): LocalServerSpec => {
       if (target.server === "strata") {
@@ -527,9 +534,9 @@ async function main(): Promise<void> {
   // Monitor and About pages (AAP-47): read-only. The engine's key stays here; the window gets counts, timings and `apiKeyNeeded`.
   const sampleCpu = cpuSampler();
   handle("proxy:monitor", async (): Promise<MonitorView> => {
-    const effective = (await proxy.getSettings()).effective; // the local settings caches are refilled after every save
-    const status = proxy.status();
-    const local = localState(servers.list());
+    const status = proxy.status(); // settings come from the local caches, refilled after every save
+
+    let local = localState(servers.list());
     const server = local.server;
     let engine: EngineView | undefined;
     let engineError: string | undefined;
@@ -550,6 +557,21 @@ async function main(): Promise<void> {
         engine = read.engine;
         engineError = read.error;
       }
+    } else if (local.state === "none") {
+      // A server started outside the app (e.g. by a script) on its configured port: GET its status on 127.0.0.1 only, short timeout; a failure shows nothing.
+      const outside = [
+        ["strata", strataSettings?.enabled ? strataSettings.port : undefined, strataSettings?.apiKey || undefined],
+        ["llama", llamaSettings?.enabled ? llamaSettings.port : undefined, undefined],
+      ] as const;
+      for (const [id, port, key] of outside) {
+        if (port === undefined) continue;
+        const read = await fetchEngine(id, port, key, fetch, 800);
+        if (!read.engine) continue;
+        engine = read.engine;
+        const strataModel = id === "strata" ? status.providers.find((provider) => provider.id === "strata")?.models[0]?.id : undefined;
+        local = { server: id, state: "ready", port, external: true, ...(strataModel ? { modelId: `strata/${strataModel}` } : {}) };
+        break;
+      }
     }
     return {
       at: Date.now(), local,
@@ -557,7 +579,7 @@ async function main(): Promise<void> {
       host: hostView(sampleCpu()),
       connect: {
         ...(status.server.baseUrl ? { baseUrl: status.server.baseUrl } : {}),
-        apiKeyNeeded: Boolean(effective.server.apiKey),
+        apiKeyNeeded: serverKeySet,
         localModelIds: status.providers.filter((provider) => LOCAL_PROVIDER_IDS.includes(provider.id)).flatMap((provider) => provider.models.map((model) => `${provider.id}/${model.id}`)),
       },
     };

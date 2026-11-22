@@ -133,6 +133,8 @@ export interface ActivityView {
   ignoredParams?: string[];
   /** True when the token counts are an estimate (about 4 characters per token; the agent reported none). */
   estimated?: boolean;
+  /** Of outputTokens, the part spent thinking (the agent's count, or estimated from the reasoning text). */
+  reasoningTokens?: number;
 }
 /** One provider's (or the total's) counts over a range. `estimated`: requests whose token counts are the chars/4 estimate. */
 export interface UsageCountsView { requests: number; errors: number; inputTokens: number; outputTokens: number; estimated: number }
@@ -254,6 +256,10 @@ export type LlamaScanResult = { ok: true; modelsDir: string; missingDir?: boolea
 /** One engine request as Strata reports it: counts and timings only. */
 export interface EngineRequestView { time?: number /* epoch ms; absent when the engine's time is not a plausible one */; durationS: number; finish?: string; promptTokens: number; reused: number; outputTokens: number; prefillTokS?: number; decodeTokS?: number }
 export interface EngineSlotView { id: number; busy: boolean; tokens: number; ctx?: number }
+/** Strata's last 60 s, one point a second, oldest first; null where Strata had no reading. At most 60 points per series; a series with no number is left out. */
+export interface EngineHistoryView { gpuUtilPct?: (number | null)[]; gpuMemUsedBytes?: (number | null)[]; gpuTempC?: (number | null)[]; gpuPowerW?: (number | null)[]; diskReadMBs?: (number | null)[]; decodeTokS?: (number | null)[] }
+/** Strata's conversation cache: finished conversations parked off their slot and restored on the next turn. Numbers only. */
+export interface EngineConversationCacheView { enabled: boolean; slots?: number; parked?: number; bytes?: number; budgetMiB?: number; restores?: number; evictions?: number; requests?: number; requestsReused?: number; reusedTokens?: number }
 export interface EngineView {
   kind: "strata" | "llama";
   version?: string;
@@ -266,6 +272,8 @@ export interface EngineView {
   strata?: { kv?: string; kvResident?: number; expertSlots?: number; expertCacheMiB?: number; drafting?: string };
   hardware?: { gpuName?: string; gpuUtilPct?: number; gpuMemUsedBytes?: number; gpuMemTotalBytes?: number; gpuTempC?: number; gpuPowerW?: number; diskReadMBs?: number };
   requests: EngineRequestView[];  // newest first, at most 12
+  history?: EngineHistoryView;
+  conversationCache?: EngineConversationCacheView;
 }
 /** The Monitor and About pages' read-only snapshot (AAP-47). Counts, timings and enums only: never prompt or answer text, never a key. */
 export interface MonitorView {
@@ -277,6 +285,7 @@ export interface MonitorView {
     port?: number; startedAt?: number; readyAt?: number; error?: string;
     queue?: { active: number; queued: number; limit: number };
     profileFacts?: { context?: number; vision?: boolean; specType?: string };  // gufo/llama, from settings
+    external?: true;              // answers on the configured port, not started by this app
   };
   engine?: EngineView;            // absent for gufo, when none is loaded, or when the engine did not answer
   engineError?: string;           // "not reachable", "HTTP 401", "unexpected answer"

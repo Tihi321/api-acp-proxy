@@ -1,0 +1,4 @@
+{"ts":"2026-11-22T17:50:00Z","actor":"planner","type":"plan.created","request":"creative-hub/REQ-0030","ticket":"AAP-49-monitor-second-cut","detail":"planner wrote the plan (draft)"}
+{"ts":"2026-11-22T17:50:00Z","actor":"director-scribe","type":"plan.approved","request":"creative-hub/REQ-0030","ticket":"AAP-49-monitor-second-cut","detail":"user: 'Yes' to 'approve the six plans with the recommended answers'"}
+{"ts":"2026-11-22T17:49:40Z","actor":"implement","type":"implement.started","request":"creative-hub/REQ-0030","ticket":"AAP-49-monitor-second-cut","detail":"branch AAP-49_monitor-second-cut from AAP-48_small-fixes a929ecf"}
+{"ts":"2026-11-22T17:55:00Z","actor":"implement","type":"verify.passed","request":"creative-hub/REQ-0030","ticket":"AAP-49-monitor-second-cut","detail":"yarn test 520 passed 1 skipped; typecheck ok; style greps empty","data":{"tests":520,"skipped":1}}

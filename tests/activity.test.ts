@@ -109,13 +109,19 @@ describe("activity from the server", () => {
   it("records a plain chat request with its model, provider, timing and token counts", async () => {
     const activity = new ActivityLog();
     const port = await serve(activity);
+    const plain = behaviour;
+    behaviour = () => ({ text: SECRET_ANSWER, stopReason: "end_turn", usage: { inputTokens: 11, outputTokens: 4, totalTokens: 15, thoughtTokens: 3 } });
     expect((await call(port, "POST", "/v1/chat/completions", chat())).status).toBe(200);
     const recorded = await lastEntry(activity);
-    expect(recorded).toMatchObject({ endpoint: "POST /v1/chat/completions", model: "fake/m", provider: "fake", stream: false, features: [], status: 200, inputTokens: 11, outputTokens: 4 });
+    expect(recorded).toMatchObject({ endpoint: "POST /v1/chat/completions", model: "fake/m", provider: "fake", stream: false, features: [], status: 200, inputTokens: 11, outputTokens: 4, reasoningTokens: 3 });
     expect(recorded.error).toBeUndefined();
     expect(recorded.ignoredParams).toBeUndefined();
     expect(recorded.durationMs).toBeGreaterThanOrEqual(0);
     expect(Math.abs(recorded.time - Date.now())).toBeLessThan(10_000);
+    // No thought tokens in the usage: no key at all.
+    behaviour = plain;
+    await call(port, "POST", "/v1/chat/completions", chat());
+    expect(await lastEntry(activity, 2)).not.toHaveProperty("reasoningTokens");
   });
 
   it("accepts a sampling field, reports it in a header and records its name", async () => {
