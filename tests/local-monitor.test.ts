@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fetchEngine, llamaAlias, localState, mapLlama, mapStrataMetrics, MAX_METRICS_BYTES, type MonitorFetch } from "../src/local-monitor.js";
+import { fetchEngine, llamaAlias, localState, mapLlama, mapStrataMetrics, MAX_METRICS_BYTES, readText, type MonitorFetch } from "../src/local-monitor.js";
 import type { LocalServerStatusView } from "../src/shared/ipc.js";
 
 // Samples recorded on 2026-11-22 (Strata 0.1.52 /metrics, llama-server b12613 /props and /slots), trimmed, plus planted text that must never come through.
@@ -134,6 +134,16 @@ describe("local model monitor", () => {
     };
     expect((await fetchEngine("llama", 8082, undefined, endless)).engine?.speedMissing).toBe("metrics-unread");
     expect(cancelled).toBe(true);
+    // A multi-byte character cut across two chunks is decoded whole.
+    const text = "# HELP llamacpp:x čas\nllamacpp:tokens_predicted_total 120\n";
+    const bytes = new TextEncoder().encode(text);
+    const cut = bytes.indexOf(0xc4) + 1;
+    const chunks = [bytes.slice(0, cut), bytes.slice(cut)];
+    const split: MonitorFetch = () => {
+      const body = { getReader: () => ({ read: async () => (chunks.length ? { done: false, value: chunks.shift() } : { done: true, value: undefined }), cancel: async () => undefined }) };
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({}), text: () => Promise.reject(new Error("text() must not be used")), body });
+    };
+    expect(await readText(split, "http://127.0.0.1:8082/metrics", 1000)).toBe(text);
     // Something else on the port (no total_slots, no default_generation_settings in /props) is not shown as a model.
     expect(await fetchEngine("llama", 8082, undefined, () => answer({ status: "ok" }))).toEqual({ error: "unexpected answer" });
 

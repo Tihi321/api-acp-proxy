@@ -174,8 +174,8 @@ async function readJson(fetchImpl: MonitorFetch, url: string, headers: Record<st
   try { return { json: await response.json() }; } catch { return { error: "unexpected answer" }; }
 }
 
-/** Like readJson, for llama-server's Prometheus text: no headers, undefined on any failure (the 501 without --metrics included) or an oversized body. Capped while it streams: at most MAX_METRICS_BYTES are read. */
-async function readText(fetchImpl: MonitorFetch, url: string, timeoutMs: number): Promise<string | undefined> {
+/** Like readJson, for llama-server's Prometheus text: no headers, undefined on any failure (the 501 without --metrics included) or an oversized body. Capped while it streams: at most MAX_METRICS_BYTES are read. Exported for its test. */
+export async function readText(fetchImpl: MonitorFetch, url: string, timeoutMs: number): Promise<string | undefined> {
   try {
     const response = await fetchImpl(url, { headers: {}, signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) return undefined;

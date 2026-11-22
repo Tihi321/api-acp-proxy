@@ -176,7 +176,7 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
         const height = Math.max(MIN_SEG_UNITS, Math.round((value / max) * CHART_UNITS));
         const y = Math.max(0, cursor - height);
         const segment = document.createElementNS(SVG_NS, "rect");
-        segment.setAttribute("class", `chart-seg ${seriesClass(id)}`);
+        segment.setAttribute("class", seriesClass(id));
         segment.setAttribute("x", "0");
         segment.setAttribute("width", "1");
         segment.setAttribute("y", String(y));
