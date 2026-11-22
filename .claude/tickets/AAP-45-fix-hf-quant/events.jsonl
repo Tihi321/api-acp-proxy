@@ -1,0 +1,9 @@
+{"ts":"2026-11-22T13:30:00Z","actor":"planner","type":"plan.created","request":"creative-hub/REQ-0030","ticket":"AAP-45-fix-hf-quant","detail":"planner wrote the plan (draft)"}
+{"ts":"2026-11-22T13:30:00Z","actor":"director-scribe","type":"plan.approved","request":"creative-hub/REQ-0030","ticket":"AAP-45-fix-hf-quant","detail":"user approved the plan as written","data":{"note":"user: 'Approve with both'"}}
+{"ts":"2026-11-22T13:31:51Z","actor":"implement","type":"implement.started","request":"creative-hub/REQ-0030","ticket":"AAP-45-fix-hf-quant","detail":"branch AAP-45_fix-hf-quant from master"}
+{"ts":"2026-11-22T13:31:51Z","actor":"implement","type":"slice.started","request":"creative-hub/REQ-0030","ticket":"AAP-45-fix-hf-quant","detail":"single slice, done inline by orchestrator"}
+{"ts":"2026-11-22T13:31:51Z","actor":"implement","type":"slice.done","request":"creative-hub/REQ-0030","ticket":"AAP-45-fix-hf-quant","detail":"applyFix, test, ROADMAP edited"}
+{"ts":"2026-11-22T13:31:51Z","actor":"implement","type":"verify.passed","request":"creative-hub/REQ-0030","ticket":"AAP-45-fix-hf-quant","detail":"npm test 515 passed; npm run typecheck exit 0"}
+{"ts":"2026-11-22T13:31:51Z","actor":"implement","type":"changelog.written","request":"creative-hub/REQ-0030","ticket":"AAP-45-fix-hf-quant","detail":"changelog.md written"}
+{"ts":"2026-11-22T14:01:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0030","ticket":"AAP-45-fix-hf-quant","detail":"standard check PASS (notes only)"}
+{"ts":"2026-11-22T14:01:00Z","actor":"director-scribe","type":"ticket.done","request":"creative-hub/REQ-0030","ticket":"AAP-45-fix-hf-quant","detail":"plan done after PASS; repo ticket closed"}

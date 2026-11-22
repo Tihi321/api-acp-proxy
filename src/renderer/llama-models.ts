@@ -69,12 +69,13 @@ export function draftMissingFiles(profile: LlamaProfileView, files: readonly Lla
   return used.filter((value): value is string => !!value && (isAbsolute(value) ? stale.has(norm(value)) : !complete.has(norm(value))));
 }
 
-/** Sets `field` to the file's path; a model fix also swaps the old quant for the new one in the label when the label contains it. */
+/** Sets `field` to the file's path; a model fix also swaps the old quant for the new one in the label when the label contains it, and sets the Hugging Face quant to the file's. */
 export function applyFix(profile: LlamaProfileView, field: FileField, file: LlamaLocalFileView): LlamaProfileView {
   const next: LlamaProfileView = { ...profile, [field]: file.path };
   if (field === "modelFile") {
     const oldQuant = quantOf(profile.modelFile);
     if (oldQuant && file.quant && profile.label.includes(oldQuant)) next.label = profile.label.replace(oldQuant, file.quant);
+    if (file.quant && profile.hf) next.hf = { ...profile.hf, quant: file.quant };
   }
   return next;
 }
