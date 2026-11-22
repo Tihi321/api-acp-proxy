@@ -52,5 +52,6 @@ const api: ProxyApi = {
   restoreLlamaPresets: (profiles) => invoke("proxy:restoreLlamaPresets", profiles),
   llamaStatus: () => invoke("proxy:llamaStatus"),
   onLlamaProgress: (callback) => subscribe<LlamaProgressView>("proxy:llamaProgress", callback),
+  getMonitor: () => invoke("proxy:monitor"),
 };
 contextBridge.exposeInMainWorld("proxyApi", api);

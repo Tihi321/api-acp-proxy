@@ -2,6 +2,7 @@ import { nextExpiryDelay, usageLimitLine } from "./usage-limit-line.js";
 import { mcpAddCommand, mcpEndpointUrl } from "./mcp-command.js";
 import { initUsageView } from "./usage-view.js";
 import { initLlamaView } from "./llama-view.js";
+import { initMonitorView } from "./monitor-view.js";
 import type { ActivityView, GufoProfileView, InstallProgressView, LocalServerId, LocalServerStatusView, ProviderStatusView, SaveResult, SettingsPatchView, StateView } from "../shared/ipc.js";
 
 type Scope = "server" | "codex" | "antigravity" | "claude" | "gufo" | "strata" | "llama";
@@ -109,7 +110,7 @@ const providerOrder = ["codex", "claude", "antigravity"] as const;
 /** The local servers that have a page; `embed` (the embedding server) is a card of the Llama.cpp page. */
 type PageServerId = Exclude<LocalServerId, "embed">;
 const localOrder: readonly PageServerId[] = ["gufo", "strata", "llama"];
-const views = ["overview", "usage", "requests", "server", "codex", "claude", "antigravity", "gufo", "strata", "llama"] as const;
+const views = ["overview", "usage", "requests", "monitor", "about", "server", "codex", "claude", "antigravity", "gufo", "strata", "llama"] as const;
 type ViewName = (typeof views)[number];
 const VIEW_KEY = "acp-proxy.view";
 const featureChips: Array<{ label: string; on: (status: ProviderStatusView) => boolean }> = [
@@ -134,6 +135,7 @@ const llama = initLlamaView({
   refresh: () => refresh(),
   setBadge,
 });
+const monitor = initMonitorView({ api, showView: (name) => showView(name), activity: () => activity });
 const loggingIn = new Set<string>();
 const loggingOut = new Set<string>();
 let installing = false;
@@ -164,6 +166,7 @@ function showView(name: string): void {
   try { localStorage.setItem(VIEW_KEY, target); } catch { /* storage unavailable: the choice is not remembered */ }
   if (target === "usage") usage.shown();
   if (target === "llama") llama.shown();
+  if (target === "monitor" || target === "about") monitor.shown(target); else monitor.hidden();
 }
 
 function storedView(): ViewName {

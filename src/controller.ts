@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { ActivityLog, type ActivityEntry } from "./activity.js";
 import { createLogger, type Logger } from "./logger.js";
 import { ProviderRouter } from "./router.js";
+import type { LimiterStats } from "./limiter.js";
 import { createProxyServer } from "./server.js";
 import { ToolBridgeHub } from "./tool-bridge.js";
 import { UsageStore } from "./usage-store.js";
@@ -305,6 +306,9 @@ export class ProxyController extends EventEmitter {
     this.planLimits.forget(providerId);
     return this.status();
   }
+
+  /** Per provider queue counts of the running router (empty while stopped). */
+  queueStats(): Record<string, LimiterStats> { return this.running?.router.queueStats() ?? {}; }
 
   async refreshModels(providerId?: string): Promise<ControllerStatus> {
     const router = this.running?.router;

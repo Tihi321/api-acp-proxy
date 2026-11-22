@@ -217,3 +217,18 @@ dialog a { color: var(--accent); }
 .row > select { flex: 1; min-width: 0; }
 .fix-row { flex-wrap: wrap; }
 .table td .badge { margin-left: var(--space-1); }
+
+/* Monitor and About (AAP-47): bars are <progress> elements (no inline styles under the CSP) */
+.mon-slots { display: grid; gap: var(--space-2); }
+.mon-slots:empty { display: none; }
+.mon-row { display: grid; grid-template-columns: 90px 1fr minmax(110px, auto); align-items: center; gap: var(--space-3); font-size: var(--text-sm); }
+.mon-row .mono { text-align: right; white-space: nowrap; }
+.mon-bar { appearance: none; width: 100%; height: 8px; border: 0; border-radius: 999px; background: var(--surface-2); overflow: hidden; accent-color: var(--accent); }
+.mon-bar::-webkit-progress-bar { background: var(--surface-2); border-radius: 999px; }
+.mon-bar::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
+.mon-bar.busy::-webkit-progress-value { background: var(--warn); }
+.mon-bar.full::-webkit-progress-value { background: var(--err); }
+.mon-connect { display: grid; gap: var(--space-2); }
+.mon-connect .status-line { margin-bottom: 0; }
+.mon-connect .mono { word-break: break-all; }
+.stat-value.dash { color: var(--text-faint); }
