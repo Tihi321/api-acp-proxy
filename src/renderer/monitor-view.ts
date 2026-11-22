@@ -1,4 +1,5 @@
 import type { ActivityView, EngineView, MonitorView, ProxyApi } from "../shared/ipc.js";
+import { gib, SPARK_H, SPARK_W, sparkGeometry, speedSub } from "./monitor-format.js";
 
 /** Page logic of the Monitor and About pages (AAP-47). Read-only: it polls `getMonitor` while one of them is shown and the window is visible. */
 export interface MonitorViewDeps {
@@ -19,7 +20,6 @@ const LOCAL_PROVIDERS = ["gufo", "strata", "llama"];
 const MAX_PROXY_ROWS = 12;
 const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const whole = new Intl.NumberFormat();
-const GB = 1024 ** 3;
 const MIB = 1024 ** 2;
 /** Sub line of the Model and State tiles for a server answering on its port that this app did not start. */
 const OUTSIDE = "started outside the app";
@@ -32,7 +32,6 @@ const make = <K extends keyof HTMLElementTagNameMap>(tag: K, className = "", tex
 };
 const el = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
-const gb = (bytes: number): string => `${(bytes / GB).toFixed(1)} GB`;
 const seconds = (value: number): string => (value >= 10 ? `${value.toFixed(0)} s` : `${value.toFixed(1)} s`);
 const millis = (ms: number): string => (ms >= 1000 ? seconds(ms / 1000) : `${ms} ms`);
 const rateText = (value: number | undefined): string => (value === undefined ? "-" : value.toFixed(1));
@@ -48,24 +47,12 @@ function tile(label: string, value: string | undefined, sub?: string, extra?: El
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const SPARK_W = 59;
-const SPARK_H = 16;
 /**
- * A sparkline of Strata's last 60 s as an inline SVG (attributes only: the page's CSP forbids inline styles; the stroke comes from `.spark`).
- * Newest point on the right; a `null` breaks the line. Undefined when the series has fewer than two numbers. A flat series draws on the baseline at the scale's minimum, at the top at a given maximum, else at mid-height.
+ * A sparkline of Strata's last 60 s as an inline SVG (attributes only: the page's CSP forbids inline styles; the stroke comes from `.spark`). The geometry (lines, dots, flat-series rule) is `sparkGeometry`.
  */
 function spark(values: readonly (number | null)[] | undefined, opts: { min?: number | undefined; max?: number | undefined } = {}): SVGSVGElement | undefined {
-  if (!values) return undefined;
-  const numbers = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  if (numbers.length < 2) return undefined;
-  const min = opts.min ?? Math.min(...numbers);
-  const max = opts.max ?? Math.max(...numbers);
-  const span = max - min;
-  const shift = SPARK_W - (values.length - 1);
-  const flat = numbers.every((value) => value === numbers[0]);
-  // A flat series sits on the baseline at the scale's minimum, at the top at a given maximum, and mid-height only when neither bound says where it is.
-  const flatY = (value: number): number => (opts.min !== undefined && value <= opts.min ? SPARK_H : opts.max !== undefined && value >= opts.max ? 0 : SPARK_H / 2);
-  const y = (value: number): number => (flat || !(span > 0) || !Number.isFinite(span) ? flatY(value) : SPARK_H - ((Math.min(max, Math.max(min, value)) - min) / span) * SPARK_H);
+  const geometry = sparkGeometry(values, opts);
+  if (!geometry) return undefined;
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", `0 0 ${SPARK_W} ${SPARK_H}`);
   svg.setAttribute("preserveAspectRatio", "none");
@@ -74,15 +61,14 @@ function spark(values: readonly (number | null)[] | undefined, opts: { min?: num
   const title = document.createElementNS(SVG_NS, "title");
   title.textContent = "last 60 s";
   svg.append(title);
-  let run: string[] = [];
-  const flush = (): void => {
-    if (run.length >= 2) { const line = document.createElementNS(SVG_NS, "polyline"); line.setAttribute("points", run.join(" ")); svg.append(line); }
-    run = [];
+  const polyline = (points: string, className?: string): void => {
+    const line = document.createElementNS(SVG_NS, "polyline");
+    line.setAttribute("points", points);
+    if (className) line.setAttribute("class", className);
+    svg.append(line);
   };
-  values.forEach((value, index) => {
-    if (typeof value === "number" && Number.isFinite(value)) run.push(`${index + shift},${y(value).toFixed(2)}`); else flush();
-  });
-  flush();
+  for (const points of geometry.lines) polyline(points);
+  for (const points of geometry.dots) polyline(points, "dot");
   return svg;
 }
 
@@ -198,14 +184,12 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     const cache = engine?.kind === "strata" ? engine.conversationCache : undefined;
     const count = (value: number | undefined): string => (value !== undefined ? whole.format(value) : "-");
     const llama = engine?.kind === "llama";
-    /** Why Llama has no speed. */
-    const llamaWhy = llama && !speed ? (engine?.speedMissing === "no-request" ? "no request yet" : local?.external ? "start llama-server with --metrics for speed" : "restart the model for speed") : undefined;
     const speedValue = (value: number | undefined): string | undefined => (value === undefined ? undefined : llama ? `${rateText(value)} t/s` : fromStrata(`${rateText(value)} t/s`));
     /** `missingText` is the reason for a dash when the engine has the other speed (for example every prompt was cached, so there is no prefill number). */
-    const speedSub = (value: number | undefined, missingText: string): string | undefined => (llama ? (value !== undefined ? "average since the model started" : speed ? missingText : llamaWhy) : !speed && noRequest ? "no request yet" : dashSub(true));
+    const speedText = (value: number | undefined, missingText: string): string | undefined => speedSub({ llama, value, haveSpeed: speed !== undefined, missingText, noRequest, speedMissing: engine?.speedMissing, external: local?.external === true, fallback: dashSub(true) });
     el("mon-engine").replaceChildren(
-      tile("Decode", speedValue(speed?.decodeTokS), speedSub(speed?.decodeTokS, "no reply yet"), spark(history?.decodeTokS, { min: 0 })),
-      tile("Prefill", speedValue(speed?.prefillTokS), speedSub(speed?.prefillTokS, "no prompt read yet")),
+      tile("Decode", speedValue(speed?.decodeTokS), speedText(speed?.decodeTokS, "no reply yet"), spark(history?.decodeTokS, { min: 0 })),
+      tile("Prefill", speedValue(speed?.prefillTokS), speedText(speed?.prefillTokS, "no prompt read yet")),
       tile("Prompt reused", fromStrata(reuse && !reuseEmpty ? `${whole.format(reuse.reused)} of ${whole.format(reuse.prompt)}` : undefined), reuse && !reuseEmpty && engine?.kind === "strata" ? `${reuse.prompt > 0 ? Math.round((100 * reuse.reused) / reuse.prompt) : 0}% over ${reuse.requests} requests` : noRequest ? "no request yet" : dashSub(true)),
       tile("Conversation cache", cache ? (cache.enabled ? `${count(cache.parked)} of ${count(cache.slots)} parked` : "off") : undefined,
         cache ? (cache.enabled ? `${count(cache.restores)} restored · ${count(cache.evictions)} evicted · ${cache.bytes !== undefined ? whole.format(Math.round(cache.bytes / MIB)) : "-"} of ${count(cache.budgetMiB)} MiB` : undefined) : dashSub(true)),
@@ -218,16 +202,16 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     const host = view?.host;
     el("mon-hw").replaceChildren(
       tile("GPU load", hw?.gpuUtilPct !== undefined ? `${Math.round(hw.gpuUtilPct)}%` : undefined, hw?.gpuUtilPct === undefined ? dashSub(true) : hw.gpuName, spark(history?.gpuUtilPct, { min: 0, max: 100 })),
-      tile("VRAM", hw?.gpuMemUsedBytes !== undefined ? gb(hw.gpuMemUsedBytes) : undefined, hw?.gpuMemTotalBytes !== undefined ? `of ${gb(hw.gpuMemTotalBytes)}` : dashSub(true), spark(history?.gpuMemUsedBytes, { min: 0, max: hw?.gpuMemTotalBytes })),
+      tile("VRAM", hw?.gpuMemUsedBytes !== undefined ? gib(hw.gpuMemUsedBytes) : undefined, hw?.gpuMemTotalBytes !== undefined ? `of ${gib(hw.gpuMemTotalBytes)}` : dashSub(true), spark(history?.gpuMemUsedBytes, { min: 0, max: hw?.gpuMemTotalBytes })),
       tile("GPU temp", hw?.gpuTempC !== undefined ? `${Math.round(hw.gpuTempC)} °C` : undefined, hw?.gpuTempC === undefined ? dashSub(true) : undefined, spark(history?.gpuTempC)),
       tile("Power", hw?.gpuPowerW !== undefined ? `${Math.round(hw.gpuPowerW)} W` : undefined, hw?.gpuPowerW === undefined ? dashSub(true) : undefined, spark(history?.gpuPowerW, { min: 0 })),
       tile("Disk read", hw?.diskReadMBs !== undefined ? `${hw.diskReadMBs.toFixed(1)} MB/s` : undefined, hw?.diskReadMBs === undefined ? dashSub(true) : undefined, spark(history?.diskReadMBs, { min: 0 })),
       tile("CPU", host?.cpuPct !== undefined ? `${Math.round(host.cpuPct)}%` : undefined, host ? (host.cpuPct === undefined ? "measuring" : `${host.threads} threads`) : undefined),
-      tile("RAM", host ? gb(host.ramUsedBytes) : undefined, host ? `of ${gb(host.ramTotalBytes)}` : undefined),
+      tile("RAM", host ? gib(host.ramUsedBytes) : undefined, host ? `of ${gib(host.ramTotalBytes)}` : undefined),
     );
     const bars: HTMLElement[] = [];
-    if (hw?.gpuMemUsedBytes !== undefined && hw.gpuMemTotalBytes !== undefined) bars.push(barRow("VRAM", hw.gpuMemUsedBytes, hw.gpuMemTotalBytes, `${gb(hw.gpuMemUsedBytes)} / ${gb(hw.gpuMemTotalBytes)}`));
-    if (host) bars.push(barRow("RAM", host.ramUsedBytes, host.ramTotalBytes, `${gb(host.ramUsedBytes)} / ${gb(host.ramTotalBytes)}`));
+    if (hw?.gpuMemUsedBytes !== undefined && hw.gpuMemTotalBytes !== undefined) bars.push(barRow("VRAM", hw.gpuMemUsedBytes, hw.gpuMemTotalBytes, `${gib(hw.gpuMemUsedBytes)} / ${gib(hw.gpuMemTotalBytes)}`));
+    if (host) bars.push(barRow("RAM", host.ramUsedBytes, host.ramTotalBytes, `${gib(host.ramUsedBytes)} / ${gib(host.ramTotalBytes)}`));
     el("mon-vram").replaceChildren(...bars);
 
     renderEngineRequests(engine, why);
@@ -267,12 +251,13 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
       const bad = entry.status >= 400 || entry.error !== undefined;
       const cell = (text: string, className = ""): HTMLTableCellElement => make("td", className, text);
       const approx = entry.estimated ? "≈ " : "";
+      const thinkApprox = entry.estimated || entry.reasoningEstimated ? "≈ " : "";
       const overall = entry.outputTokens !== undefined && entry.outputTokens > 0 && entry.durationMs > 0 ? `${approx}${(entry.outputTokens / (entry.durationMs / 1000)).toFixed(1)}` : "-";
       row.append(
         cell(clock.format(entry.time), "mono"), cell(entry.model ?? "-", "mono"), cell(String(entry.status), bad ? "bad" : "ok"),
         cell(entry.inputTokens !== undefined ? `${approx}${whole.format(entry.inputTokens)}` : "-", "num"),
         cell(entry.outputTokens !== undefined ? `${approx}${whole.format(entry.outputTokens)}` : "-", "num"),
-        cell(entry.reasoningTokens !== undefined ? `${approx}${whole.format(entry.reasoningTokens)}` : "-", "num"),
+        cell(entry.reasoningTokens !== undefined ? `${thinkApprox}${whole.format(entry.reasoningTokens)}` : "-", "num"),
         cell(millis(entry.durationMs), "num"), cell(overall, "num"),
       );
       return row;
@@ -309,9 +294,9 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     const hw = engine?.kind === "strata" ? engine.hardware : undefined;
     const host = view?.host;
     el("about-pc").replaceChildren(
-      tile("GPU", hw?.gpuName, hw?.gpuName !== undefined ? (hw.gpuMemTotalBytes !== undefined ? `${gb(hw.gpuMemTotalBytes)} memory` : undefined) : "from Strata"),
+      tile("GPU", hw?.gpuName, hw?.gpuName !== undefined ? (hw.gpuMemTotalBytes !== undefined ? `${gib(hw.gpuMemTotalBytes)} memory` : undefined) : "from Strata"),
       tile("CPU", host?.cpuName, host ? `${host.threads} threads` : undefined),
-      tile("RAM", host ? gb(host.ramTotalBytes) : undefined),
+      tile("RAM", host ? gib(host.ramTotalBytes) : undefined),
     );
     renderConnect(view);
   }

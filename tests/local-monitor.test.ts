@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fetchEngine, localState, mapLlama, mapStrataMetrics, MAX_METRICS_BYTES, type MonitorFetch } from "../src/local-monitor.js";
+import { fetchEngine, llamaAlias, localState, mapLlama, mapStrataMetrics, MAX_METRICS_BYTES, type MonitorFetch } from "../src/local-monitor.js";
 import type { LocalServerStatusView } from "../src/shared/ipc.js";
 
 // Samples recorded on 2026-11-22 (Strata 0.1.52 /metrics, llama-server b12613 /props and /slots), trimmed, plus planted text that must never come through.
@@ -25,7 +25,7 @@ const strataMetrics = (extra: Record<string, unknown> = {}) => ({
     refused: {}, refused_total: 0, last_refused: null, requests: 1, requests_reused: 0, reused_tokens: 0, prompt_tokens: 16, last_reused: 0, last_prompt: 16,
   },
 });
-const llamaProps = { build_info: "b12613-362ac9297", model_alias: "SECRET-TEXT", total_slots: 2, modalities: { vision: false } };
+const llamaProps = { build_info: "b12613-362ac9297", model_alias: "inkling-2-mini", total_slots: 2, modalities: { vision: false } };
 const llamaSlots = [
   { id: 0, n_ctx: 4096, is_processing: true, n_prompt_tokens: 120, prompt: "SECRET-TEXT", params: { stop: ["SECRET-TEXT"] }, next_token: { text: "SECRET-TEXT" } },
   { id: 1, n_ctx: 4096, is_processing: false, n_prompt_tokens: 0 },
@@ -85,6 +85,7 @@ describe("local model monitor", () => {
     });
     expect(view.speedMissing).toBeUndefined();
     expect(JSON.stringify(view)).not.toContain("SECRET");
+    expect(JSON.stringify(mapLlama(llamaProps, llamaSlots, llamaMetrics))).not.toContain("inkling-2-mini");
     expect(mapLlama(llamaProps, llamaSlots)).toMatchObject({ speedMissing: "no-metrics" });
     expect(mapLlama(llamaProps, llamaSlots)).not.toHaveProperty("speed");
     const idle = mapLlama(llamaProps, llamaSlots, "llamacpp:prompt_tokens_total 0\nllamacpp:prompt_seconds_total 0\nllamacpp:tokens_predicted_total 0\nllamacpp:tokens_predicted_seconds_total 0\n");
@@ -121,7 +122,20 @@ describe("local model monitor", () => {
     expect(asked.some((url) => url.endsWith("/metrics"))).toBe(false);
     expect(off.engine?.speedMissing).toBe("no-metrics");
     const huge = await fetchEngine("llama", 8082, undefined, llamaFetch(true, "x".repeat(MAX_METRICS_BYTES + 1)));
-    expect(huge.engine?.speedMissing).toBe("no-metrics");
+    expect(huge.engine?.speedMissing).toBe("metrics-unread");
+    expect(withSpeed.alias).toBe("inkling-2-mini");
+    expect(llamaAlias({ model_alias: "C:\\models\\x.gguf" })).toBeUndefined();
+    // A /metrics body that never ends is cancelled once it passes the cap, never read to its end.
+    let cancelled = false;
+    const endless: MonitorFetch = (url) => {
+      if (!url.endsWith("/metrics")) return llamaFetch(true, "")(url, { signal: AbortSignal.timeout(1000) });
+      const body = { getReader: () => ({ read: async () => ({ done: false, value: new Uint8Array(16 * 1024) }), cancel: async () => { cancelled = true; } }) };
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({}), text: () => Promise.reject(new Error("text() must not be used")), body });
+    };
+    expect((await fetchEngine("llama", 8082, undefined, endless)).engine?.speedMissing).toBe("metrics-unread");
+    expect(cancelled).toBe(true);
+    // Something else on the port (no total_slots, no default_generation_settings in /props) is not shown as a model.
+    expect(await fetchEngine("llama", 8082, undefined, () => answer({ status: "ok" }))).toEqual({ error: "unexpected answer" });
 
     let calls = 0;
     expect(await fetchEngine("gufo", 8081, "k", () => { calls += 1; return answer({}); })).toEqual({});

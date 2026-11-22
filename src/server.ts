@@ -23,7 +23,7 @@ import type { ImagePassthrough } from "./provider.js";
 const startedAt = Date.now();
 
 /** What a request tells the activity log (metadata only: the prompt, the answer and the headers never get here). */
-interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; refused?: true; inputTokens?: number; outputTokens?: number; estimated?: boolean; reasoningTokens?: number; ignoredParams?: string[]; }
+interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; refused?: true; inputTokens?: number; outputTokens?: number; estimated?: boolean; reasoningTokens?: number; reasoningEstimated?: boolean; ignoredParams?: string[]; }
 
 /** The proxy's error code of a failure (what the client sees as `error.code`). */
 function errorCode(error: unknown): string {
@@ -57,6 +57,7 @@ function traceUsage(trace: Trace, result: GenerationResult, promptText: string):
   trace.outputTokens = usage.completion;
   trace.estimated = usageEstimated(result);
   trace.reasoningTokens = Number.isFinite(usage.reasoning) && usage.reasoning > 0 ? usage.reasoning : undefined;
+  trace.reasoningEstimated = result.reasoningEstimated === true;
 }
 
 function json(response: ServerResponse, status: number, payload: unknown): void {
@@ -505,6 +506,7 @@ function track(activity: ActivityLog, bridge: AcpLike, response: ServerResponse,
       ...(trace.model ? { model: trace.model } : {}), ...(error ? { error } : {}), ...(trace.refused ? { refused: true as const } : {}),
       ...(trace.inputTokens !== undefined ? { inputTokens: trace.inputTokens } : {}), ...(trace.outputTokens !== undefined ? { outputTokens: trace.outputTokens } : {}),
       ...(trace.reasoningTokens !== undefined ? { reasoningTokens: trace.reasoningTokens } : {}),
+      ...(trace.reasoningTokens !== undefined && trace.reasoningEstimated ? { reasoningEstimated: true as const } : {}),
       ...(trace.estimated && (trace.inputTokens !== undefined || trace.outputTokens !== undefined) ? { estimated: true as const } : {}),
       ...(trace.ignoredParams?.length ? { ignoredParams: trace.ignoredParams } : {}),
     };

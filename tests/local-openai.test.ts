@@ -3,6 +3,7 @@ import { rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import OpenAI from "openai";
+import { ActivityLog } from "../src/activity.js";
 import type { ProxyConfig } from "../src/config.js";
 import type { LocalModelCoordinator } from "../src/local-models.js";
 import { createLogger } from "../src/logger.js";
@@ -24,7 +25,7 @@ async function listen(server: Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return (server.address() as AddressInfo).port;
 }
-async function serve(router: ProviderRouter): Promise<string> { return `http://127.0.0.1:${await listen(createProxyServer(config, router))}/v1`; }
+async function serve(router: ProviderRouter, activity?: ActivityLog): Promise<string> { return `http://127.0.0.1:${await listen(createProxyServer(config, router, activity ? { activity } : {}))}/v1`; }
 
 describe("LocalOpenAiProvider", () => {
   it("streams a gufo/ model through the proxy with the upstream usage and lists only the prefixed id", async () => {
@@ -54,7 +55,7 @@ describe("LocalOpenAiProvider", () => {
   });
 
   /** A fake upstream: GET /v1/models and a streaming POST /v1/chat/completions that `script` writes. */
-  async function thinkingProxy(script: (response: import("node:http").ServerResponse) => Promise<void> | void, bodies: unknown[] = []): Promise<string> {
+  async function thinkingProxy(script: (response: import("node:http").ServerResponse) => Promise<void> | void, bodies: unknown[] = [], activity?: ActivityLog): Promise<string> {
     const upstream = createServer((request, response) => {
       if (request.method === "GET" && request.url === "/v1/models") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ data: [{ id: "Qwen3.8-27B" }] })); return; }
       if (request.method === "POST" && request.url === "/v1/chat/completions") {
@@ -65,7 +66,7 @@ describe("LocalOpenAiProvider", () => {
       response.statusCode = 404; response.end();
     });
     const port = await listen(upstream);
-    return await serve(new ProviderRouter({ providers: [new LocalOpenAiProvider({ id: "gufo", displayName: "Gufo", baseUrl: `http://127.0.0.1:${port}/v1`, logger })] }));
+    return await serve(new ProviderRouter({ providers: [new LocalOpenAiProvider({ id: "gufo", displayName: "Gufo", baseUrl: `http://127.0.0.1:${port}/v1`, logger })] }), activity);
   }
   const sse = (response: import("node:http").ServerResponse, chunk: unknown) => response.write(`data:${JSON.stringify(chunk)}\r\n\r\n`);
   const thinkChunk = (reasoning_content: string) => ({ choices: [{ delta: { reasoning_content } }] });
@@ -105,17 +106,21 @@ describe("LocalOpenAiProvider", () => {
     expect(oddUsage?.completion_tokens_details?.reasoning_tokens).toBe(0);
   });
 
-  it("estimates reasoning_tokens from the reasoning text when the local server reports none", async () => {
+  it("estimates reasoning_tokens from the reasoning text when the local server reports none, and the activity entry says it is an estimate", async () => {
+    const activity = new ActivityLog();
     const base = await thinkingProxy((response) => {
       sse(response, thinkChunk("Let me think.")); sse(response, { choices: [{ delta: { content: "Hi" } }] });
       sse(response, { choices: [{ delta: {}, finish_reason: "stop" }] });
       sse(response, { choices: [], usage: { prompt_tokens: 5, completion_tokens: 9, total_tokens: 14 } });
       response.end("data: [DONE]\r\n\r\n");
-    });
+    }, [], activity);
     const res = await fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...askBody, stream: true, stream_options: { include_usage: true } }) });
     const chunks = (await res.text()).split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)) as { usage?: { completion_tokens: number; completion_tokens_details: { reasoning_tokens: number } } | null });
     expect(chunks.at(-1)?.usage?.completion_tokens_details.reasoning_tokens).toBe(4);
     expect(chunks.at(-1)?.usage?.completion_tokens).toBe(9);
+    for (let wait = 0; wait < 20 && activity.list().length === 0; wait++) await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(activity.list()[0]).toMatchObject({ reasoningTokens: 4, reasoningEstimated: true });
+    expect(activity.list()[0]).not.toHaveProperty("estimated");
   });
 
   it("returns message.reasoning_content when not streamed, counts it in the estimated usage and sends max_tokens upstream", async () => {
@@ -245,6 +250,13 @@ describe("LocalOpenAiProvider", () => {
     const port = await listen(upstream);
     const strata = new LocalOpenAiProvider({ id: "strata", displayName: "Strata", baseUrl: `http://127.0.0.1:${port}/v1`, logger });
     const router = new ProviderRouter({ providers: [strata] });
+    // A provider that has never listed (right after a proxy start): the image check reads the list again instead of refusing.
+    const fresh = new LocalOpenAiProvider({ id: "strata", displayName: "Strata", baseUrl: `http://127.0.0.1:${port}/v1`, logger });
+    const freshRouter = new ProviderRouter({ providers: [fresh] });
+    await freshRouter.prepareModel("strata/qwen-flash", withImage, abort);
+    await freshRouter.generate("strata/qwen-flash", withImage);
+    expect(JSON.parse(bodies.at(-1)!).messages[0].content).toEqual([{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } }]);
+    bodies.length = 0;
     await strata.listModels();
     await router.prepareModel("strata/qwen-flash", withImage, abort);
     await router.generate("strata/qwen-flash", withImage);

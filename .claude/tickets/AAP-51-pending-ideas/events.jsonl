@@ -1,0 +1,9 @@
+{"ts":"2026-11-22T21:10:00Z","actor":"planner","type":"plan.created","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"planner wrote the plan (draft)"}
+{"ts":"2026-11-22T21:20:00Z","actor":"director","type":"plan.approved","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"user: 'Yes, approve all' to 'Do you approve the seven plans with these defaults'; written by the director because the scribe could not see the user's message"}
+{"ts":"2026-11-22T21:22:53Z","actor":"implement","type":"implement.started","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"branch AAP-51_pending-ideas from master 9f23c3a"}
+{"ts":"2026-11-22T21:22:53Z","actor":"implement","type":"slice.started","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"workers A, B, C launched in parallel","data":{"tasks":["A","B","C"]}}
+{"ts":"2026-11-22T21:27:33Z","actor":"implement","type":"slice.done","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"worker A reported done","data":{"tasks":["A"]}}
+{"ts":"2026-11-22T21:27:33Z","actor":"implement","type":"slice.done","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"worker B reported done","data":{"tasks":["B"]}}
+{"ts":"2026-11-22T21:27:33Z","actor":"implement","type":"slice.done","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"worker C reported done","data":{"tasks":["C"]}}
+{"ts":"2026-11-22T21:28:48Z","actor":"implement","type":"verify.passed","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"yarn test 523 passed 1 skipped; typecheck 0; style and GB greps empty"}
+{"ts":"2026-11-22T21:29:22Z","actor":"implement","type":"changelog.written","request":"REQ-0031","ticket":"AAP-51-pending-ideas","detail":"changelog.md written; status stays in-progress for the checker"}
