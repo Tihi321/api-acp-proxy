@@ -22,6 +22,8 @@ describe("llama-models", () => {
     const fixed = applyFix(preset, "modelFile", model);
     expect(fixed.modelFile).toBe(model.path);
     expect(fixed.label).toBe("Inkling 2 Mini (IQ4_NL, vision)");
+    expect(fixed.hf).toEqual({ ...preset.hf, quant: "IQ4_NL" });
+    expect(preset.hf?.quant).toBe("Q8_0"); // the preset itself is not changed
   });
 
   it("creates a profile from a found model with the single mmproj and leaves an ambiguous one out", () => {
