@@ -14,3 +14,4 @@ Deviations: the cached-tokens assertions extend the existing usage test (its fak
 Verification: `yarn test` 43 files passed, 1 skipped; 516 tests passed, 1 skipped (517). `yarn typecheck` exit 0. Not run: any build, a real Strata request, real cached numbers (hub K1/K3/K4).
 
 Commit: see git log on the branch (not merged, not pushed).
+Polish 1: cached and prompt token counts from upstream count only when they are finite numbers (checker note)
