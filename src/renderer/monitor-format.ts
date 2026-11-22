@@ -27,7 +27,7 @@ export function sparkGeometry(values: readonly (number | null)[] | undefined, op
   const flush = (): void => {
     const [only] = run;
     if (run.length >= 2) lines.push(run.map((point) => `${point.x},${point.y}`).join(" "));
-    else if (only) dots.push(`${only.x - 0.5},${only.y} ${only.x + 0.5},${only.y}`);
+    else if (only) { const from = Math.min(Math.max(only.x - 0.5, 0), SPARK_W - 1); dots.push(`${from},${only.y} ${from + 1},${only.y}`); } // 1 unit long, kept inside the viewBox
     run = [];
   };
   values.forEach((value, index) => {

@@ -60,3 +60,14 @@ Outcome: all IN items of the plan (P-02, P-03, P-04, P-05 a-d, P-06, P-08, P-09,
 - Gufo tiles and vision cross-check from probe P1 (P-01).
 
 Commit status: committed on `AAP-51_pending-ideas` (one commit); not pushed, not merged.
+
+## Polish 1 (checker findings F1, F3, F4, F5)
+
+- F1 (`src/providers/local-openai.ts`, `src/router.ts`, `src/provider.ts`): `LocalOpenAiProvider.acceptsImages` returns `undefined` (not known yet) for a provider without profiles (Strata) until its first successful `listModels()`; `Provider.acceptsImages` may return `undefined`; `ProviderRouter.acceptsImages` passes the provider's answer through (it falls back to `capabilities.image` only for a provider without the method). `ask_model` (`src/mcp-endpoint.ts:704`) and `generate_image` (`:744`) refuse only on an explicit `false`, so an image call to Strata before its first load reaches `prepareModel`, which refuses after the lease and a fresh list as on the HTTP routes. That refusal reaches the MCP caller as the provider's own `unsupported_content: ... does not accept image input.` (the existing pass-through, covered by "passes the provider's own refusal on"). A Strata whose list is known and has no vision keeps the early `model_not_capable`. Gufo, Llama.cpp and cloud providers are unchanged.
+- F3 (`tests/local-openai.test.ts`): the P-02 test now also builds Strata with a coordinator double and a text-only list; an image request is refused with 400 `unsupported_content` and the lease is released once.
+- F4 (`src/renderer/monitor-format.ts`): a dot's two x values are clamped into 0..59 and stay 1 unit long (x=59 gives `58,y 59,y`, x=0 gives `0,y 1,y`).
+- F5 (`src/shared/ipc.ts`): the `speedMissing` comment now says what `mapLlama` does: no counters read plus `endpoint_metrics: true` gives "metrics-unread" (read failed, too large, or an answer without the counters).
+
+Failing first: F1 `ask_model (images) > forwards an image to Strata before its first load` on 3e538cc: "expected true to be undefined" (isError). F4 `sparkGeometry([1, 2, null, 3], ...)`: dot was "58.5,4.00 59.5,4.00", expected "58,4.00 59,4.00". F3: with `lease?.release()` removed, "expected [] to deeply equal [ 'strata' ]" (restored).
+
+Verification: `yarn test` 524 passed, 1 skipped; `yarn typecheck` exit 0. UNTESTED: a live image request to Strata before its first load in the running app (needs rebuild and restart).

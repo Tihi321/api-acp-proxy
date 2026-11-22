@@ -270,7 +270,7 @@ export interface EngineView {
   images?: boolean;
   slots: EngineSlotView[];
   speed?: { decodeTokS?: number; prefillTokS?: number };
-  /** llama only, when `speed` is absent: "no-metrics" = the server runs without --metrics (or /metrics gave no counters); "no-request" = it has served nothing yet; "metrics-unread" = /props says --metrics is on but this /metrics read failed or was too large. */
+  /** llama only, when `speed` is absent: "no-request" = /metrics answered with counters but no speed yet (nothing served); with no counters read, "metrics-unread" when /props says `endpoint_metrics: true` (the read failed, was too large, or the answer had none of the counters) and "no-metrics" otherwise (the server runs without --metrics). */
   speedMissing?: "no-metrics" | "no-request" | "metrics-unread";
   reuse?: { reused: number; prompt: number; requests: number };
   strata?: { kv?: string; kvResident?: number; expertSlots?: number; expertCacheMiB?: number; drafting?: string };

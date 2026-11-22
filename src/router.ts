@@ -144,7 +144,7 @@ export class ProviderRouter implements AcpLike {
 
   canSearchWeb(id: string): boolean { return this.resolve(id)?.provider.webSearchSupport === true; }
 
-  acceptsImages(id: string): boolean | undefined { const target = this.resolve(id); return target ? target.provider.acceptsImages?.(target.model) ?? target.provider.status().capabilities?.image : undefined; }
+  acceptsImages(id: string): boolean | undefined { const target = this.resolve(id); return target ? (target.provider.acceptsImages ? target.provider.acceptsImages(target.model) : target.provider.status().capabilities?.image) : undefined; }
 
   /** Switches/queues to a local model before the request timer starts; undefined for providers without that. */
   async prepareModel(id: string, messages: Message[] | undefined, signal: AbortSignal): Promise<{ release(): void } | undefined> {

@@ -263,6 +263,13 @@ describe("LocalOpenAiProvider", () => {
     expect(JSON.parse(bodies[0]!).messages[0].content).toEqual([{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } }]);
     modalities = ["text"]; await strata.listModels();
     await expect(router.prepareModel("strata/qwen-flash", withImage, abort)).rejects.toMatchObject({ status: 400, code: "unsupported_content" });
+
+    // With a coordinator: a refusal after the lease (text-only list, never listed before) releases the lease once.
+    const released: string[] = [];
+    const coordinator = { acquire: async (id: string) => ({ release: () => { released.push(id); } }) } as unknown as LocalModelCoordinator;
+    const leased = new LocalOpenAiProvider({ id: "strata", displayName: "Strata", baseUrl: `http://127.0.0.1:${port}/v1`, logger, coordinator, leaseProfile: "strata" });
+    await expect(new ProviderRouter({ providers: [leased] }).prepareModel("strata/qwen-flash", withImage, abort)).rejects.toMatchObject({ status: 400, code: "unsupported_content" });
+    expect(released).toEqual(["strata"]);
   });
 
   it("registers llama with its profiles: listed while stopped, leased as llama:<id>, upstream gets the model, no image to a non-vision profile", async () => {

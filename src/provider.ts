@@ -221,8 +221,8 @@ export interface Provider {
   readonly maxPromptChars?: number;
   /** Throws a 400 `context_length_exceeded` when the prompt built from these messages is over `maxPromptChars`. Synchronous, no side effects. */
   checkPrompt?(messages: Message[], options?: GenerateOptions): void;
-  /** Whether this model accepts image input; the router prefers it over `status().capabilities.image`. */
-  acceptsImages?(model: string): boolean;
+  /** Whether this model accepts image input; the router prefers it over `status().capabilities.image`. `undefined` = not known yet (callers refuse only on an explicit `false`). */
+  acceptsImages?(model: string): boolean | undefined;
   /** Whether this model generates images; the router prefers it over `imageGeneration`. */
   supportsImageGeneration?(model: string): boolean;
   /** Before the request timer starts: switches/queues to the model; rejects with ApiError 400/503. `messages` is undefined for an image request. The lease is released when the request ends. */

@@ -74,6 +74,8 @@ export class LocalOpenAiProvider implements Provider {
   private state: ProviderState = "stopped";
   private error: string | undefined;
   private models: ModelInfo[] = [];
+  /** True once a provider without profiles has read its upstream model list successfully. */
+  private listed = false;
   private readonly listeners = new Set<(status: ProviderStatus) => void>();
   private readonly inflight = new Set<AbortController>();
   private embedding?: EmbeddingSettings;
@@ -124,8 +126,9 @@ export class LocalOpenAiProvider implements Provider {
 
   private profileOf(model: string): ProfileEntry | undefined { return this.profiles?.find((profile) => profile.model === model); }
 
-  acceptsImages(model: string): boolean {
-    if (!this.profiles) return this.models.some((entry) => entry.id === model && entry.vision === true);
+  /** `undefined` = not known yet: a provider without profiles (Strata) before its first successful model list. */
+  acceptsImages(model: string): boolean | undefined {
+    if (!this.profiles) return !this.listed ? undefined : this.models.some((entry) => entry.id === model && entry.vision === true);
     const profile = this.profileOf(model); return profile?.kind === "llm" && profile.vision;
   }
 
@@ -196,6 +199,7 @@ export class LocalOpenAiProvider implements Provider {
     if (this.profiles) { await response.body?.cancel().catch(() => undefined); this.setState("ready"); return this.models; }
     const body = await response.json().catch(() => undefined) as { data?: Array<{ id?: unknown; architecture?: { input_modalities?: unknown } }> } | undefined;
     this.models = (body?.data ?? []).flatMap((entry) => typeof entry.id === "string" ? [{ id: entry.id, ...(Array.isArray(entry.architecture?.input_modalities) && entry.architecture.input_modalities.includes("image") ? { vision: true } : {}) }] : []);
+    this.listed = true;
     this.setState("ready");
     return this.models;
   }

@@ -13,6 +13,8 @@ describe("Monitor formatting", () => {
     expect(sparkGeometry([100, 100], { min: 0, max: 100 })?.lines).toEqual(["58,0.00 59,0.00"]);
     expect(sparkGeometry([5, 5])?.lines).toEqual(["58,8.00 59,8.00"]);
     expect(sparkGeometry([null, 7])).toBeUndefined();
+    // A dot at the newest or oldest slot stays inside the 0..59 viewBox, still 1 unit long.
+    expect(sparkGeometry([1, 2, null, 3], { min: 0, max: 4 })).toEqual({ lines: ["56,12.00 57,8.00"], dots: ["58,4.00 59,4.00"] });
   });
 
   it("gives every empty speed tile its reason", () => {
