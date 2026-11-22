@@ -17,14 +17,14 @@ afterEach(() => {
 describe("LocalServerManager", () => {
   it("runs one server at a time, keeps the log and stops everything", async () => {
     const ports: Record<number, LocalServerId> = { 18081: "gufo", 18080: "strata", 18082: "llama", 18083: "embed" };
-    const manager = new LocalServerManager({
+    const manager: LocalServerManager = new LocalServerManager({
       pollMs: 20,
       spawn: () => {
         const child = spawn(process.execPath, ["-e", "console.log('up'); setInterval(() => {}, 1000)"], { stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
         children.push(child);
         return child;
       },
-      probe: async (port) => manager.list().find((s) => s.id === ports[port])!.log.includes("up"),
+      probe: async (port): Promise<boolean> => manager.list().find((s) => s.id === ports[port])!.log.includes("up"),
     });
     const state = (id: LocalServerId) => manager.list().find((s) => s.id === id)!;
     const waitFor = async (id: LocalServerId, wanted: LocalServerState) => {
@@ -40,7 +40,7 @@ describe("LocalServerManager", () => {
     expect(manager.list().map((s) => s.id)).toEqual(["gufo", "strata", "llama", "embed"]);
     await manager.start(spec("gufo", 18081));
     await waitFor("gufo", "ready");
-    const gufoChild = children[0];
+    const gufoChild = children[0]!;
     expect(state("gufo").pid).toBe(gufoChild.pid);
     expect(state("gufo").commandLine).toContain("--port 18081");
 
@@ -73,10 +73,10 @@ describe("LocalServerManager", () => {
     const spec: LocalServerSpec = { id: "gufo", command: process.execPath, args: "", cwd: path.resolve("."), port: 18082 };
     for (const cancel of [() => manager.stop("gufo"), () => manager.stopAll()]) {
       const pending = manager.start(spec);
-      expect(manager.list()[0].state).toBe("starting");
+      expect(manager.list()[0]!.state).toBe("starting");
       await cancel();
       await pending;
-      expect(manager.list()[0].state).toBe("stopped");
+      expect(manager.list()[0]!.state).toBe("stopped");
     }
     expect(spawned).toBe(0);
   });
@@ -130,7 +130,7 @@ describe("LocalServerManager", () => {
     await waitReady();
     expect(view().profile).toBe("B");
     expect(events).toEqual(["spawn:A", "kill", "probe-busy", "probe-busy", "probe-busy", "spawn:B"]);
-    expect(children[0].exitCode !== null || children[0].signalCode !== null).toBe(true);
+    expect(children[0]!.exitCode !== null || children[0]!.signalCode !== null).toBe(true);
 
     const missing = path.resolve("definitely-missing", "model.gguf");
     await expect(manager.start(spec("C", `--model "${missing}" --port {port}`))).rejects.toThrow("File not found");

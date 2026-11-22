@@ -102,7 +102,7 @@ describe("prompt size limit", () => {
     expect(resolved.overridden).toEqual(expect.arrayContaining(["providers.antigravity.maxPromptChars", "providers.codex.maxPromptChars"]));
 
     const ctx = defaultRuntimeContext({ dataDir: path.join(root, "reg") });
-    const create = (registration: typeof codexRegistration, providerSettings: Record<string, unknown>): Provider => registration.create({ settings: defaultSettings(), providerSettings, config, ctx, env: {}, saveSettings: async () => {} });
+    const create = (registration: typeof codexRegistration, providerSettings: Record<string, unknown>): Provider => registration.create({ settings: defaultSettings(), providerSettings: { enabled: true, ...providerSettings }, config, ctx, env: {}, saveSettings: async () => {} });
     expect(create(antigravityRegistration, { maxPromptChars: 0 }).maxPromptChars).toBeUndefined();
     expect(create(codexRegistration, { maxPromptChars: 5000 }).maxPromptChars).toBe(5000);
     expect(create(antigravityRegistration, {}).maxPromptChars).toBe(180000);

@@ -37,7 +37,7 @@ describe("downloadResumable", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as AddressInfo).port;
     const policy = { hosts: ["127.0.0.1", "localhost"], allowHttp: true };
-    const headersFor = (url: URL) => (url.hostname === "127.0.0.1" ? { authorization: "Bearer secret" } : {});
+    const headersFor = (url: URL): Record<string, string> => (url.hostname === "127.0.0.1" ? { authorization: "Bearer secret" } : {});
     const file = path.join(root, "out", "f.bin");
     const url = `http://127.0.0.1:${port}/resolve/f`;
     const base = { fetch, url, file, policy, headersFor };

@@ -143,13 +143,13 @@ describe("playground helpers", () => {
     expect(historySections(chats, now)[0]).toMatchObject({ key: "pinned", ids: ["d", "c"] });
     const touched = touchChat(chats, "c", now + 1000);
     expect(touched.find((c) => c.id === "c")).toMatchObject({ updated: now + 1000, order: chats.find((c) => c.id === "c")?.order });
-    expect(historySections(touchChat(chats, "b", now + 1000), now)[1].ids).toEqual(["b", "a"]);
+    expect(historySections(touchChat(chats, "b", now + 1000), now)[1]!.ids).toEqual(["b", "a"]);
     // moves: within Pinned, a forbidden cross-bucket move leaves the input unchanged, a drop into Pinned pins
     chats = moveChat(chats, "c", { section: "pinned", index: 0 }, now);
-    expect(historySections(chats, now)[0].ids).toEqual(["c", "d"]);
+    expect(historySections(chats, now)[0]!.ids).toEqual(["c", "d"]);
     expect(moveChat(chats, "a", { section: "yesterday", index: 0 }, now)).toEqual(chats);
     const pinned = moveChat(chats, "b", { section: "pinned", index: 1 }, now);
-    expect(historySections(pinned, now)[0].ids).toEqual(["c", "b", "d"]);
+    expect(historySections(pinned, now)[0]!.ids).toEqual(["c", "b", "d"]);
     expect(pinned.find((c) => c.id === "b")?.pinned).toBe(true);
     expect(historySections(moveChat(pinned, "c", { section: "today", index: 0 }, now), now).map((s) => s.ids)).toEqual([["b", "d"], ["a"], ["c"]]); // c lands in the bucket of its own date
     expect(old.every((c) => c.pinned === false)).toBe(true); // input never mutated
@@ -169,7 +169,7 @@ describe("playground helpers", () => {
     expect(elided).toContain("data:…(3 KB)");
     expect(elided).not.toContain("AAAA");
     expect(elided).toContain('"model":"m"');
-    expect(request.messages[0].content[1]).toMatchObject({ type: "image_url" }); // input untouched
+    expect(request.messages[0]!.content[1]).toMatchObject({ type: "image_url" }); // input untouched
     const defaults = parseUiPrefs(null);
     expect(defaults).toMatchObject({ sidebarOpen: true, sidebarWidth: 264, previewWidth: 0, stream: true, image: { size: "1024x1024", steps: "" } });
     expect(parseUiPrefs("{not json")).toEqual(defaults);
@@ -221,7 +221,7 @@ describe("serving the playground", () => {
   it("serves the page and its fixed files with a strict CSP, and nothing else", async () => {
     const dir = path.join(root, "built");
     mkdirSync(dir, { recursive: true });
-    for (const [name, body] of [["playground.html", "<!doctype html>page"], ["playground.js", "js"], ["lib.js", "lib"], ["markdown.js", "md"], ["history.js", "hist"], ["dom.js", "dom"], ["messages.js", "msg"], ["sidebar.js", "side"], ["composer.js", "comp"], ["playground.css", "css"], ["preview.html", "<!doctype html>preview"], ["secret.txt", "no"]]) writeFileSync(path.join(dir, name), body);
+    for (const [name, body] of [["playground.html", "<!doctype html>page"], ["playground.js", "js"], ["lib.js", "lib"], ["markdown.js", "md"], ["history.js", "hist"], ["dom.js", "dom"], ["messages.js", "msg"], ["sidebar.js", "side"], ["composer.js", "comp"], ["playground.css", "css"], ["preview.html", "<!doctype html>preview"], ["secret.txt", "no"]] as Array<[string, string]>) writeFileSync(path.join(dir, name), body);
     const port = await listen(createServer((req, res) => { void servePlayground(req.method ?? "GET", new URL(req.url ?? "/", "http://x").pathname, res, dir).then((handled) => { if (!handled) { res.writeHead(418); res.end(); } }); }));
     const page = await get(port, "/playground");
     expect(page).toMatchObject({ status: 200, text: "<!doctype html>page" });
@@ -249,7 +249,7 @@ describe("serving the playground", () => {
 
   it("answers before the API key check and is not logged as activity", async () => {
     const config: ProxyConfig = { host: "127.0.0.1", port: 0, maxBodyBytes: 100_000, timeoutMs: 5000, workRoot: path.join(root, "work"), acpArgs: [], apiKey: "secret" };
-    const bridge: AcpLike = { generate: async () => ({ text: "", stopReason: "end_turn" }), hasModel: () => true, listModels: async () => [] };
+    const bridge: AcpLike = { generate: async () => ({ text: "", stopReason: "end_turn", usage: null }), hasModel: () => true, listModels: async () => [] };
     const activity = new ActivityLog();
     const port = await listen(createProxyServer(config, bridge, { activity }));
     const missing = await get(port, "/playground/unknown.js");

@@ -1,0 +1,5 @@
+{"ts":"2026-11-22T17:50:00Z","actor":"planner","type":"plan.created","request":"creative-hub/REQ-0030","ticket":"AAP-48-small-fixes","detail":"planner wrote the plan (draft)"}
+{"ts":"2026-11-22T17:50:00Z","actor":"director-scribe","type":"plan.approved","request":"creative-hub/REQ-0030","ticket":"AAP-48-small-fixes","detail":"user: 'Yes' to 'approve the six plans with the recommended answers'"}
+{"ts":"2026-11-22T17:43:57Z","actor":"implement","type":"implement.started","request":"creative-hub/REQ-0030","ticket":"AAP-48-small-fixes","detail":"branch AAP-48_small-fixes from master 23cf725"}
+{"ts":"2026-11-22T17:48:53Z","actor":"implement","type":"verify.passed","request":"creative-hub/REQ-0030","ticket":"AAP-48-small-fixes","detail":"typecheck 3 configs; target test x20; yarn test x3 green"}
+{"ts":"2026-11-22T17:48:53Z","actor":"implement","type":"changelog.written","request":"creative-hub/REQ-0030","ticket":"AAP-48-small-fixes","detail":"changelog.md written; status stays in-progress"}

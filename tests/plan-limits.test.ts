@@ -89,7 +89,7 @@ describe("plan limit probe", () => {
     };
     const file = path.join(dir, "settings.json");
     writeFileSync(file, JSON.stringify(mergeSettings(defaultSettings(), { server: { port: 0, workRoot: path.join(dir, "work") } })));
-    const controller = new ProxyController({ settingsPath: file, env: {}, logger: createLogger({ console: false }), registry: [registration], signedIn });
+    const controller = new ProxyController({ settingsPath: file, env: {}, logger: createLogger({ console: false }), registry: [registration] });
     controllers.push(controller);
     return controller;
   }
