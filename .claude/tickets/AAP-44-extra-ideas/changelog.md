@@ -20,3 +20,4 @@ Verification: `npm test` 515 passed, 1 skipped; `npm run typecheck` and `npm run
 Not run (UNTESTED): embed server stop on save in the desktop app (main.ts has no harness); dimension check and reasoning estimate against a real llama-server; Llama.cpp page Used by cell and Context hint in the window.
 
 Commit: see git log on `AAP-44_extra-ideas` (not merged, not pushed).
+Polish 1: the Port hint names the proxy's own port (checker note)
