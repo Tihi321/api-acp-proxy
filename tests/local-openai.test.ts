@@ -102,7 +102,7 @@ describe("LocalOpenAiProvider", () => {
     expect(oddUsage?.prompt_tokens_details.cached_tokens).toBe(0);
     expect(oddUsage?.completion_tokens).toBe(0);
     expect(oddUsage?.total_tokens).toBe(100);
-    expect(Number.isFinite(oddUsage?.completion_tokens_details?.reasoning_tokens ?? 0)).toBe(true);
+    expect(oddUsage?.completion_tokens_details?.reasoning_tokens).toBe(0);
   });
 
   it("estimates reasoning_tokens from the reasoning text when the local server reports none", async () => {
