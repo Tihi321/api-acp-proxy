@@ -20,6 +20,9 @@ const MAX_PROXY_ROWS = 12;
 const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const whole = new Intl.NumberFormat();
 const GB = 1024 ** 3;
+const MIB = 1024 ** 2;
+/** Sub line of the Model and State tiles for a server answering on its port that this app did not start. */
+const OUTSIDE = "started outside the app";
 
 const make = <K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text = ""): HTMLElementTagNameMap[K] => {
   const node = document.createElement(tag);
@@ -34,13 +37,50 @@ const seconds = (value: number): string => (value >= 10 ? `${value.toFixed(0)} s
 const millis = (ms: number): string => (ms >= 1000 ? seconds(ms / 1000) : `${ms} ms`);
 const rateText = (value: number | undefined): string => (value === undefined ? "-" : value.toFixed(1));
 
-/** A `.stat` tile. A missing value is a dash (never a guess) with the reason underneath. */
-function tile(label: string, value: string | undefined, sub?: string): HTMLElement {
+/** A `.stat` tile. A missing value is a dash (never a guess) with the reason underneath; `extra` (a sparkline) goes under the sub line. */
+function tile(label: string, value: string | undefined, sub?: string, extra?: Element): HTMLElement {
   const node = make("div", "stat");
   const valueNode = make("div", value === undefined ? "stat-value dash" : "stat-value", value ?? "-");
   node.append(make("div", "stat-label", label), valueNode);
   if (sub) node.append(make("div", "stat-sub", sub));
+  if (extra) node.append(extra);
   return node;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const SPARK_W = 59;
+const SPARK_H = 16;
+/**
+ * A sparkline of Strata's last 60 s as an inline SVG (attributes only: the page's CSP forbids inline styles; the stroke comes from `.spark`).
+ * Newest point on the right; a `null` breaks the line. Undefined when the series has fewer than two numbers. A flat series draws at mid-height.
+ */
+function spark(values: readonly (number | null)[] | undefined, opts: { min?: number | undefined; max?: number | undefined } = {}): SVGSVGElement | undefined {
+  if (!values) return undefined;
+  const numbers = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (numbers.length < 2) return undefined;
+  const min = opts.min ?? Math.min(...numbers);
+  const max = opts.max ?? Math.max(...numbers);
+  const span = max - min;
+  const shift = SPARK_W - (values.length - 1);
+  const y = (value: number): number => (span > 0 && Number.isFinite(span) ? SPARK_H - ((Math.min(max, Math.max(min, value)) - min) / span) * SPARK_H : SPARK_H / 2);
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${SPARK_W} ${SPARK_H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", "spark");
+  const title = document.createElementNS(SVG_NS, "title");
+  title.textContent = "last 60 s";
+  svg.append(title);
+  let run: string[] = [];
+  const flush = (): void => {
+    if (run.length >= 2) { const line = document.createElementNS(SVG_NS, "polyline"); line.setAttribute("points", run.join(" ")); svg.append(line); }
+    run = [];
+  };
+  values.forEach((value, index) => {
+    if (typeof value === "number" && Number.isFinite(value)) run.push(`${index + shift},${y(value).toFixed(2)}`); else flush();
+  });
+  flush();
+  return svg;
 }
 
 /** A labelled bar. The bar is a <progress> element: its width needs no inline style (the page's CSP forbids them). */
@@ -60,6 +100,8 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
   /** Bumped by every shown(), hidden() and resume: a read that started before the bump neither renders nor reschedules. */
   let generation = 0;
   let connectKey = "";
+  /** `at` of the last reading rendered without an error. */
+  let lastShownAt: number | undefined;
 
   const active = (): boolean => current !== undefined && document.visibilityState === "visible";
   const stopTimer = (): void => { if (timer !== undefined) { clearTimeout(timer); timer = undefined; } };
@@ -71,8 +113,18 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     let view: MonitorView | undefined;
     try { view = await deps.api.getMonitor(); } catch { view = undefined; }
     if (mine !== generation || !active()) return;
-    // A render error (for example a time the clock cannot format) keeps the last rendered state; the next poll is always scheduled.
-    try { render(view); } catch { /* keep the last state */ }
+    // A render error (for example a time the clock cannot format) keeps the last rendered state under a notice; the next good render clears it. The next poll is always scheduled.
+    try {
+      render(view);
+      if (view) lastShownAt = view.at;
+    } catch {
+      let when = "an earlier reading";
+      try { if (lastShownAt !== undefined) when = clock.format(lastShownAt); } catch { /* keep the generic wording */ }
+      const notice = `Could not show the latest reading. The numbers below are from ${when}.`;
+      el("mon-notice").textContent = notice;
+      el("about-notice").textContent = notice;
+      el("mon-updated").textContent = lastShownAt !== undefined ? `updated ${when}` : ""; // render() may have stamped the failed reading's time
+    }
     timer = setTimeout(() => void tick(), POLL_MS);
   }
   function restart(): void { generation += 1; stopTimer(); void tick(); }
@@ -92,6 +144,7 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
   /** Sub-line of a Model tile: the model id under a label, or the reason there is no model id. */
   function modelSub(local: MonitorView["local"] | undefined): string | undefined {
     if (!local) return undefined;
+    if (local.external) return OUTSIDE;
     if (local.label) return local.modelId;
     if (local.state === "none") return "No local model loaded";
     if (local.modelId === undefined) return local.server === "strata" ? "provider is off in the proxy" : "model id unknown";
@@ -124,7 +177,7 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     const queue = local?.queue;
     el("mon-model").replaceChildren(
       tile("Model", local?.label ?? local?.modelId, modelSub(local)),
-      tile("State", local && local.state !== "none" ? local.state : undefined, local?.error),
+      tile("State", local && local.state !== "none" ? local.state : undefined, local?.error ?? (local?.external ? OUTSIDE : undefined)),
       tile("Engine", engine ? (engine.state === "unknown" ? undefined : engine.state) : undefined, engine ? undefined : why),
       tile("Since", local?.readyAt !== undefined ? clock.format(local.readyAt) : undefined, local?.startedAt !== undefined && local.readyAt === undefined ? `started ${clock.format(local.startedAt)}` : undefined),
       tile("Port", local?.port !== undefined ? String(local.port) : undefined),
@@ -138,10 +191,15 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     /** Strata is up but has served nothing yet: the speed and reuse tiles are dashes for that reason. */
     const reuseEmpty = reuse !== undefined && reuse.prompt === 0 && reuse.reused === 0;
     const noRequest = engine?.kind === "strata" && !speed && (!reuse || reuseEmpty);
+    const history = engine?.kind === "strata" ? engine.history : undefined;
+    const cache = engine?.kind === "strata" ? engine.conversationCache : undefined;
+    const count = (value: number | undefined): string => (value !== undefined ? whole.format(value) : "-");
     el("mon-engine").replaceChildren(
-      tile("Decode", fromStrata(speed?.decodeTokS !== undefined ? `${rateText(speed.decodeTokS)} t/s` : undefined), !speed && noRequest ? "no request yet" : dashSub(true)),
+      tile("Decode", fromStrata(speed?.decodeTokS !== undefined ? `${rateText(speed.decodeTokS)} t/s` : undefined), !speed && noRequest ? "no request yet" : dashSub(true), spark(history?.decodeTokS, { min: 0 })),
       tile("Prefill", fromStrata(speed?.prefillTokS !== undefined ? `${rateText(speed.prefillTokS)} t/s` : undefined), !speed && noRequest ? "no request yet" : dashSub(true)),
       tile("Prompt reused", fromStrata(reuse && !reuseEmpty ? `${whole.format(reuse.reused)} of ${whole.format(reuse.prompt)}` : undefined), reuse && !reuseEmpty && engine?.kind === "strata" ? `${reuse.prompt > 0 ? Math.round((100 * reuse.reused) / reuse.prompt) : 0}% over ${reuse.requests} requests` : noRequest ? "no request yet" : dashSub(true)),
+      tile("Conversation cache", cache ? (cache.enabled ? `${count(cache.parked)} of ${count(cache.slots)} parked` : "off") : undefined,
+        cache ? (cache.enabled ? `${count(cache.restores)} restored · ${count(cache.evictions)} evicted · ${cache.bytes !== undefined ? whole.format(Math.round(cache.bytes / MIB)) : "-"} of ${count(cache.budgetMiB)} MiB` : undefined) : dashSub(true)),
       tile("Context", engine?.context !== undefined ? `${whole.format(engine.context)} tokens` : undefined, engine?.context !== undefined ? undefined : dashSub(false)),
       tile("Slots busy", engine && engine.slots.length ? `${busySlots} / ${engine.slots.length}` : undefined, engine?.slots.length ? undefined : dashSub(false)),
     );
@@ -150,11 +208,11 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     const hw = engine?.kind === "strata" ? engine.hardware : undefined;
     const host = view?.host;
     el("mon-hw").replaceChildren(
-      tile("GPU load", hw?.gpuUtilPct !== undefined ? `${Math.round(hw.gpuUtilPct)}%` : undefined, hw?.gpuUtilPct === undefined ? dashSub(true) : hw.gpuName),
-      tile("VRAM", hw?.gpuMemUsedBytes !== undefined ? gb(hw.gpuMemUsedBytes) : undefined, hw?.gpuMemTotalBytes !== undefined ? `of ${gb(hw.gpuMemTotalBytes)}` : dashSub(true)),
-      tile("GPU temp", hw?.gpuTempC !== undefined ? `${Math.round(hw.gpuTempC)} °C` : undefined, hw?.gpuTempC === undefined ? dashSub(true) : undefined),
-      tile("Power", hw?.gpuPowerW !== undefined ? `${Math.round(hw.gpuPowerW)} W` : undefined, hw?.gpuPowerW === undefined ? dashSub(true) : undefined),
-      tile("Disk read", hw?.diskReadMBs !== undefined ? `${hw.diskReadMBs.toFixed(1)} MB/s` : undefined, hw?.diskReadMBs === undefined ? dashSub(true) : undefined),
+      tile("GPU load", hw?.gpuUtilPct !== undefined ? `${Math.round(hw.gpuUtilPct)}%` : undefined, hw?.gpuUtilPct === undefined ? dashSub(true) : hw.gpuName, spark(history?.gpuUtilPct, { min: 0, max: 100 })),
+      tile("VRAM", hw?.gpuMemUsedBytes !== undefined ? gb(hw.gpuMemUsedBytes) : undefined, hw?.gpuMemTotalBytes !== undefined ? `of ${gb(hw.gpuMemTotalBytes)}` : dashSub(true), spark(history?.gpuMemUsedBytes, { min: 0, max: hw?.gpuMemTotalBytes })),
+      tile("GPU temp", hw?.gpuTempC !== undefined ? `${Math.round(hw.gpuTempC)} °C` : undefined, hw?.gpuTempC === undefined ? dashSub(true) : undefined, spark(history?.gpuTempC)),
+      tile("Power", hw?.gpuPowerW !== undefined ? `${Math.round(hw.gpuPowerW)} W` : undefined, hw?.gpuPowerW === undefined ? dashSub(true) : undefined, spark(history?.gpuPowerW, { min: 0 })),
+      tile("Disk read", hw?.diskReadMBs !== undefined ? `${hw.diskReadMBs.toFixed(1)} MB/s` : undefined, hw?.diskReadMBs === undefined ? dashSub(true) : undefined, spark(history?.diskReadMBs, { min: 0 })),
       tile("CPU", host?.cpuPct !== undefined ? `${Math.round(host.cpuPct)}%` : undefined, host ? (host.cpuPct === undefined ? "measuring" : `${host.threads} threads`) : undefined),
       tile("RAM", host ? gb(host.ramUsedBytes) : undefined, host ? `of ${gb(host.ramTotalBytes)}` : undefined),
     );
@@ -205,6 +263,7 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
         cell(clock.format(entry.time), "mono"), cell(entry.model ?? "-", "mono"), cell(String(entry.status), bad ? "bad" : "ok"),
         cell(entry.inputTokens !== undefined ? `${approx}${whole.format(entry.inputTokens)}` : "-", "num"),
         cell(entry.outputTokens !== undefined ? `${approx}${whole.format(entry.outputTokens)}` : "-", "num"),
+        cell(entry.reasoningTokens !== undefined ? `${approx}${whole.format(entry.reasoningTokens)}` : "-", "num"),
         cell(millis(entry.durationMs), "num"), cell(overall, "num"),
       );
       return row;

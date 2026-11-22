@@ -2,7 +2,7 @@
 // Privacy: the mappers WHITELIST fields. Only numbers, booleans and a few short enum-like strings are copied; nothing else
 // from the engine's answer (prompts, answers, model paths, ids) ever reaches the window.
 import os from "node:os";
-import type { EngineRequestView, EngineSlotView, EngineView, LocalServerStatusView, MonitorView } from "./shared/ipc.js";
+import type { EngineConversationCacheView, EngineHistoryView, EngineRequestView, EngineSlotView, EngineView, LocalServerStatusView, MonitorView } from "./shared/ipc.js";
 
 export const MAX_ENGINE_REQUESTS = 12;
 const MAX_TEXT = 64;
@@ -20,6 +20,38 @@ const round1 = (value: number): number => Math.round(value * 10) / 10;
 /** Defined entries only, so the view carries no `undefined` keys. */
 const compact = <T extends object>(value: T): T => Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
 const rate = (tokens: number | undefined, ms: number | undefined): number | undefined => (tokens !== undefined && ms !== undefined && ms > 0 && tokens > 0 ? round1(tokens / (ms / 1000)) : undefined);
+
+/** Points per history series: Strata keeps one sample a second for 60 s. */
+export const HISTORY_POINTS = 60;
+/** The only history series read (whitelist): Strata key -> view key. */
+const HISTORY_KEYS = [
+  ["gpu_util", "gpuUtilPct"], ["gpu_mem_used", "gpuMemUsedBytes"], ["gpu_temp", "gpuTempC"],
+  ["gpu_power", "gpuPowerW"], ["disk_read_mb", "diskReadMBs"], ["tok_s", "decodeTokS"],
+] as const satisfies readonly (readonly [string, keyof EngineHistoryView])[];
+
+function mapHistory(value: unknown): EngineHistoryView | undefined {
+  const history = obj(value);
+  if (!history) return undefined;
+  const view: EngineHistoryView = {};
+  for (const [from, to] of HISTORY_KEYS) {
+    const raw = history[from];
+    if (!Array.isArray(raw)) continue;
+    const series = raw.slice(-HISTORY_POINTS).map((point) => num(point) ?? null);
+    if (series.some((point) => point !== null)) view[to] = series;
+  }
+  return Object.keys(view).length ? view : undefined;
+}
+
+function mapConversationCache(value: unknown): EngineConversationCacheView | undefined {
+  const cache = obj(value);
+  const enabled = bool(cache?.["enabled"]);
+  if (!cache || enabled === undefined) return undefined;
+  return compact({
+    enabled, slots: num(cache["slots"]), parked: num(cache["parked"]), bytes: num(cache["bytes"]), budgetMiB: num(cache["budget_mib"]),
+    restores: num(cache["restores"]), evictions: num(cache["evictions"]), requests: num(cache["requests"]),
+    requestsReused: num(cache["requests_reused"]), reusedTokens: num(cache["reused_tokens"]),
+  });
+}
 
 /** Strata's `GET /metrics` as the view: counts, timings and hardware only. */
 export function mapStrataMetrics(json: unknown): EngineView {
@@ -73,6 +105,8 @@ export function mapStrataMetrics(json: unknown): EngineView {
     strata: Object.keys(strata).length ? strata : undefined,
     hardware: Object.keys(hw).length ? hw : undefined,
     requests,
+    history: mapHistory(root["history"]),
+    conversationCache: mapConversationCache(root["conversation_cache"]),
   });
 }
 

@@ -15,6 +15,15 @@ const strataMetrics = (extra: Record<string, unknown> = {}) => ({
   requests: Array.from({ length: 13 }, (_, n) => strataRequest(n)),
   hardware: { gpu_util: 3, gpu_temp: 36, gpu_power: 25, gpu_mem_used: 67903684608, gpu_mem_total: 68719476736, cpu: 7.5, disk_read_mb: 0.39, extra: "SECRET-TEXT" },
   hardware_static: { gpu_name: "AMD Radeon(TM) 8060S Graphics", cpu_name: "AMD RYZEN AI MAX+ 395", threads: 32, extra: "SECRET-TEXT" },
+  // 65 points, oldest first: only the newest 60 are kept; index 10 (text) and 20 (null) fall inside them. Unknown and unread series carry text.
+  history: {
+    gpu_util: Array.from({ length: 65 }, (_, n) => (n === 10 ? "SECRET-TEXT" : n === 20 ? null : n)), gpu_temp: Array.from({ length: 60 }, () => 36),
+    secret_series: ["SECRET-TEXT"], cpu: ["SECRET-TEXT", 7.5],
+  },
+  conversation_cache: {
+    enabled: true, budget_mib: 1536, slots: 4, parked: 0, bytes: 0, evictions: 0, parks: 0, restores: 0, last_event: "SECRET-TEXT", last_tokens: null, last_at: null,
+    refused: {}, refused_total: 0, last_refused: null, requests: 1, requests_reused: 0, reused_tokens: 0, prompt_tokens: 16, last_reused: 0, last_prompt: 16,
+  },
 });
 const llamaProps = { build_info: "b12613-362ac9297", model_alias: "SECRET-TEXT", total_slots: 2, modalities: { vision: false } };
 const llamaSlots = [
@@ -38,6 +47,12 @@ describe("local model monitor", () => {
     expect(view.requests).toHaveLength(12);
     expect(view.requests[0]).toMatchObject({ time: 1795359112000, prefillTokS: 44.6, decodeTokS: 16.4 });
     expect(view.requests.at(-1)?.time).toBe(1795359101000);
+    expect(Object.keys(view.history ?? {})).toEqual(["gpuUtilPct", "gpuTempC"]);
+    expect(view.history?.gpuUtilPct).toHaveLength(60);
+    expect(view.history?.gpuUtilPct?.slice(0, 2)).toEqual([5, 6]);
+    expect([view.history?.gpuUtilPct?.[5], view.history?.gpuUtilPct?.[15]]).toEqual([null, null]);
+    expect(view.history?.gpuTempC).toHaveLength(60);
+    expect(view.conversationCache).toEqual({ enabled: true, slots: 4, parked: 0, bytes: 0, budgetMiB: 1536, restores: 0, evictions: 0, requests: 1, requestsReused: 0, reusedTokens: 0 });
     expect(JSON.stringify(view)).not.toContain("SECRET");
     // A time that is not a plausible epoch in ms (here seconds read as 1e16 ms) is dropped; the row stays.
     const odd = mapStrataMetrics({ ...strataMetrics(), requests: [{ ...strataRequest(0), time: 1e13 }] });

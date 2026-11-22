@@ -25,6 +25,8 @@ export interface ActivityEntry {
   outputTokens?: number;
   /** The token counts are the chars/4 estimate (the agent reported none). */
   estimated?: true;
+  /** Of outputTokens, the part spent thinking (the agent's count, or estimated from the reasoning text). */
+  reasoningTokens?: number;
   /** Names (never values) of the sampling fields the request sent and the proxy dropped. */
   ignoredParams?: string[];
 }
