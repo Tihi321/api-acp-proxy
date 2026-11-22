@@ -25,7 +25,7 @@ import type { LlamaReleaseView } from "../llama-releases.js";
 import { installLlama, probeLlamaVersion } from "../llama-install.js";
 import { HF_POLICY, downloadHfFiles, listHfFiles, parseHfLink } from "../hf-models.js";
 import type { HfFile, HfFileGroup } from "../hf-models.js";
-import { buildEmbeddingArgs, buildLlamaArgs, checkBuild, checkEmbeddingFiles, checkLlamaFiles } from "../llama-args.js";
+import { buildEmbeddingArgs, buildLlamaArgs, checkBuild, checkEmbeddingFiles, checkLlamaFiles, embeddingServerKey } from "../llama-args.js";
 import { customExePatch, installPatch } from "../llama-jobs.js";
 import { scanModelsDir } from "../llama-scan.js";
 import { antigravityRegistration, installAntigravity, readInstallInfo } from "./antigravity.js";
@@ -312,8 +312,13 @@ async function main(): Promise<void> {
   handle("proxy:saveSettings", async (patch: unknown): Promise<SaveResult> => {
     if (typeof patch !== "object" || patch === null || Array.isArray(patch)) return { ok: false, errors: [{ path: "", message: "Invalid settings patch" }] };
     try {
+      const embedKeyBefore = llamaSettings ? embeddingServerKey(llamaSettings.embedding, llamaSettings.modelsDir) : undefined;
       await proxy.applySettings(patch as SettingsPatch);
       await refreshLocalSettings();
+      if (embedKeyBefore !== undefined && llamaSettings && embeddingServerKey(llamaSettings.embedding, llamaSettings.modelsDir) !== embedKeyBefore && ["ready", "starting"].includes(servers.list().find((entry) => entry.id === "embed")?.state ?? "")) {
+        await servers.stop("embed");
+        logger.info("embedding settings changed: embedding server stopped, it starts again on the next request");
+      }
       applyLoginItem((await proxy.getSettings()).effective.server.launchAtLogin);
       return { ok: true };
     } catch (error) {

@@ -252,7 +252,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
         action.append(create);
       }
       const kind = file.kind === "mmproj" ? "vision (mmproj)" : file.kind;
-      row.append(name, make("td", "", kind), make("td", "", file.quant ?? ""), make("td", "num", bytesText(file.size)), make("td", "mono", usedBy(file.path, profiles).join(", ")), action);
+      row.append(name, make("td", "", kind), make("td", "", file.quant ?? ""), make("td", "num", bytesText(file.size)), make("td", "mono", usedBy(file.path, profiles, embedDraft.modelFile).join(", ")), action);
       return row;
     }));
   }

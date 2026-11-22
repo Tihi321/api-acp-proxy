@@ -2,6 +2,7 @@ import type { StopReason, Usage } from "@agentclientprotocol/sdk";
 import { ApiError, messageText, type Message } from "../api.js";
 import type { ProviderRegistration } from "../controller.js";
 import { STRATA_PROFILE_ID, targetKey, type LocalModelCoordinator } from "../local-models.js";
+import { estimateTokens } from "../usage.js";
 import type { Logger } from "../logger.js";
 import { ConcurrencyLimiter, type LimiterStats } from "../limiter.js";
 import { AcpUnavailableError, type EmbeddingResult, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type ImagePassthrough, type ModelInfo, type Provider, type ProviderState, type ProviderStatus } from "../provider.js";
@@ -28,7 +29,7 @@ export interface LocalOpenAiOptions {
 }
 
 /** What the provider needs of `providers.llama.embedding`. */
-type EmbeddingSettings = Pick<LlamaEmbedding, "enabled" | "model" | "port" | "maxConcurrent">;
+type EmbeddingSettings = Pick<LlamaEmbedding, "enabled" | "model" | "port" | "maxConcurrent" | "dimensions">;
 export interface EmbedHost { ensureRunning(signal: AbortSignal): Promise<void> }
 
 const EMBED_NOT_RUNNING = "Embeddings are not running - start them from the app";
@@ -105,9 +106,9 @@ export class LocalOpenAiProvider implements Provider {
   }
 
   private setEmbedding(settings: EmbeddingSettings): void {
-    const { enabled, model, port, maxConcurrent } = settings;
+    const { enabled, model, port, maxConcurrent, dimensions } = settings;
     if (this.embedLimiter?.stats().limit !== maxConcurrent) this.embedLimiter = new ConcurrencyLimiter({ limit: maxConcurrent });
-    this.embedding = { enabled, model, port, maxConcurrent };
+    this.embedding = { enabled, model, port, maxConcurrent, dimensions };
   }
 
   private isEmbeddingModel(model: string): boolean { return this.embedding?.enabled === true && this.embedding.model === model; }
@@ -116,7 +117,7 @@ export class LocalOpenAiProvider implements Provider {
   updateSettings(providerSettings: Record<string, unknown>): void {
     if (!this.profiles) return;
     const embedding = providerSettings.embedding as Partial<EmbeddingSettings> | undefined;
-    if (this.embedding && embedding && typeof embedding.model === "string" && typeof embedding.port === "number" && typeof embedding.maxConcurrent === "number") this.setEmbedding({ enabled: embedding.enabled === true, model: embedding.model, port: embedding.port, maxConcurrent: embedding.maxConcurrent });
+    if (this.embedding && embedding && typeof embedding.model === "string" && typeof embedding.port === "number" && typeof embedding.maxConcurrent === "number") this.setEmbedding({ enabled: embedding.enabled === true, model: embedding.model, port: embedding.port, maxConcurrent: embedding.maxConcurrent, dimensions: typeof embedding.dimensions === "number" ? embedding.dimensions : 768 });
     if (Array.isArray(providerSettings.profiles)) this.setProfiles(providerSettings.profiles as GufoProfile[] | LlamaProfile[]);
     else this.rebuildModels();
   }
@@ -257,6 +258,9 @@ export class LocalOpenAiProvider implements Provider {
       }
       if (controller.signal.aborted) return cancelled();
       const stopReason: StopReason = finish === "length" ? "max_tokens" : "end_turn";
+      // llama-server streams reasoning_content but reports no reasoning_tokens: estimate them from the text.
+      const reported = usage as Usage | null; // assigned inside handle(), which the compiler cannot see
+      if (reported && reasoning && !reported.thoughtTokens) reported.thoughtTokens = Math.min(reported.outputTokens, estimateTokens(reasoning));
       return { text, stopReason, usage, ...(reasoning ? { reasoning } : {}) };
     } finally {
       signal?.removeEventListener("abort", onAbort);
@@ -354,6 +358,8 @@ export class LocalOpenAiProvider implements Provider {
       const items = Array.isArray(body?.data) ? [...body.data].sort((a, b) => (typeof a.index === "number" ? a.index : 0) - (typeof b.index === "number" ? b.index : 0)) : [];
       const vectors = items.map((item) => item.embedding);
       if (vectors.length !== input.length || !vectors.every((vector): vector is number[] => Array.isArray(vector) && vector.length > 0 && vector.every((value) => typeof value === "number"))) throw new ApiError(502, "upstream_error", "The embedding server answered without one vector per input.");
+      const wrong = vectors.find((vector) => vector.length !== embedding.dimensions);
+      if (embedding.dimensions > 0 && wrong) throw new ApiError(502, "upstream_error", `The embedding server answered ${wrong.length}-dimension vectors; providers.llama.embedding.dimensions is ${embedding.dimensions}. Check the model file.`);
       const tokens = body?.usage?.prompt_tokens ?? body?.usage?.total_tokens;
       return { embeddings: vectors, promptTokens: typeof tokens === "number" ? tokens : 0 };
     } finally {

@@ -90,6 +90,19 @@ describe("LocalOpenAiProvider", () => {
     expect(usage?.completion_tokens_details.reasoning_tokens).toBe(7);
   });
 
+  it("estimates reasoning_tokens from the reasoning text when the local server reports none", async () => {
+    const base = await thinkingProxy((response) => {
+      sse(response, thinkChunk("Let me think.")); sse(response, { choices: [{ delta: { content: "Hi" } }] });
+      sse(response, { choices: [{ delta: {}, finish_reason: "stop" }] });
+      sse(response, { choices: [], usage: { prompt_tokens: 5, completion_tokens: 9, total_tokens: 14 } });
+      response.end("data: [DONE]\r\n\r\n");
+    });
+    const res = await fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...askBody, stream: true, stream_options: { include_usage: true } }) });
+    const chunks = (await res.text()).split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)) as { usage?: { completion_tokens: number; completion_tokens_details: { reasoning_tokens: number } } | null });
+    expect(chunks.at(-1)?.usage?.completion_tokens_details.reasoning_tokens).toBe(4);
+    expect(chunks.at(-1)?.usage?.completion_tokens).toBe(9);
+  });
+
   it("returns message.reasoning_content when not streamed, counts it in the estimated usage and sends max_tokens upstream", async () => {
     const bodies: Array<{ max_tokens?: number }> = [];
     const base = await thinkingProxy((response) => {
