@@ -231,8 +231,9 @@ export class LocalOpenAiProvider implements Provider {
         if (typeof delta === "string" && delta) { text += delta; callbacks?.onText?.(delta); }
         if (choice?.finish_reason) finish = choice.finish_reason;
         if (chunk.usage) {
-          const inputTotal = chunk.usage.prompt_tokens ?? 0; const outputTokens = chunk.usage.completion_tokens ?? 0;
-          const cached = Math.max(0, Math.min(inputTotal, chunk.usage.prompt_tokens_details?.cached_tokens ?? 0));
+          const finiteOrZero = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+          const inputTotal = finiteOrZero(chunk.usage.prompt_tokens); const outputTokens = chunk.usage.completion_tokens ?? 0;
+          const cached = Math.max(0, Math.min(inputTotal, finiteOrZero(chunk.usage.prompt_tokens_details?.cached_tokens)));
           usage = { inputTokens: inputTotal - cached, outputTokens, totalTokens: chunk.usage.total_tokens ?? inputTotal + outputTokens, ...(cached ? { cachedReadTokens: cached } : {}), ...(typeof chunk.usage.completion_tokens_details?.reasoning_tokens === "number" ? { thoughtTokens: chunk.usage.completion_tokens_details.reasoning_tokens } : {}) };
           callbacks?.onUsage?.(usage);
         }

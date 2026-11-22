@@ -3,3 +3,6 @@
 {"ts":"2026-11-22T15:30:03Z","actor":"implement","type":"implement.started","request":"creative-hub/REQ-0030","ticket":"AAP-46-strata-vision-and-cache","detail":"implement.started"}
 {"ts":"2026-11-22T15:30:03Z","actor":"implement","type":"verify.passed","request":"creative-hub/REQ-0030","ticket":"AAP-46-strata-vision-and-cache","detail":"verify.passed"}
 {"ts":"2026-11-22T15:30:03Z","actor":"implement","type":"changelog.written","request":"creative-hub/REQ-0030","ticket":"AAP-46-strata-vision-and-cache","detail":"changelog.written"}
+{"ts":"2026-11-22T16:48:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0030","ticket":"AAP-46-strata-vision-and-cache","detail":"deep check PASS; should-fix: non-numeric cached token counts","data":{"check":"deep","verdict":"PASS"}}
+{"ts":"2026-11-22T16:48:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0030","ticket":"AAP-46-strata-vision-and-cache","detail":"PASS after polish 1","data":{"check":"delta","verdict":"PASS"}}
+{"ts":"2026-11-22T16:48:00Z","actor":"director-scribe","type":"ticket.done","request":"creative-hub/REQ-0030","ticket":"AAP-46-strata-vision-and-cache","detail":"PASS after polish 1; branch not merged or pushed"}

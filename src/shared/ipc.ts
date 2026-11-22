@@ -251,6 +251,39 @@ export interface LlamaLocalFileView {
 }
 export type LlamaScanResult = { ok: true; modelsDir: string; missingDir?: boolean; truncated?: boolean; files: LlamaLocalFileView[] } | Failure;
 
+/** One engine request as Strata reports it: counts and timings only. */
+export interface EngineRequestView { time?: number /* epoch ms; absent when the engine's time is not a plausible one */; durationS: number; finish?: string; promptTokens: number; reused: number; outputTokens: number; prefillTokS?: number; decodeTokS?: number }
+export interface EngineSlotView { id: number; busy: boolean; tokens: number; ctx?: number }
+export interface EngineView {
+  kind: "strata" | "llama";
+  version?: string;
+  state: "idle" | "reading" | "generating" | "queued" | "unloaded" | "busy" | "error" | "unknown";
+  context?: number;               // tokens (Strata: engine.context; llama: n_ctx of slot 0 times the slot count)
+  images?: boolean;
+  slots: EngineSlotView[];
+  speed?: { decodeTokS?: number; prefillTokS?: number };
+  reuse?: { reused: number; prompt: number; requests: number };
+  strata?: { kv?: string; kvResident?: number; expertSlots?: number; expertCacheMiB?: number; drafting?: string };
+  hardware?: { gpuName?: string; gpuUtilPct?: number; gpuMemUsedBytes?: number; gpuMemTotalBytes?: number; gpuTempC?: number; gpuPowerW?: number; diskReadMBs?: number };
+  requests: EngineRequestView[];  // newest first, at most 12
+}
+/** The Monitor and About pages' read-only snapshot (AAP-47). Counts, timings and enums only: never prompt or answer text, never a key. */
+export interface MonitorView {
+  at: number;                     // epoch ms
+  local: {
+    server?: "gufo" | "strata" | "llama";   // the exclusive server starting or ready; absent = none loaded
+    state: "none" | "starting" | "ready" | "error";
+    profile?: string; label?: string; modelId?: string /* <server>/<model> */;
+    port?: number; startedAt?: number; readyAt?: number; error?: string;
+    queue?: { active: number; queued: number; limit: number };
+    profileFacts?: { context?: number; vision?: boolean; specType?: string };  // gufo/llama, from settings
+  };
+  engine?: EngineView;            // absent for gufo, when none is loaded, or when the engine did not answer
+  engineError?: string;           // "not reachable", "HTTP 401", "unexpected answer"
+  host: { cpuName: string; threads: number; cpuPct?: number; ramUsedBytes: number; ramTotalBytes: number };
+  connect: { baseUrl?: string; apiKeyNeeded: boolean; localModelIds: string[] };
+}
+
 export interface ProxyApi {
   getState(): Promise<StateView>;
   saveSettings(patch: SettingsPatchView): Promise<SaveResult>;
@@ -308,6 +341,8 @@ export interface ProxyApi {
   restoreLlamaPresets(profiles: LlamaProfileView[]): Promise<LlamaProfileView[]>;
   llamaStatus(): Promise<LlamaStatusView>;
   onLlamaProgress(callback: (progress: LlamaProgressView) => void): () => void;
+  /** Read-only snapshot for the Monitor and About pages; reads the loaded local server's status endpoints on 127.0.0.1 with a 1.5 s timeout. */
+  getMonitor(): Promise<MonitorView>;
 }
 
 declare global {

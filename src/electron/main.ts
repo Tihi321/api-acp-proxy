@@ -16,6 +16,7 @@ import type { LocalModelTarget } from "../local-models.js";
 import { createLocalModelHost } from "../local-host.js";
 import { LOCAL_SERVER_IDS, LocalServerManager } from "../local-servers.js";
 import type { LocalServerSpec } from "../local-servers.js";
+import { contextFromArgs, cpuSampler, fetchEngine, hostView, localState } from "../local-monitor.js";
 import { listMcpServers } from "../mcp-servers.js";
 import { LLAMA_SOURCES, defaultSettingsPath, restoreMissingLlamaPresets, restoreMissingPresets } from "../settings.js";
 import type { GufoProfile, LlamaProfile, LlamaSource, SecretCodec, SettingsPatch } from "../settings.js";
@@ -31,7 +32,7 @@ import { scanModelsDir } from "../llama-scan.js";
 import { antigravityRegistration, installAntigravity, readInstallInfo } from "./antigravity.js";
 import { SettingsWindow } from "./settings-window.js";
 import { TrayController } from "./tray.js";
-import type { ActionResult, ActivityView, FieldError, Failure, GufoProfileView, HfDownloadResult, HfListResult, InstallInfoView, InstallResult, LlamaCheckResult, LlamaInstallResult, LlamaProfileView, LlamaProgressView, LlamaReleasesResult, LlamaScanResult, LlamaStatusView, LocalServerId, OpenTarget, PickResult, SaveResult, StateView, UsageView } from "../shared/ipc.js";
+import type { ActionResult, ActivityView, EngineView, FieldError, Failure, GufoProfileView, HfDownloadResult, HfListResult, InstallInfoView, InstallResult, LlamaCheckResult, LlamaInstallResult, LlamaProfileView, LlamaProgressView, LlamaReleasesResult, LlamaScanResult, LlamaStatusView, LocalServerId, MonitorView, OpenTarget, PickResult, SaveResult, StateView, UsageView } from "../shared/ipc.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(here, "..", "..");
@@ -70,6 +71,7 @@ function llamaBinary(llama: { binary: { mode: "managed" | "custom"; customPath?:
 }
 
 const RELEASES_TTL_MS = 10 * 60 * 1000;
+const LOCAL_PROVIDER_IDS: readonly string[] = ["gufo", "strata", "llama"];
 const HF_REPO = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/;
 const isLocalServerId = (id: unknown): id is LocalServerId => typeof id === "string" && (LOCAL_SERVER_IDS as readonly string[]).includes(id);
 const isLlamaSource = (value: unknown): value is LlamaSource => typeof value === "string" && (LLAMA_SOURCES as readonly string[]).includes(value);
@@ -520,6 +522,44 @@ async function main(): Promise<void> {
       profiles,
       embedding: { missingFiles: checkEmbeddingFiles(llama.embedding, llama.modelsDir) },
       jobs: { binary: Boolean(llamaJobs.binary), model: Boolean(llamaJobs.model) },
+    };
+  });
+  // Monitor and About pages (AAP-47): read-only. The engine's key stays here; the window gets counts, timings and `apiKeyNeeded`.
+  const sampleCpu = cpuSampler();
+  handle("proxy:monitor", async (): Promise<MonitorView> => {
+    const effective = (await proxy.getSettings()).effective; // the local settings caches are refilled after every save
+    const status = proxy.status();
+    const local = localState(servers.list());
+    const server = local.server;
+    let engine: EngineView | undefined;
+    let engineError: string | undefined;
+    if (server) {
+      const gufoProfile = server === "gufo" ? gufoSettings?.profiles.find((profile) => profile.id === local.profile) : undefined;
+      const llamaProfile = server === "llama" ? llamaSettings?.profiles.find((profile) => profile.id === local.profile) : undefined;
+      const profile = gufoProfile ?? llamaProfile;
+      const strataModel = server === "strata" ? status.providers.find((provider) => provider.id === "strata")?.models[0]?.id : undefined;
+      const queue = proxy.queueStats()[server];
+      if (profile) { local.label = profile.label; local.modelId = `${server}/${profile.model}`; }
+      else if (strataModel) local.modelId = `strata/${strataModel}`;
+      if (gufoProfile) local.profileFacts = { ...(contextFromArgs(gufoProfile.args) !== undefined ? { context: contextFromArgs(gufoProfile.args)! } : {}), vision: gufoProfile.vision };
+      if (llamaProfile) local.profileFacts = { ...(llamaProfile.ctxSize !== undefined ? { context: llamaProfile.ctxSize } : {}), vision: llamaProfile.vision, specType: llamaProfile.specType };
+      if (queue) local.queue = { active: queue.active, queued: queue.queued, limit: queue.limit };
+      if (local.state === "ready" && local.port !== undefined) {
+        const key = server === "strata" ? strataSettings?.apiKey || undefined : undefined;
+        const read = await fetchEngine(server, local.port, key, fetch);
+        engine = read.engine;
+        engineError = read.error;
+      }
+    }
+    return {
+      at: Date.now(), local,
+      ...(engine ? { engine } : {}), ...(engineError ? { engineError } : {}),
+      host: hostView(sampleCpu()),
+      connect: {
+        ...(status.server.baseUrl ? { baseUrl: status.server.baseUrl } : {}),
+        apiKeyNeeded: Boolean(effective.server.apiKey),
+        localModelIds: status.providers.filter((provider) => LOCAL_PROVIDER_IDS.includes(provider.id)).flatMap((provider) => provider.models.map((model) => `${provider.id}/${model.id}`)),
+      },
     };
   });
   handle("proxy:activity", () => activityViews());

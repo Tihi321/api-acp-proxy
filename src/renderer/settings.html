@@ -25,6 +25,8 @@
         <button type="button" class="nav-item" data-view="overview"><span class="nav-label">Overview</span></button>
         <button type="button" class="nav-item" data-view="usage"><span class="nav-label">Usage</span></button>
         <button type="button" class="nav-item" data-view="requests"><span class="nav-label">Requests</span></button>
+        <button type="button" class="nav-item" data-view="monitor"><span class="nav-label">Monitor</span></button>
+        <button type="button" class="nav-item" data-view="about"><span class="nav-label">About</span></button>
         <button type="button" class="nav-item" data-view="server"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Server</span></button>
         <p class="nav-group">Providers</p>
         <button type="button" class="nav-item" data-view="codex"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Codex</span></button>
@@ -126,6 +128,73 @@
               </table>
             </div>
             <p class="empty-state" id="act-empty">No requests yet. They show up here as they come in. Only their kind, model, timing and token counts are kept, in memory (the last 100), never the text. Totals per provider are on the Usage page and are not affected by Clear.</p>
+          </section>
+        </div>
+      </section>
+
+      <!-- Monitor (AAP-47): read-only, filled by monitor-view.ts -->
+      <section class="view" id="view-monitor" data-view="monitor" aria-labelledby="monitor-title" hidden>
+        <div class="view-head">
+          <div><h1 id="monitor-title">Monitor</h1><p class="view-sub">The local model the proxy holds: its state, speed and load. Read-only; counts and timings, never text.</p></div>
+          <div class="view-actions"><span id="mon-updated" class="muted"></span></div>
+        </div>
+        <div class="view-body">
+          <section class="card">
+            <div class="card-head"><h2>Model</h2><span id="mon-state" class="badge">-</span></div>
+            <div class="stats" id="mon-model"></div>
+            <p class="note" id="mon-notice" role="status"></p>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Engine</h2></div>
+            <div class="stats" id="mon-engine"></div>
+            <div id="mon-slots" class="mon-slots"></div>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Hardware</h2></div>
+            <div class="stats" id="mon-hw"></div>
+            <div class="mon-slots" id="mon-vram"></div>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Engine requests</h2><span class="muted">from Strata</span></div>
+            <div class="table-wrap">
+              <table class="table" id="mon-eng-table">
+                <thead><tr><th>Time</th><th>Finish</th><th class="num">Prompt</th><th class="num">Reused</th><th class="num">Output</th><th class="num">Prefill t/s</th><th class="num">Decode t/s</th><th class="num">Took</th></tr></thead>
+                <tbody id="mon-eng-body"></tbody>
+              </table>
+            </div>
+            <p class="empty-state" id="mon-eng-empty">No engine requests to show.</p>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Proxy requests to local models</h2><button id="mon-open-requests" class="small link-button push" type="button">Open Requests</button></div>
+            <div class="table-wrap">
+              <table class="table" id="mon-req-table">
+                <thead><tr><th>Time</th><th>Model</th><th>Result</th><th class="num">Input</th><th class="num">Output</th><th class="num">Took</th><th class="num" title="Overall, includes reading the prompt">Overall t/s</th></tr></thead>
+                <tbody id="mon-req-body"></tbody>
+              </table>
+            </div>
+            <p class="empty-state" id="mon-req-empty">No requests to local models yet.</p>
+          </section>
+        </div>
+      </section>
+
+      <!-- About (AAP-47) -->
+      <section class="view" id="view-about" data-view="about" aria-labelledby="about-title" hidden>
+        <div class="view-head">
+          <div><h1 id="about-title">About</h1><p class="view-sub">What the loaded local model is, this PC, and what to give your tools.</p></div>
+        </div>
+        <div class="view-body">
+          <section class="card">
+            <div class="card-head"><h2>Model and engine</h2></div>
+            <div class="stats" id="about-model"></div>
+            <p class="note" id="about-notice" role="status"></p>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>This PC</h2></div>
+            <div class="stats" id="about-pc"></div>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Connect your tools</h2></div>
+            <div id="about-connect" class="mon-connect"></div>
           </section>
         </div>
       </section>

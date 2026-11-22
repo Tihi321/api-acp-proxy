@@ -1,0 +1,3 @@
+- 2026-11-22 implementer: usage-view sets style.height/style.width from script (allowed under style-src 'self' via CSSOM, but against the no-inline-style rule) (src/renderer/usage-view.ts:167) - suggested: switch to classes or progress elements in a later ticket
+- 2026-11-22 implementer: tests/ is outside both tsconfigs, so test files are not typechecked (tsconfig.json) - suggested: add a tests typecheck config
+- 2026-11-22 implement: the proxy:monitor handler runs proxy.getSettings() (controller load) every 2 s poll only to read server.apiKey (src/electron/main.ts) - suggested: cache apiKeyNeeded with the other local settings caches
