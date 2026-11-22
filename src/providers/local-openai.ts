@@ -124,7 +124,10 @@ export class LocalOpenAiProvider implements Provider {
 
   private profileOf(model: string): ProfileEntry | undefined { return this.profiles?.find((profile) => profile.model === model); }
 
-  acceptsImages(model: string): boolean { const profile = this.profileOf(model); return profile?.kind === "llm" && profile.vision; }
+  acceptsImages(model: string): boolean {
+    if (!this.profiles) return this.models.some((entry) => entry.id === model && entry.vision === true);
+    const profile = this.profileOf(model); return profile?.kind === "llm" && profile.vision;
+  }
 
   supportsImageGeneration(model: string): boolean { return this.profileOf(model)?.kind === "image"; }
 
@@ -146,7 +149,7 @@ export class LocalOpenAiProvider implements Provider {
     const profile = this.profileOf(model);
     if (messages) {
       if (profile?.kind === "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' generates images; it does not answer chat requests.`, "model");
-      if (messages.some((message) => message.parts.some((part) => part.type === "image")) && !(profile?.kind === "llm" && profile.vision)) throw new ApiError(400, "unsupported_content", `The model '${this.id}/${model}' does not accept image input.`, "messages");
+      if (messages.some((message) => message.parts.some((part) => part.type === "image")) && !this.acceptsImages(model)) throw new ApiError(400, "unsupported_content", `The model '${this.id}/${model}' does not accept image input.`, "messages");
     } else if (profile && profile.kind !== "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' does not generate images.`, "model");
     const leaseId = profile ? targetKey(this.id, profile.id) : this.leaseProfile;
     if (!leaseId || !this.coordinator) return undefined;
@@ -185,8 +188,8 @@ export class LocalOpenAiProvider implements Provider {
     finally { clearTimeout(timer); this.inflight.delete(controller); }
     if (!response.ok) { await response.body?.cancel().catch(() => undefined); if (this.profiles) return this.models; throw new AcpUnavailableError(`${this.displayName} answered HTTP ${response.status}`, undefined, "upstream_error"); }
     if (this.profiles) { await response.body?.cancel().catch(() => undefined); this.setState("ready"); return this.models; }
-    const body = await response.json().catch(() => undefined) as { data?: Array<{ id?: unknown }> } | undefined;
-    this.models = (body?.data ?? []).flatMap((entry) => typeof entry.id === "string" ? [{ id: entry.id }] : []);
+    const body = await response.json().catch(() => undefined) as { data?: Array<{ id?: unknown; architecture?: { input_modalities?: unknown } }> } | undefined;
+    this.models = (body?.data ?? []).flatMap((entry) => typeof entry.id === "string" ? [{ id: entry.id, ...(Array.isArray(entry.architecture?.input_modalities) && entry.architecture.input_modalities.includes("image") ? { vision: true } : {}) }] : []);
     this.setState("ready");
     return this.models;
   }
@@ -218,7 +221,7 @@ export class LocalOpenAiProvider implements Provider {
       this.setState("ready");
       const handle = (payload: string): void => {
         if (!payload || payload === "[DONE]") return;
-        let chunk: { choices?: Array<{ delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown }; finish_reason?: string | null }>; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; completion_tokens_details?: { reasoning_tokens?: number } } | null; error?: { message?: unknown } | string };
+        let chunk: { choices?: Array<{ delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown }; finish_reason?: string | null }>; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; completion_tokens_details?: { reasoning_tokens?: number } } | null; error?: { message?: unknown } | string };
         try { chunk = JSON.parse(payload); } catch { return; }
         if (chunk.error) { const detail = typeof chunk.error === "string" ? chunk.error : String(chunk.error.message ?? "unknown error"); throw new AcpUnavailableError(`${this.displayName} answered HTTP ${response.status}: ${detail}`, undefined, "upstream_error"); }
         const choice = chunk.choices?.[0];
@@ -228,8 +231,9 @@ export class LocalOpenAiProvider implements Provider {
         if (typeof delta === "string" && delta) { text += delta; callbacks?.onText?.(delta); }
         if (choice?.finish_reason) finish = choice.finish_reason;
         if (chunk.usage) {
-          const inputTokens = chunk.usage.prompt_tokens ?? 0; const outputTokens = chunk.usage.completion_tokens ?? 0;
-          usage = { inputTokens, outputTokens, totalTokens: chunk.usage.total_tokens ?? inputTokens + outputTokens, ...(typeof chunk.usage.completion_tokens_details?.reasoning_tokens === "number" ? { thoughtTokens: chunk.usage.completion_tokens_details.reasoning_tokens } : {}) };
+          const inputTotal = chunk.usage.prompt_tokens ?? 0; const outputTokens = chunk.usage.completion_tokens ?? 0;
+          const cached = Math.max(0, Math.min(inputTotal, chunk.usage.prompt_tokens_details?.cached_tokens ?? 0));
+          usage = { inputTokens: inputTotal - cached, outputTokens, totalTokens: chunk.usage.total_tokens ?? inputTotal + outputTokens, ...(cached ? { cachedReadTokens: cached } : {}), ...(typeof chunk.usage.completion_tokens_details?.reasoning_tokens === "number" ? { thoughtTokens: chunk.usage.completion_tokens_details.reasoning_tokens } : {}) };
           callbacks?.onUsage?.(usage);
         }
       };

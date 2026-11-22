@@ -75,11 +75,11 @@ describe("LocalOpenAiProvider", () => {
     const base = await thinkingProxy((response) => {
       sse(response, thinkChunk("Let me ")); sse(response, thinkChunk("think.")); sse(response, { choices: [{ delta: { content: "Hi" } }] });
       sse(response, { choices: [{ delta: {}, finish_reason: "stop" }] });
-      sse(response, { choices: [], usage: { prompt_tokens: 5, completion_tokens: 9, total_tokens: 14, completion_tokens_details: { reasoning_tokens: 7 } } });
+      sse(response, { choices: [], usage: { prompt_tokens: 100, prompt_tokens_details: { cached_tokens: 80 }, completion_tokens: 9, total_tokens: 109, completion_tokens_details: { reasoning_tokens: 7 } } });
       response.end("data: [DONE]\r\n\r\n");
     });
     const res = await fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...askBody, stream: true, stream_options: { include_usage: true } }) });
-    const chunks = (await res.text()).split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)) as { choices: Array<{ delta: { content?: string; reasoning_content?: string } }>; usage?: { completion_tokens: number; completion_tokens_details: { reasoning_tokens: number } } | null });
+    const chunks = (await res.text()).split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)) as { choices: Array<{ delta: { content?: string; reasoning_content?: string } }>; usage?: { prompt_tokens: number; prompt_tokens_details: { cached_tokens: number }; completion_tokens: number; completion_tokens_details: { reasoning_tokens: number } } | null });
     const deltas = chunks.map((chunk) => chunk.choices[0]?.delta ?? {});
     expect(deltas.map((delta) => delta.reasoning_content ?? "").join("")).toBe("Let me think.");
     expect(deltas.map((delta) => delta.content ?? "").join("")).toBe("Hi");
@@ -88,6 +88,8 @@ describe("LocalOpenAiProvider", () => {
     const usage = chunks.at(-1)?.usage;
     expect(usage?.completion_tokens).toBe(9);
     expect(usage?.completion_tokens_details.reasoning_tokens).toBe(7);
+    expect(usage?.prompt_tokens).toBe(100);
+    expect(usage?.prompt_tokens_details.cached_tokens).toBe(80);
   });
 
   it("estimates reasoning_tokens from the reasoning text when the local server reports none", async () => {
@@ -218,6 +220,24 @@ describe("LocalOpenAiProvider", () => {
     const offline = new ProviderRouter({ providers: [new LocalOpenAiProvider({ id: "gufo", displayName: "Gufo", baseUrl: `http://127.0.0.1:${port}/v1`, logger, profiles })] });
     const listed = await offline.listModels({ waitMs: 2000 });
     expect(listed.map((model) => [model.id, model.kind, model.vision])).toEqual([["gufo/Qwen3.8-27B", "llm", false], ["gufo/flash-next-q4", "llm", true], ["gufo/deepseek4", "llm", false], ["gufo/qwen-image-2.1", "image", false], ["gufo/qwen-image-2.1-turbo", "image", false]]);
+  });
+
+  it("takes vision for a provider without profiles from /v1/models input_modalities: image parts forwarded, else 400", async () => {
+    const bodies: string[] = []; let modalities: string[] = ["text", "image"];
+    const upstream = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/v1/models") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ data: [{ id: "qwen-flash", architecture: { input_modalities: modalities } }] })); return; }
+      let body = ""; request.on("data", (data) => { body += data; });
+      request.on("end", () => { bodies.push(body); response.setHeader("content-type", "text/event-stream"); response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`); });
+    });
+    const port = await listen(upstream);
+    const strata = new LocalOpenAiProvider({ id: "strata", displayName: "Strata", baseUrl: `http://127.0.0.1:${port}/v1`, logger });
+    const router = new ProviderRouter({ providers: [strata] });
+    await strata.listModels();
+    await router.prepareModel("strata/qwen-flash", withImage, abort);
+    await router.generate("strata/qwen-flash", withImage);
+    expect(JSON.parse(bodies[0]!).messages[0].content).toEqual([{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } }]);
+    modalities = ["text"]; await strata.listModels();
+    await expect(router.prepareModel("strata/qwen-flash", withImage, abort)).rejects.toMatchObject({ status: 400, code: "unsupported_content" });
   });
 
   it("registers llama with its profiles: listed while stopped, leased as llama:<id>, upstream gets the model, no image to a non-vision profile", async () => {

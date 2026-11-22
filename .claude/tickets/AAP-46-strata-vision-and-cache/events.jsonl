@@ -1,0 +1,5 @@
+{"ts":"2026-11-22T16:10:00Z","actor":"planner","type":"plan.created","request":"REQ-0030","ticket":"AAP-46-strata-vision-and-cache","detail":"planner wrote the plan (draft)"}
+{"ts":"2026-11-22T16:10:00Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0030","ticket":"AAP-46-strata-vision-and-cache","detail":"user: 'Approve as recommended'"}
+{"ts":"2026-11-22T15:30:03Z","actor":"implement","type":"implement.started","request":"creative-hub/REQ-0030","ticket":"AAP-46-strata-vision-and-cache","detail":"implement.started"}
+{"ts":"2026-11-22T15:30:03Z","actor":"implement","type":"verify.passed","request":"creative-hub/REQ-0030","ticket":"AAP-46-strata-vision-and-cache","detail":"verify.passed"}
+{"ts":"2026-11-22T15:30:03Z","actor":"implement","type":"changelog.written","request":"creative-hub/REQ-0030","ticket":"AAP-46-strata-vision-and-cache","detail":"changelog.written"}

@@ -118,7 +118,7 @@ Precedence: **environment variable > `settings.json` > defaults**. The settings 
 
 ## Local model servers (Gufo, Strata, Llama.cpp)
 
-Gufo, Strata and Llama.cpp are local model servers that run on this PC and speak the OpenAI API. The proxy forwards `gufo/*`, `strata/*` and `llama/*` requests to `http://127.0.0.1:<port>/v1`; the desktop app can also start and stop them (pages **Gufo**, **Strata** and **Llama.cpp** under "Local models" in the settings window, with Start/Stop, the state and the last 50 log lines; the app keeps the last 200).
+Gufo, Strata and Llama.cpp are local model servers that run on this PC and speak the OpenAI API. The proxy forwards `gufo/*`, `strata/*` and `llama/*` requests to `http://127.0.0.1:<port>/v1`; the desktop app can also start and stop them (pages **Gufo**, **Strata** and **Llama.cpp** under "Local models" in the settings window, with Start/Stop, the state and the last 50 log lines; the app keeps the last 200). Strata takes images when its `/v1/models` lists `image` in `architecture.input_modalities` (AAP-46); usage passes `prompt_tokens_details.cached_tokens` through from the local server.
 
 Settings (`providers.gufo`, `providers.strata`; no environment variables):
 
