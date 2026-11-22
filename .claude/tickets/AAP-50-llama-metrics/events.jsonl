@@ -1,0 +1,8 @@
+{"ts":"2026-11-22T18:20:00Z","actor":"planner","type":"plan.created","request":"creative-hub/REQ-0030","ticket":"AAP-50-llama-metrics","detail":"plan written: llama-server --metrics and the Llama context fix"}
+{"ts":"2026-11-22T18:20:00Z","actor":"director-scribe","type":"plan.approved","request":"creative-hub/REQ-0030","ticket":"AAP-50-llama-metrics","detail":"user: 'Add it'","data":{"by":"user"}}
+{"ts":"2026-11-22T17:55:54Z","actor":"implement","type":"implement.started","request":"creative-hub/REQ-0030","ticket":"AAP-50-llama-metrics","detail":"branch AAP-50_llama-metrics from AAP-49 head ccb52d5"}
+{"ts":"2026-11-22T17:58:06Z","actor":"implement","type":"verify.passed","request":"creative-hub/REQ-0030","ticket":"AAP-50-llama-metrics","detail":"yarn typecheck ok; yarn test 520 passed 1 skipped"}
+{"ts":"2026-11-22T17:58:06Z","actor":"implement","type":"changelog.written","request":"creative-hub/REQ-0030","ticket":"AAP-50-llama-metrics","detail":"changelog.md written; committed on AAP-50_llama-metrics"}
+{"ts":"2026-11-22T18:37:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0030","ticket":"AAP-50-llama-metrics","detail":"FAIL: speed can be Infinity; README contradicts itself","data":{"verdict":"FAIL"}}
+{"ts":"2026-11-22T18:37:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0030","ticket":"AAP-50-llama-metrics","detail":"PASS after polish 1","data":{"verdict":"PASS"}}
+{"ts":"2026-11-22T18:37:00Z","actor":"director-scribe","type":"ticket.done","request":"creative-hub/REQ-0030","ticket":"AAP-50-llama-metrics","detail":"plan status done after PASS (polish 1)"}

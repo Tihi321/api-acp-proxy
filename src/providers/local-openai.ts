@@ -234,7 +234,7 @@ export class LocalOpenAiProvider implements Provider {
           const finiteOrZero = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
           const inputTotal = finiteOrZero(chunk.usage.prompt_tokens); const outputTokens = finiteOrZero(chunk.usage.completion_tokens);
           const cached = Math.max(0, Math.min(inputTotal, finiteOrZero(chunk.usage.prompt_tokens_details?.cached_tokens)));
-          usage = { inputTokens: inputTotal - cached, outputTokens, totalTokens: typeof chunk.usage.total_tokens === "number" && Number.isFinite(chunk.usage.total_tokens) ? chunk.usage.total_tokens : inputTotal + outputTokens, ...(cached ? { cachedReadTokens: cached } : {}), ...(typeof chunk.usage.completion_tokens_details?.reasoning_tokens === "number" ? { thoughtTokens: chunk.usage.completion_tokens_details.reasoning_tokens } : {}) };
+          usage = { inputTokens: inputTotal - cached, outputTokens, totalTokens: typeof chunk.usage.total_tokens === "number" && Number.isFinite(chunk.usage.total_tokens) ? chunk.usage.total_tokens : inputTotal + outputTokens, ...(cached ? { cachedReadTokens: cached } : {}), ...(finiteOrZero(chunk.usage.completion_tokens_details?.reasoning_tokens) > 0 ? { thoughtTokens: finiteOrZero(chunk.usage.completion_tokens_details?.reasoning_tokens) } : {}) };
           callbacks?.onUsage?.(usage);
         }
       };

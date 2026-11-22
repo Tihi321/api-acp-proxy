@@ -2,3 +2,6 @@
 {"ts":"2026-11-22T17:50:00Z","actor":"director-scribe","type":"plan.approved","request":"creative-hub/REQ-0030","ticket":"AAP-49-monitor-second-cut","detail":"user: 'Yes' to 'approve the six plans with the recommended answers'"}
 {"ts":"2026-11-22T17:49:40Z","actor":"implement","type":"implement.started","request":"creative-hub/REQ-0030","ticket":"AAP-49-monitor-second-cut","detail":"branch AAP-49_monitor-second-cut from AAP-48_small-fixes a929ecf"}
 {"ts":"2026-11-22T17:55:00Z","actor":"implement","type":"verify.passed","request":"creative-hub/REQ-0030","ticket":"AAP-49-monitor-second-cut","detail":"yarn test 520 passed 1 skipped; typecheck ok; style greps empty","data":{"tests":520,"skipped":1}}
+{"ts":"2026-11-22T17:56:00Z","actor":"implement","type":"changelog.written","request":"creative-hub/REQ-0030","ticket":"AAP-49-monitor-second-cut","detail":"changelog.md written; committed ccb52d5; status stays in-progress"}
+{"ts":"2026-11-22T18:37:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0030","ticket":"AAP-49-monitor-second-cut","detail":"PASS in the stacked deep check","data":{"verdict":"PASS"}}
+{"ts":"2026-11-22T18:37:00Z","actor":"director-scribe","type":"ticket.done","request":"creative-hub/REQ-0030","ticket":"AAP-49-monitor-second-cut","detail":"plan status done after PASS"}

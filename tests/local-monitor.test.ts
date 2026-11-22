@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fetchEngine, localState, mapLlama, mapStrataMetrics, type MonitorFetch } from "../src/local-monitor.js";
+import { fetchEngine, localState, mapLlama, mapStrataMetrics, MAX_METRICS_BYTES, type MonitorFetch } from "../src/local-monitor.js";
 import type { LocalServerStatusView } from "../src/shared/ipc.js";
 
 // Samples recorded on 2026-11-22 (Strata 0.1.52 /metrics, llama-server b12613 /props and /slots), trimmed, plus planted text that must never come through.
@@ -30,9 +30,26 @@ const llamaSlots = [
   { id: 0, n_ctx: 4096, is_processing: true, n_prompt_tokens: 120, prompt: "SECRET-TEXT", params: { stop: ["SECRET-TEXT"] }, next_token: { text: "SECRET-TEXT" } },
   { id: 1, n_ctx: 4096, is_processing: false, n_prompt_tokens: 0 },
 ];
+// Synthetic numbers in the format of llama-server's /metrics (no server with --metrics ran when this was written); gauges are 0 so only the counters can give a speed.
+const llamaMetrics = [
+  "# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed, excluding cached tokens",
+  "# TYPE llamacpp:prompt_tokens_total counter",
+  "llamacpp:prompt_tokens_total 446",
+  "llamacpp:prompt_tokens_cached_total 0",
+  "llamacpp:prompt_seconds_total 0.5",
+  "llamacpp:tokens_predicted_total SECRET-TEXT",
+  "llamacpp:tokens_predicted_total 120",
+  "llamacpp:tokens_predicted_seconds_total 2.4",
+  "llamacpp:prompt_tokens_seconds 0",
+  "llamacpp:predicted_tokens_seconds 0",
+  "# HELP llamacpp:secret SECRET-TEXT",
+  'llamacpp:secret{prompt="SECRET-TEXT"} 1',
+  'llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="0"} 3',
+  "",
+].join("\n");
 
 const entry = (id: LocalServerStatusView["id"], state: LocalServerStatusView["state"]): LocalServerStatusView => ({ id, name: id, state, log: [] });
-const answer = (body: unknown, status = 200): ReturnType<MonitorFetch> => Promise.resolve({ ok: status < 300, status, json: async () => body });
+const answer = (body: unknown, status = 200): ReturnType<MonitorFetch> => Promise.resolve({ ok: status < 300, status, json: async () => body, text: async () => (typeof body === "string" ? body : JSON.stringify(body)) });
 
 describe("local model monitor", () => {
   it("maps Strata's metrics to counts and timings, newest requests first, never text", () => {
@@ -61,12 +78,21 @@ describe("local model monitor", () => {
   });
 
   it("maps llama-server's props and slots, busy when a slot processes, never text", () => {
-    const view = mapLlama(llamaProps, llamaSlots);
+    const view = mapLlama(llamaProps, llamaSlots, llamaMetrics);
     expect(view).toMatchObject({
-      kind: "llama", version: "b12613-362ac9297", state: "busy", images: false, context: 8192,
+      kind: "llama", version: "b12613-362ac9297", state: "busy", images: false, context: 4096, speed: { decodeTokS: 50, prefillTokS: 892 },
       slots: [{ id: 0, busy: true, tokens: 120, ctx: 4096 }, { id: 1, busy: false, tokens: 0, ctx: 4096 }],
     });
+    expect(view.speedMissing).toBeUndefined();
     expect(JSON.stringify(view)).not.toContain("SECRET");
+    expect(mapLlama(llamaProps, llamaSlots)).toMatchObject({ speedMissing: "no-metrics" });
+    expect(mapLlama(llamaProps, llamaSlots)).not.toHaveProperty("speed");
+    const idle = mapLlama(llamaProps, llamaSlots, "llamacpp:prompt_tokens_total 0\nllamacpp:prompt_seconds_total 0\nllamacpp:tokens_predicted_total 0\nllamacpp:tokens_predicted_seconds_total 0\n");
+    expect(idle).toMatchObject({ speedMissing: "no-request" });
+    expect(idle).not.toHaveProperty("speed");
+    const hostile = mapLlama(llamaProps, llamaSlots, "llamacpp:tokens_predicted_total 1e308\nllamacpp:tokens_predicted_seconds_total 1e-10\n");
+    expect(hostile.speed?.decodeTokS).toBeUndefined();
+    expect(JSON.stringify(hostile)).not.toMatch(/Infinity|null/);
   });
 
   it("keeps keys in the request header, reports an unreachable port and does not call Gufo", async () => {
@@ -81,6 +107,21 @@ describe("local model monitor", () => {
     const down = await fetchEngine("llama", 8082, undefined, () => Promise.reject(new Error("ECONNREFUSED")));
     expect(down).toEqual({ error: "not reachable" });
     expect(await fetchEngine("strata", 8080, "k", () => answer({}, 401))).toEqual({ error: "HTTP 401" });
+
+    const asked: string[] = [];
+    const llamaFetch = (metricsFlag: boolean, metricsBody: string): MonitorFetch => (url) => {
+      asked.push(url);
+      return url.endsWith("/props") ? answer({ ...llamaProps, endpoint_metrics: metricsFlag }) : url.endsWith("/slots") ? answer(llamaSlots) : answer(metricsBody);
+    };
+    const withSpeed = await fetchEngine("llama", 8082, undefined, llamaFetch(true, llamaMetrics));
+    expect(asked).toContain("http://127.0.0.1:8082/metrics");
+    expect(withSpeed.engine?.speed?.decodeTokS).toBe(50);
+    asked.length = 0;
+    const off = await fetchEngine("llama", 8082, undefined, llamaFetch(false, llamaMetrics));
+    expect(asked.some((url) => url.endsWith("/metrics"))).toBe(false);
+    expect(off.engine?.speedMissing).toBe("no-metrics");
+    const huge = await fetchEngine("llama", 8082, undefined, llamaFetch(true, "x".repeat(MAX_METRICS_BYTES + 1)));
+    expect(huge.engine?.speedMissing).toBe("no-metrics");
 
     let calls = 0;
     expect(await fetchEngine("gufo", 8081, "k", () => { calls += 1; return answer({}); })).toEqual({});

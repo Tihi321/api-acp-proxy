@@ -3,3 +3,7 @@
 {"ts":"2026-11-22T17:43:57Z","actor":"implement","type":"implement.started","request":"creative-hub/REQ-0030","ticket":"AAP-48-small-fixes","detail":"branch AAP-48_small-fixes from master 23cf725"}
 {"ts":"2026-11-22T17:48:53Z","actor":"implement","type":"verify.passed","request":"creative-hub/REQ-0030","ticket":"AAP-48-small-fixes","detail":"typecheck 3 configs; target test x20; yarn test x3 green"}
 {"ts":"2026-11-22T17:48:53Z","actor":"implement","type":"changelog.written","request":"creative-hub/REQ-0030","ticket":"AAP-48-small-fixes","detail":"changelog.md written; status stays in-progress"}
+{"ts":"2026-11-22T18:37:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0030","ticket":"AAP-48-small-fixes","detail":"FAIL: thoughtTokens not finite-guarded","data":{"verdict":"FAIL"}}
+{"ts":"2026-11-22T18:37:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0030","ticket":"AAP-48-small-fixes","detail":"PASS after polish 1","data":{"verdict":"PASS"}}
+{"ts":"2026-11-22T18:37:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0030","ticket":"AAP-48-small-fixes","detail":"PASS after polish 2 (test now fails on the old code)","data":{"verdict":"PASS"}}
+{"ts":"2026-11-22T18:37:00Z","actor":"director-scribe","type":"ticket.done","request":"creative-hub/REQ-0030","ticket":"AAP-48-small-fixes","detail":"plan status done after PASS (polish 2)"}
