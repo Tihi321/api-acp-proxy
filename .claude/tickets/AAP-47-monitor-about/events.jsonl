@@ -5,3 +5,6 @@
 {"ts":"2026-11-22T15:38:17Z","actor":"implement","type":"slice.done","request":"REQ-0030","ticket":"AAP-47-monitor-about","detail":"12 files; typecheck 0, 520 tests pass","data":{"tasks":["T1","T2"]}}
 {"ts":"2026-11-22T15:38:17Z","actor":"implement","type":"verify.passed","request":"REQ-0030","ticket":"AAP-47-monitor-about","detail":"yarn typecheck exit 0; yarn test 520 passed, 1 skipped"}
 {"ts":"2026-11-22T15:38:37Z","actor":"implement","type":"changelog.written","request":"REQ-0030","ticket":"AAP-47-monitor-about","detail":"changelog.md; code in 964d535; status stays in-progress"}
+{"ts":"2026-11-22T16:48:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0030","ticket":"AAP-47-monitor-about","detail":"deep check PASS, M1-M6; notes N1-N5","data":{"check":"deep","verdict":"PASS"}}
+{"ts":"2026-11-22T16:48:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0030","ticket":"AAP-47-monitor-about","detail":"PASS after polish 1","data":{"check":"delta","verdict":"PASS"}}
+{"ts":"2026-11-22T16:48:00Z","actor":"director-scribe","type":"ticket.done","request":"creative-hub/REQ-0030","ticket":"AAP-47-monitor-about","detail":"PASS after polish 1; branch not merged or pushed"}
