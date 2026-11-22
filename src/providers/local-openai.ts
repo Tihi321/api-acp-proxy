@@ -74,6 +74,8 @@ export class LocalOpenAiProvider implements Provider {
   private state: ProviderState = "stopped";
   private error: string | undefined;
   private models: ModelInfo[] = [];
+  /** True once a provider without profiles has read its upstream model list successfully. */
+  private listed = false;
   private readonly listeners = new Set<(status: ProviderStatus) => void>();
   private readonly inflight = new Set<AbortController>();
   private embedding?: EmbeddingSettings;
@@ -124,8 +126,9 @@ export class LocalOpenAiProvider implements Provider {
 
   private profileOf(model: string): ProfileEntry | undefined { return this.profiles?.find((profile) => profile.model === model); }
 
-  acceptsImages(model: string): boolean {
-    if (!this.profiles) return this.models.some((entry) => entry.id === model && entry.vision === true);
+  /** `undefined` = not known yet: a provider without profiles (Strata) before its first successful model list. */
+  acceptsImages(model: string): boolean | undefined {
+    if (!this.profiles) return !this.listed ? undefined : this.models.some((entry) => entry.id === model && entry.vision === true);
     const profile = this.profileOf(model); return profile?.kind === "llm" && profile.vision;
   }
 
@@ -143,17 +146,23 @@ export class LocalOpenAiProvider implements Provider {
     return profile?.requestTimeoutMs ?? (profile?.kind === "image" ? DEFAULT_IMAGE_TIMEOUT_MS : undefined);
   }
 
-  /** Checks the request against the model's profile, then waits for the coordinator to make that profile ready. All 400s come before any switch is started. */
+  /** Checks the request against the model's profile, then waits for the coordinator to make that profile ready. Gufo and Llama.cpp 400s come before any switch; Strata's image check comes after its lease and reads Strata's model list again, because before its first load the list is empty or has no vision flag (AAP-51). */
   async prepareModel(model: string, messages: Message[] | undefined, signal: AbortSignal): Promise<{ release(): void } | undefined> {
     if (this.isEmbeddingModel(model)) throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' is an embedding model; it ${messages ? "does not answer chat requests" : "does not generate images"}. Use POST /v1/embeddings.`, "model");
     const profile = this.profileOf(model);
+    const hasImage = (list: Message[]): boolean => list.some((message) => message.parts.some((part) => part.type === "image"));
+    const refuseImages = (): ApiError => new ApiError(400, "unsupported_content", `The model '${this.id}/${model}' does not accept image input.`, "messages");
     if (messages) {
       if (profile?.kind === "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' generates images; it does not answer chat requests.`, "model");
-      if (messages.some((message) => message.parts.some((part) => part.type === "image")) && !this.acceptsImages(model)) throw new ApiError(400, "unsupported_content", `The model '${this.id}/${model}' does not accept image input.`, "messages");
+      if (this.profiles && hasImage(messages) && !this.acceptsImages(model)) throw refuseImages();
     } else if (profile && profile.kind !== "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' does not generate images.`, "model");
     const leaseId = profile ? targetKey(this.id, profile.id) : this.leaseProfile;
-    if (!leaseId || !this.coordinator) return undefined;
-    return this.coordinator.acquire(leaseId, signal);
+    const lease = leaseId && this.coordinator ? await this.coordinator.acquire(leaseId, signal) : undefined;
+    if (messages && !this.profiles && hasImage(messages) && !this.acceptsImages(model)) {
+      await this.listModels().catch(() => undefined); // Strata is ready once the lease resolved
+      if (!this.acceptsImages(model)) { lease?.release(); throw refuseImages(); }
+    }
+    return lease;
   }
 
   status(): ProviderStatus {
@@ -190,6 +199,7 @@ export class LocalOpenAiProvider implements Provider {
     if (this.profiles) { await response.body?.cancel().catch(() => undefined); this.setState("ready"); return this.models; }
     const body = await response.json().catch(() => undefined) as { data?: Array<{ id?: unknown; architecture?: { input_modalities?: unknown } }> } | undefined;
     this.models = (body?.data ?? []).flatMap((entry) => typeof entry.id === "string" ? [{ id: entry.id, ...(Array.isArray(entry.architecture?.input_modalities) && entry.architecture.input_modalities.includes("image") ? { vision: true } : {}) }] : []);
+    this.listed = true;
     this.setState("ready");
     return this.models;
   }
@@ -265,8 +275,9 @@ export class LocalOpenAiProvider implements Provider {
       const stopReason: StopReason = finish === "length" ? "max_tokens" : "end_turn";
       // llama-server streams reasoning_content but reports no reasoning_tokens: estimate them from the text.
       const reported = usage as Usage | null; // assigned inside handle(), which the compiler cannot see
-      if (reported && reasoning && !reported.thoughtTokens) reported.thoughtTokens = Math.min(reported.outputTokens, estimateTokens(reasoning));
-      return { text, stopReason, usage, ...(reasoning ? { reasoning } : {}) };
+      const estimate = reported !== null && reasoning !== "" && !reported.thoughtTokens;
+      if (estimate) reported.thoughtTokens = Math.min(reported.outputTokens, estimateTokens(reasoning));
+      return { text, stopReason, usage, ...(reasoning ? { reasoning } : {}), ...(estimate ? { reasoningEstimated: true as const } : {}) };
     } finally {
       signal?.removeEventListener("abort", onAbort);
       this.inflight.delete(controller);

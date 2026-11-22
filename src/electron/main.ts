@@ -325,8 +325,10 @@ async function main(): Promise<void> {
       await proxy.applySettings(patch as SettingsPatch);
       await refreshLocalSettings();
       if (embedKeyBefore !== undefined && llamaSettings && embeddingServerKey(llamaSettings.embedding, llamaSettings.modelsDir) !== embedKeyBefore && ["ready", "starting"].includes(servers.list().find((entry) => entry.id === "embed")?.state ?? "")) {
-        await servers.stop("embed");
-        logger.info("embedding settings changed: embedding server stopped, it starts again on the next request");
+        await servers.stop("embed").then(
+          () => logger.info("embedding settings changed: embedding server stopped, it starts again on the next request"),
+          (error: unknown) => logger.warn(`embedding settings changed but the embedding server did not stop: ${error instanceof Error ? error.message : String(error)}`),
+        );
       }
       applyLoginItem((await proxy.getSettings()).effective.server.launchAtLogin);
       return { ok: true };
@@ -569,7 +571,12 @@ async function main(): Promise<void> {
         if (!read.engine) continue;
         engine = read.engine;
         const strataModel = id === "strata" ? status.providers.find((provider) => provider.id === "strata")?.models[0]?.id : undefined;
-        local = { server: id, state: "ready", port, external: true, ...(strataModel ? { modelId: `strata/${strataModel}` } : {}) };
+        const profile = id === "llama" && read.alias ? llamaSettings?.profiles.find((candidate) => candidate.model === read.alias) : undefined;
+        local = {
+          server: id, state: "ready", port, external: true,
+          ...(strataModel ? { modelId: `strata/${strataModel}` } : {}),
+          ...(id === "llama" && read.alias ? { modelId: `llama/${read.alias}`, ...(profile ? { label: profile.label, profile: profile.id } : {}) } : {}),
+        };
         break;
       }
     }
@@ -609,7 +616,8 @@ async function main(): Promise<void> {
     installing = true;
     try {
       const info = await installAntigravity({ dataDir, fetch: net.fetch as unknown as typeof fetch, logger, onProgress: (progress) => win.send("proxy:installProgress", progress) });
-      await proxy.applySettings({}); // restart so the provider picks up install.json
+      await proxy.applySettings({});
+      await refreshLocalSettings(); // restart so the provider picks up install.json
       return { ok: true, info: toInstallView(info) };
     } catch (error) {
       logger.error(`Antigravity install failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -618,7 +626,10 @@ async function main(): Promise<void> {
   });
   handle("proxy:acknowledgeTerms", (providerId: unknown): Promise<ActionResult> | ActionResult => {
     if (providerId !== "antigravity" && providerId !== "claude") return { ok: false, message: "Invalid provider" };
-    return action(() => proxy.applySettings({ providers: { [providerId]: { termsAcknowledgedAt: new Date().toISOString() } } }));
+    return action(async () => {
+      await proxy.applySettings({ providers: { [providerId]: { termsAcknowledgedAt: new Date().toISOString() } } });
+      await refreshLocalSettings();
+    });
   });
   handle("proxy:openLogs", async () => { await shell.openPath(logsDir); });
   handle("proxy:openPlayground", (): Promise<ActionResult> => action(() => openPlayground()));

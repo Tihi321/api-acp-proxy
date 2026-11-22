@@ -14,6 +14,10 @@ const METRIC_KEY = "acp-proxy.usageMetric";
 const RANGES: readonly UsageRangeKey[] = ["today", "last7", "last30", "allTime"];
 const KNOWN_SERIES = ["codex", "claude", "antigravity", "gufo", "strata", "llama"];
 const STALE_MS = 60_000;
+const SVG_NS = "http://www.w3.org/2000/svg";
+/** The chart's vertical grid: a day's bar is drawn in 1000 units, so 15 units is about 2 px of the 140 px chart (the old min-height). */
+const CHART_UNITS = 1000;
+const MIN_SEG_UNITS = 15;
 
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 const full = new Intl.NumberFormat();
@@ -159,17 +163,29 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
     usage.days.forEach((day, index) => {
       const column = make("div", "chart-day");
       const parts: string[] = [];
-      let topSegment: HTMLElement | undefined;
+      // One SVG per day on a 1 x CHART_UNITS grid stretched to the column: segment sizes are attributes, not inline styles.
+      const svg = document.createElementNS(SVG_NS, "svg");
+      svg.setAttribute("class", "chart-svg");
+      svg.setAttribute("viewBox", `0 0 1 ${CHART_UNITS}`);
+      svg.setAttribute("preserveAspectRatio", "none");
+      svg.setAttribute("aria-hidden", "true");
+      let cursor = CHART_UNITS;
       for (const id of ids) {
         const value = valueOf(day.byProvider[id]);
         if (value === 0) continue;
-        const segment = make("div", `chart-seg ${seriesClass(id)}`);
-        segment.style.height = `${(value / max) * 100}%`;
-        column.append(segment);
-        topSegment = segment;
+        const height = Math.max(MIN_SEG_UNITS, Math.round((value / max) * CHART_UNITS));
+        const y = Math.max(0, cursor - height);
+        const segment = document.createElementNS(SVG_NS, "rect");
+        segment.setAttribute("class", `chart-seg ${seriesClass(id)}`);
+        segment.setAttribute("x", "0");
+        segment.setAttribute("width", "1");
+        segment.setAttribute("y", String(y));
+        segment.setAttribute("height", String(cursor - y));
+        svg.append(segment);
+        cursor = y;
         parts.push(`${nameOf(id)} ${full.format(value)}`);
       }
-      topSegment?.classList.add("is-top");
+      column.append(svg);
       column.title = `${dayLong.format(parseDay(day.day))} · ${parts.length ? parts.join(" · ") : metric === "tokens" ? "no tokens" : "no requests"}`;
       bars.append(column);
       const tick = make("div", "chart-tick");
@@ -226,10 +242,10 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
           const item = make("div", "limit-window");
           const head = make("div", "limit-window-head");
           head.append(make("span", "", entry.label), make("span", "limit-percent", `${Math.round(entry.usedPercent * 10) / 10}% used`));
-          const meter = make("div", "meter");
-          const fill = make("div", `meter-fill${entry.usedPercent >= 90 ? " is-err" : entry.usedPercent >= 75 ? " is-warn" : ""}`);
-          fill.style.width = `${Math.max(0, Math.min(100, entry.usedPercent))}%`;
-          meter.append(fill);
+          const meter = make("progress", `meter${entry.usedPercent >= 90 ? " is-err" : entry.usedPercent >= 75 ? " is-warn" : ""}`);
+          meter.max = 100;
+          meter.value = Math.max(0, Math.min(100, entry.usedPercent));
+          meter.setAttribute("aria-label", `${entry.label} used`);
           item.append(head, meter);
           const reset = entry.resetText ?? (entry.resetsAt !== undefined ? dateTime.format(entry.resetsAt) : undefined);
           if (reset) item.append(make("div", "limit-meta", `Resets ${reset}`));

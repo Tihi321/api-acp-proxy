@@ -135,6 +135,8 @@ export interface ActivityView {
   estimated?: boolean;
   /** Of outputTokens, the part spent thinking (the agent's count, or estimated from the reasoning text). */
   reasoningTokens?: number;
+  /** True when reasoningTokens is the chars/4 estimate from the reasoning text (the server reported usage without reasoning_tokens). */
+  reasoningEstimated?: boolean;
 }
 /** One provider's (or the total's) counts over a range. `estimated`: requests whose token counts are the chars/4 estimate. */
 export interface UsageCountsView { requests: number; errors: number; inputTokens: number; outputTokens: number; estimated: number }
@@ -268,8 +270,8 @@ export interface EngineView {
   images?: boolean;
   slots: EngineSlotView[];
   speed?: { decodeTokS?: number; prefillTokS?: number };
-  /** llama only, when `speed` is absent: "no-metrics" = the server runs without --metrics (or /metrics gave no counters); "no-request" = it has served nothing yet. */
-  speedMissing?: "no-metrics" | "no-request";
+  /** llama only, when `speed` is absent: "no-request" = /metrics answered with counters but no speed yet (nothing served); with no counters read, "metrics-unread" when /props says `endpoint_metrics: true` (the read failed, was too large, or the answer had none of the counters) and "no-metrics" otherwise (the server runs without --metrics). */
+  speedMissing?: "no-metrics" | "no-request" | "metrics-unread";
   reuse?: { reused: number; prompt: number; requests: number };
   strata?: { kv?: string; kvResident?: number; expertSlots?: number; expertCacheMiB?: number; drafting?: string };
   hardware?: { gpuName?: string; gpuUtilPct?: number; gpuMemUsedBytes?: number; gpuMemTotalBytes?: number; gpuTempC?: number; gpuPowerW?: number; diskReadMBs?: number };

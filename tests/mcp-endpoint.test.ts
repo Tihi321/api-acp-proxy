@@ -8,7 +8,9 @@ import { AcpUnavailableError, type AcpLike, type ModelEntry } from "../src/acp.j
 import { ActivityLog } from "../src/activity.js";
 import { ApiError, imageGenerationText, type Message } from "../src/api.js";
 import type { ProxyConfig } from "../src/config.js";
+import { createLogger } from "../src/logger.js";
 import { isLoopbackAddress } from "../src/mcp-endpoint.js";
+import { LocalOpenAiProvider } from "../src/providers/local-openai.js";
 import type { GenerateOptions, GenerationResult, Provider } from "../src/provider.js";
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
@@ -486,6 +488,20 @@ describe("ask_model (images)", () => {
     expect(reply.result.isError).toBe(true);
     expect(textOf(reply.result)).toBe("unsupported_content: Claude does not accept image input.");
     expect(unknown.calls).toHaveLength(1);
+  });
+
+  it("forwards an image to Strata before its first load: the early check does not refuse an unknown answer", async () => {
+    const bodies: string[] = [];
+    const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+    const fetchImpl = (async (url: string, init?: { body?: string }) => {
+      if (String(url).endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "qwen-flash", architecture: { input_modalities: ["text", "image"] } }] }), { headers: { "content-type": "application/json" } });
+      bodies.push(String(init?.body)); return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+    const strata = new LocalOpenAiProvider({ id: "strata", displayName: "Strata", baseUrl: "http://127.0.0.1:1/v1", logger: createLogger({ console: false }), fetch: fetchImpl });
+    const env = await start(new ProviderRouter({ providers: [strata] }));
+    const reply = await ask(env, { model: "strata/qwen-flash", images: [dataImage()] });
+    expect(reply.result.isError).toBeUndefined();
+    expect(JSON.parse(bodies[0]!).messages[0].content[1]).toEqual({ type: "image_url", image_url: { url: `data:image/png;base64,${PNG_B64}` } });
   });
 });
 

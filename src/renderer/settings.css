@@ -230,6 +230,7 @@ dialog a { color: var(--accent); }
 .mon-bar.full::-webkit-progress-value { background: var(--err); }
 .spark { display: block; width: 100%; height: 18px; margin-top: 4px; }
 .spark polyline { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.spark polyline.dot { stroke-width: 3; stroke-linecap: round; }
 .mon-connect { display: grid; gap: var(--space-2); }
 .mon-connect .status-line { margin-bottom: 0; }
 .mon-connect .mono { word-break: break-all; }

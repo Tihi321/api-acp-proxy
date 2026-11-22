@@ -135,7 +135,7 @@ export function parseLlamaMetrics(body: string): { decodeTokS?: number; prefillT
   });
 }
 
-/** llama-server's `GET /props` and `GET /slots` (and the text of `GET /metrics`) as the view. `/slots` fields `prompt`, `params` and `next_token` are never read. */
+/** llama-server's `GET /props` and `GET /slots` (and the text of `GET /metrics`) as the view. `/slots` fields `prompt`, `params` and `next_token` are never read. `endpoint_metrics` is read to tell a failed /metrics read from a server without --metrics. */
 export function mapLlama(props: unknown, slotsJson: unknown, metricsText?: string): EngineView {
   const root = obj(props) ?? {};
   const modalities = obj(root["modalities"]);
@@ -153,12 +153,18 @@ export function mapLlama(props: unknown, slotsJson: unknown, metricsText?: strin
   return compact({
     kind: "llama" as const, version: build, state: rawSlots === undefined ? ("unknown" as const) : slots.some((slot) => slot.busy) ? ("busy" as const) : ("idle" as const),
     context: perSlot ?? num(obj(root["default_generation_settings"])?.["n_ctx"]), speed: hasSpeed ? parsed : undefined,
-    speedMissing: parsed === undefined ? ("no-metrics" as const) : hasSpeed ? undefined : ("no-request" as const), images: bool(modalities?.["vision"]), slots, requests: [] as EngineRequestView[],
+    speedMissing: parsed === undefined ? (root["endpoint_metrics"] === true ? ("metrics-unread" as const) : ("no-metrics" as const)) : hasSpeed ? undefined : ("no-request" as const), images: bool(modalities?.["vision"]), slots, requests: [] as EngineRequestView[],
   });
 }
 
-/** The minimal fetch the monitor needs (global `fetch` fits). */
-export type MonitorFetch = (url: string, init: { headers?: Record<string, string>; signal: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown>; text(): Promise<string> }>;
+/** llama-server's `--alias` from `/props` `model_alias`, only when it looks like a model id (letters, digits, dot, dash, underscore, 1-64 characters): a path or anything else gives undefined. */
+export function llamaAlias(props: unknown): string | undefined {
+  const alias = obj(props)?.["model_alias"];
+  return typeof alias === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(alias) ? alias : undefined;
+}
+
+/** The minimal fetch the monitor needs (global `fetch` fits). `body` is the streamed body, read in chunks when present. */
+export type MonitorFetch = (url: string, init: { headers?: Record<string, string>; signal: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown>; text(): Promise<string>; body?: { getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(): Promise<void> } } | null }>;
 type Read = { json: unknown } | { error: string };
 
 async function readJson(fetchImpl: MonitorFetch, url: string, headers: Record<string, string>, timeoutMs: number): Promise<Read> {
@@ -168,18 +174,33 @@ async function readJson(fetchImpl: MonitorFetch, url: string, headers: Record<st
   try { return { json: await response.json() }; } catch { return { error: "unexpected answer" }; }
 }
 
-/** Like readJson, for llama-server's Prometheus text: no headers, undefined on any failure (the 501 without --metrics included) or an oversized body. */
+/** Like readJson, for llama-server's Prometheus text: no headers, undefined on any failure (the 501 without --metrics included) or an oversized body. Capped while it streams: at most MAX_METRICS_BYTES are read. */
 async function readText(fetchImpl: MonitorFetch, url: string, timeoutMs: number): Promise<string | undefined> {
   try {
     const response = await fetchImpl(url, { headers: {}, signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) return undefined;
-    const body = await response.text();
-    return body.length > MAX_METRICS_BYTES ? undefined : body;
+    const reader = response.body?.getReader();
+    if (!reader) {
+      const body = await response.text();
+      return body.length > MAX_METRICS_BYTES ? undefined : body;
+    }
+    const decoder = new TextDecoder("utf-8");
+    let total = 0;
+    let out = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_METRICS_BYTES) { await reader.cancel().catch(() => undefined); return undefined; }
+      out += decoder.decode(value, { stream: true });
+    }
+    return out + decoder.decode();
   } catch { return undefined; }
 }
 
 /** Reads the status endpoints of the loaded server on 127.0.0.1 (GET only). The key, when there is one, goes in the request header and nowhere else. Gufo: no known endpoint, no request. */
-export async function fetchEngine(server: "gufo" | "strata" | "llama", port: number, apiKey: string | undefined, fetchImpl: MonitorFetch, timeoutMs = 1500): Promise<{ engine?: EngineView; error?: string }> {
+export async function fetchEngine(server: "gufo" | "strata" | "llama", port: number, apiKey: string | undefined, fetchImpl: MonitorFetch, timeoutMs = 1500): Promise<{ engine?: EngineView; error?: string; alias?: string }> {
   if (server === "gufo") return {};
   const base = `http://127.0.0.1:${port}`;
   if (server === "strata") {
@@ -192,10 +213,12 @@ export async function fetchEngine(server: "gufo" | "strata" | "llama", port: num
   const [props, slots] = await Promise.all([readJson(fetchImpl, `${base}/props`, {}, timeoutMs), readJson(fetchImpl, `${base}/slots`, {}, timeoutMs)]);
   if ("error" in props) return { error: props.error };
   const root = obj(props.json);
-  if (!root) return { error: "unexpected answer" };
+  // A llama-server /props always has total_slots and default_generation_settings: anything else on the port is not shown as a model.
+  if (!root || (num(root["total_slots"]) === undefined && obj(root["default_generation_settings"]) === undefined)) return { error: "unexpected answer" };
   // b12613's /props says whether --metrics is on; an older build without the field is simply asked.
   const metrics = root["endpoint_metrics"] === false ? undefined : await readText(fetchImpl, `${base}/metrics`, timeoutMs);
-  return { engine: mapLlama(props.json, "json" in slots ? slots.json : undefined, metrics) };
+  const alias = llamaAlias(props.json);
+  return { engine: mapLlama(props.json, "json" in slots ? slots.json : undefined, metrics), ...(alias ? { alias } : {}) };
 }
 
 /** Returns a function giving the CPU load in percent since its previous call (undefined on the first call). */

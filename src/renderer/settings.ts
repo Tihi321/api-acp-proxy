@@ -544,7 +544,7 @@ function renderActivity(): void {
     const bad = entry.status >= 400 || entry.error !== undefined;
     const cell = (text: string, className = ""): HTMLTableCellElement => make("td", className, text);
     const hasTokens = entry.inputTokens !== undefined || entry.outputTokens !== undefined;
-    const tokenCell = cell(hasTokens ? `${entry.estimated ? "≈ " : ""}${entry.inputTokens ?? 0} in / ${entry.outputTokens ?? 0} out${entry.reasoningTokens !== undefined ? ` (${entry.reasoningTokens} thinking)` : ""}` : "-", "num");
+    const tokenCell = cell(hasTokens ? `${entry.estimated ? "≈ " : ""}${entry.inputTokens ?? 0} in / ${entry.outputTokens ?? 0} out${entry.reasoningTokens !== undefined ? ` (${entry.reasoningEstimated && !entry.estimated ? "≈ " : ""}${entry.reasoningTokens} thinking)` : ""}` : "-", "num");
     if (hasTokens && entry.estimated) tokenCell.title = "Estimated: about 4 characters per token";
     row.append(
       cell(clock.format(entry.time), "mono"),
