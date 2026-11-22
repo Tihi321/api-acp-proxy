@@ -264,10 +264,12 @@ export interface EngineView {
   kind: "strata" | "llama";
   version?: string;
   state: "idle" | "reading" | "generating" | "queued" | "unloaded" | "busy" | "error" | "unknown";
-  context?: number;               // tokens (Strata: engine.context; llama: n_ctx of slot 0 times the slot count)
+  context?: number;               // tokens one request can use (Strata: engine.context; llama: n_ctx of slot 0, which with -np auto is the whole shared pool)
   images?: boolean;
   slots: EngineSlotView[];
   speed?: { decodeTokS?: number; prefillTokS?: number };
+  /** llama only, when `speed` is absent: "no-metrics" = the server runs without --metrics (or /metrics gave no counters); "no-request" = it has served nothing yet. */
+  speedMissing?: "no-metrics" | "no-request";
   reuse?: { reused: number; prompt: number; requests: number };
   strata?: { kv?: string; kvResident?: number; expertSlots?: number; expertCacheMiB?: number; drafting?: string };
   hardware?: { gpuName?: string; gpuUtilPct?: number; gpuMemUsedBytes?: number; gpuMemTotalBytes?: number; gpuTempC?: number; gpuPowerW?: number; diskReadMBs?: number };

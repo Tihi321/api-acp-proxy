@@ -194,9 +194,14 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     const history = engine?.kind === "strata" ? engine.history : undefined;
     const cache = engine?.kind === "strata" ? engine.conversationCache : undefined;
     const count = (value: number | undefined): string => (value !== undefined ? whole.format(value) : "-");
+    const llama = engine?.kind === "llama";
+    /** Why Llama has no speed. */
+    const llamaWhy = llama && !speed ? (engine?.speedMissing === "no-request" ? "no request yet" : local?.external ? "start llama-server with --metrics for speed" : "restart the model for speed") : undefined;
+    const speedValue = (value: number | undefined): string | undefined => (value === undefined ? undefined : llama ? `${rateText(value)} t/s` : fromStrata(`${rateText(value)} t/s`));
+    const speedSub = (value: number | undefined): string | undefined => (llama ? (value !== undefined ? "average since the model started" : llamaWhy) : !speed && noRequest ? "no request yet" : dashSub(true));
     el("mon-engine").replaceChildren(
-      tile("Decode", fromStrata(speed?.decodeTokS !== undefined ? `${rateText(speed.decodeTokS)} t/s` : undefined), !speed && noRequest ? "no request yet" : dashSub(true), spark(history?.decodeTokS, { min: 0 })),
-      tile("Prefill", fromStrata(speed?.prefillTokS !== undefined ? `${rateText(speed.prefillTokS)} t/s` : undefined), !speed && noRequest ? "no request yet" : dashSub(true)),
+      tile("Decode", speedValue(speed?.decodeTokS), speedSub(speed?.decodeTokS), spark(history?.decodeTokS, { min: 0 })),
+      tile("Prefill", speedValue(speed?.prefillTokS), speedSub(speed?.prefillTokS)),
       tile("Prompt reused", fromStrata(reuse && !reuseEmpty ? `${whole.format(reuse.reused)} of ${whole.format(reuse.prompt)}` : undefined), reuse && !reuseEmpty && engine?.kind === "strata" ? `${reuse.prompt > 0 ? Math.round((100 * reuse.reused) / reuse.prompt) : 0}% over ${reuse.requests} requests` : noRequest ? "no request yet" : dashSub(true)),
       tile("Conversation cache", cache ? (cache.enabled ? `${count(cache.parked)} of ${count(cache.slots)} parked` : "off") : undefined,
         cache ? (cache.enabled ? `${count(cache.restores)} restored · ${count(cache.evictions)} evicted · ${cache.bytes !== undefined ? whole.format(Math.round(cache.bytes / MIB)) : "-"} of ${count(cache.budgetMiB)} MiB` : undefined) : dashSub(true)),

@@ -110,8 +110,29 @@ export function mapStrataMetrics(json: unknown): EngineView {
   });
 }
 
-/** llama-server's `GET /props` and `GET /slots` as the view. `/slots` fields `prompt`, `params` and `next_token` are never read. */
-export function mapLlama(props: unknown, slotsJson: unknown): EngineView {
+/** llama-server's /metrics answer is about 3 KB; anything larger is not read. */
+export const MAX_METRICS_BYTES = 64 * 1024;
+/** The only Prometheus series read (AAP-50); every other line, comments and labelled series included, is ignored. */
+const LLAMA_COUNTERS = ["prompt_tokens_total", "prompt_seconds_total", "tokens_predicted_total", "tokens_predicted_seconds_total"] as const;
+
+/** llama-server's Prometheus text as average speeds since the server started. Undefined when none of the four counters is there. */
+export function parseLlamaMetrics(body: string): { decodeTokS?: number; prefillTokS?: number } | undefined {
+  const values: Partial<Record<(typeof LLAMA_COUNTERS)[number], number>> = {};
+  for (const name of LLAMA_COUNTERS) {
+    const match = new RegExp(`^llamacpp:${name} ([0-9.eE+-]+)\\r?$`, "m").exec(body);
+    const value = match ? Number(match[1]) : Number.NaN;
+    if (Number.isFinite(value) && value >= 0) values[name] = value;
+  }
+  if (Object.keys(values).length === 0) return undefined;
+  const ms = (s: number | undefined): number | undefined => (s === undefined ? undefined : s * 1000);
+  return compact({
+    decodeTokS: rate(values.tokens_predicted_total, ms(values.tokens_predicted_seconds_total)),
+    prefillTokS: rate(values.prompt_tokens_total, ms(values.prompt_seconds_total)),
+  });
+}
+
+/** llama-server's `GET /props` and `GET /slots` (and the text of `GET /metrics`) as the view. `/slots` fields `prompt`, `params` and `next_token` are never read. */
+export function mapLlama(props: unknown, slotsJson: unknown, metricsText?: string): EngineView {
   const root = obj(props) ?? {};
   const modalities = obj(root["modalities"]);
   const rawSlots = Array.isArray(slotsJson) ? slotsJson : undefined;
@@ -121,17 +142,19 @@ export function mapLlama(props: unknown, slotsJson: unknown): EngineView {
     if (!slot || id === undefined) return [];
     return [compact({ id, busy: slot["is_processing"] === true, tokens: num(slot["n_prompt_tokens"]) ?? 0, ctx: num(slot["n_ctx"]) })];
   });
-  const count = slots.length || num(root["total_slots"]) || 0;
   const perSlot = slots[0]?.ctx;
   const build = text(root["build_info"]);
+  const parsed = metricsText === undefined ? undefined : parseLlamaMetrics(metricsText);
+  const hasSpeed = parsed !== undefined && Object.keys(parsed).length > 0;
   return compact({
     kind: "llama" as const, version: build, state: rawSlots === undefined ? ("unknown" as const) : slots.some((slot) => slot.busy) ? ("busy" as const) : ("idle" as const),
-    context: perSlot !== undefined && count > 0 ? perSlot * count : undefined, images: bool(modalities?.["vision"]), slots, requests: [] as EngineRequestView[],
+    context: perSlot ?? num(obj(root["default_generation_settings"])?.["n_ctx"]), speed: hasSpeed ? parsed : undefined,
+    speedMissing: parsed === undefined ? ("no-metrics" as const) : hasSpeed ? undefined : ("no-request" as const), images: bool(modalities?.["vision"]), slots, requests: [] as EngineRequestView[],
   });
 }
 
 /** The minimal fetch the monitor needs (global `fetch` fits). */
-export type MonitorFetch = (url: string, init: { headers?: Record<string, string>; signal: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+export type MonitorFetch = (url: string, init: { headers?: Record<string, string>; signal: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown>; text(): Promise<string> }>;
 type Read = { json: unknown } | { error: string };
 
 async function readJson(fetchImpl: MonitorFetch, url: string, headers: Record<string, string>, timeoutMs: number): Promise<Read> {
@@ -139,6 +162,16 @@ async function readJson(fetchImpl: MonitorFetch, url: string, headers: Record<st
   try { response = await fetchImpl(url, { headers, signal: AbortSignal.timeout(timeoutMs) }); } catch { return { error: "not reachable" }; }
   if (!response.ok) return { error: `HTTP ${response.status}` };
   try { return { json: await response.json() }; } catch { return { error: "unexpected answer" }; }
+}
+
+/** Like readJson, for llama-server's Prometheus text: no headers, undefined on any failure (the 501 without --metrics included) or an oversized body. */
+async function readText(fetchImpl: MonitorFetch, url: string, timeoutMs: number): Promise<string | undefined> {
+  try {
+    const response = await fetchImpl(url, { headers: {}, signal: AbortSignal.timeout(timeoutMs) });
+    if (!response.ok) return undefined;
+    const body = await response.text();
+    return body.length > MAX_METRICS_BYTES ? undefined : body;
+  } catch { return undefined; }
 }
 
 /** Reads the status endpoints of the loaded server on 127.0.0.1 (GET only). The key, when there is one, goes in the request header and nowhere else. Gufo: no known endpoint, no request. */
@@ -154,8 +187,11 @@ export async function fetchEngine(server: "gufo" | "strata" | "llama", port: num
   }
   const [props, slots] = await Promise.all([readJson(fetchImpl, `${base}/props`, {}, timeoutMs), readJson(fetchImpl, `${base}/slots`, {}, timeoutMs)]);
   if ("error" in props) return { error: props.error };
-  if (!obj(props.json)) return { error: "unexpected answer" };
-  return { engine: mapLlama(props.json, "json" in slots ? slots.json : undefined) };
+  const root = obj(props.json);
+  if (!root) return { error: "unexpected answer" };
+  // b12613's /props says whether --metrics is on; an older build without the field is simply asked.
+  const metrics = root["endpoint_metrics"] === false ? undefined : await readText(fetchImpl, `${base}/metrics`, timeoutMs);
+  return { engine: mapLlama(props.json, "json" in slots ? slots.json : undefined, metrics) };
 }
 
 /** Returns a function giving the CPU load in percent since its previous call (undefined on the first call). */

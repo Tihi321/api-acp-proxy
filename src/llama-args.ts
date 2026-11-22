@@ -35,6 +35,8 @@ export function buildLlamaArgs(profile: LlamaProfile, modelsDir: string): string
     "--port {port}",
     `--alias ${safe(profile.model, "model")}`,
   ];
+  // AAP-50: the Monitor reads llama-server's Prometheus counters; skipped when extraArgs already passes the flag.
+  if (!/(^|\s)--metrics(\s|$)/.test(profile.extraArgs)) parts.push("--metrics");
   if (profile.ctxSize !== undefined) parts.push(`-c ${profile.ctxSize}`);
   parts.push(`-ngl ${profile.gpuLayers}`, `-fa ${profile.flashAttn}`);
   if (profile.vision && profile.mmprojFile) parts.push(`--mmproj ${quoted(resolveModelPath(modelsDir, profile.mmprojFile), "mmprojFile")}`);
