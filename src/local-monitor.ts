@@ -135,8 +135,15 @@ export function parseLlamaMetrics(body: string): { decodeTokS?: number; prefillT
   });
 }
 
-/** llama-server's `GET /props` and `GET /slots` (and the text of `GET /metrics`) as the view. `/slots` fields `prompt`, `params` and `next_token` are never read. `endpoint_metrics` is read to tell a failed /metrics read from a server without --metrics. */
-export function mapLlama(props: unknown, slotsJson: unknown, metricsText?: string): EngineView {
+/** Gufo's `gufo_device_lost_total` counter (confirmed GPU context losses) from its Prometheus text; undefined when absent or not a whole number >= 0. */
+export function parseGufoDeviceLost(body: string): number | undefined {
+  const match = /^gufo_device_lost_total ([0-9.eE+-]+)\r?$/m.exec(body);
+  const value = match ? Number(match[1]) : Number.NaN;
+  return Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+/** llama-server's `GET /props` and `GET /slots` (and the text of `GET /metrics`) as the view. `/slots` fields `prompt`, `params` and `next_token` are never read. `endpoint_metrics` is read to tell a failed /metrics read from a server without --metrics. Also Gufo's language-model server (`kind` "gufo"), which answers the same paths with the same fields (creative-hub HUB-44 K8); its `build_info` is not copied. */
+export function mapLlama(props: unknown, slotsJson: unknown, metricsText?: string, kind: "llama" | "gufo" = "llama"): EngineView {
   const root = obj(props) ?? {};
   const modalities = obj(root["modalities"]);
   const rawSlots = Array.isArray(slotsJson) ? slotsJson : undefined;
@@ -151,9 +158,10 @@ export function mapLlama(props: unknown, slotsJson: unknown, metricsText?: strin
   const parsed = metricsText === undefined ? undefined : parseLlamaMetrics(metricsText);
   const hasSpeed = parsed !== undefined && Object.keys(parsed).length > 0;
   return compact({
-    kind: "llama" as const, version: build, state: rawSlots === undefined ? ("unknown" as const) : slots.some((slot) => slot.busy) ? ("busy" as const) : ("idle" as const),
+    kind, version: kind === "llama" ? build : undefined, state: rawSlots === undefined ? ("unknown" as const) : slots.some((slot) => slot.busy) ? ("busy" as const) : ("idle" as const),
     context: perSlot ?? num(obj(root["default_generation_settings"])?.["n_ctx"]), speed: hasSpeed ? parsed : undefined,
-    speedMissing: parsed === undefined ? (root["endpoint_metrics"] === true ? ("metrics-unread" as const) : ("no-metrics" as const)) : hasSpeed ? undefined : ("no-request" as const), images: bool(modalities?.["vision"]), slots, requests: [] as EngineRequestView[],
+    speedMissing: parsed === undefined ? (kind === "gufo" || root["endpoint_metrics"] === true ? ("metrics-unread" as const) : ("no-metrics" as const)) : hasSpeed ? undefined : ("no-request" as const), images: bool(modalities?.["vision"]), slots, requests: [] as EngineRequestView[],
+    deviceLost: kind === "gufo" && metricsText !== undefined ? parseGufoDeviceLost(metricsText) : undefined,
   });
 }
 
@@ -174,10 +182,10 @@ async function readJson(fetchImpl: MonitorFetch, url: string, headers: Record<st
   try { return { json: await response.json() }; } catch { return { error: "unexpected answer" }; }
 }
 
-/** Like readJson, for llama-server's Prometheus text: no headers, undefined on any failure (the 501 without --metrics included) or an oversized body. Capped while it streams: at most MAX_METRICS_BYTES are read. Exported for its test. */
-export async function readText(fetchImpl: MonitorFetch, url: string, timeoutMs: number): Promise<string | undefined> {
+/** Like readJson, for llama-server's Prometheus text: the given headers only (Gufo's key), undefined on any failure (the 501 without --metrics included) or an oversized body. Capped while it streams: at most MAX_METRICS_BYTES are read. Exported for its test. */
+export async function readText(fetchImpl: MonitorFetch, url: string, timeoutMs: number, headers: Record<string, string> = {}): Promise<string | undefined> {
   try {
-    const response = await fetchImpl(url, { headers: {}, signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetchImpl(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) return undefined;
     const reader = response.body?.getReader();
     if (!reader) {
@@ -199,26 +207,26 @@ export async function readText(fetchImpl: MonitorFetch, url: string, timeoutMs: 
   } catch { return undefined; }
 }
 
-/** Reads the status endpoints of the loaded server on 127.0.0.1 (GET only). The key, when there is one, goes in the request header and nowhere else. Gufo: no known endpoint, no request. */
+/** Reads the status endpoints of the loaded server on 127.0.0.1 (GET only). The key, when there is one, goes in the request header and nowhere else. Gufo is read like llama-server (`/props`, `/slots`, `/metrics`) with its key in the header. */
 export async function fetchEngine(server: "gufo" | "strata" | "llama", port: number, apiKey: string | undefined, fetchImpl: MonitorFetch, timeoutMs = 1500): Promise<{ engine?: EngineView; error?: string; alias?: string }> {
-  if (server === "gufo") return {};
   const base = `http://127.0.0.1:${port}`;
+  const headers: Record<string, string> = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
   if (server === "strata") {
-    const read = await readJson(fetchImpl, `${base}/metrics`, apiKey ? { Authorization: `Bearer ${apiKey}` } : {}, timeoutMs);
+    const read = await readJson(fetchImpl, `${base}/metrics`, headers, timeoutMs);
     if ("error" in read) return { error: read.error };
     const root = obj(read.json);
     if (!root || (!obj(root["engine"]) && !obj(root["live"]))) return { error: "unexpected answer" };
     return { engine: mapStrataMetrics(read.json) };
   }
-  const [props, slots] = await Promise.all([readJson(fetchImpl, `${base}/props`, {}, timeoutMs), readJson(fetchImpl, `${base}/slots`, {}, timeoutMs)]);
+  const [props, slots] = await Promise.all([readJson(fetchImpl, `${base}/props`, headers, timeoutMs), readJson(fetchImpl, `${base}/slots`, headers, timeoutMs)]);
   if ("error" in props) return { error: props.error };
   const root = obj(props.json);
-  // A llama-server /props always has total_slots and default_generation_settings: anything else on the port is not shown as a model.
+  // A llama-server /props always has total_slots and default_generation_settings (Gufo's /props has both too): anything else on the port is not shown as a model.
   if (!root || (num(root["total_slots"]) === undefined && obj(root["default_generation_settings"]) === undefined)) return { error: "unexpected answer" };
   // b12613's /props says whether --metrics is on; an older build without the field is simply asked.
-  const metrics = root["endpoint_metrics"] === false ? undefined : await readText(fetchImpl, `${base}/metrics`, timeoutMs);
-  const alias = llamaAlias(props.json);
-  return { engine: mapLlama(props.json, "json" in slots ? slots.json : undefined, metrics), ...(alias ? { alias } : {}) };
+  const metrics = root["endpoint_metrics"] === false ? undefined : await readText(fetchImpl, `${base}/metrics`, timeoutMs, headers);
+  const alias = server === "llama" ? llamaAlias(props.json) : undefined;
+  return { engine: mapLlama(props.json, "json" in slots ? slots.json : undefined, metrics, server === "gufo" ? "gufo" : "llama"), ...(alias ? { alias } : {}) };
 }
 
 /** Returns a function giving the CPU load in percent since its previous call (undefined on the first call). */

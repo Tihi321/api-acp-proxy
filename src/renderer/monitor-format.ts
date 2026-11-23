@@ -37,17 +37,28 @@ export function sparkGeometry(values: readonly (number | null)[] | undefined, op
   return { lines, dots };
 }
 
-export interface SpeedSubInput { llama: boolean; value: number | undefined; haveSpeed: boolean; missingText: string; noRequest: boolean; speedMissing?: "no-metrics" | "no-request" | "metrics-unread"; external: boolean; fallback: string | undefined }
-/** The sub line of the Decode and Prefill tiles. */
+export interface SpeedSubInput { llama: boolean; gufo?: boolean; value: number | undefined; haveSpeed: boolean; missingText: string; noRequest: boolean; speedMissing?: "no-metrics" | "no-request" | "metrics-unread"; external: boolean; fallback: string | undefined }
+/** The sub line of the Decode and Prefill tiles. `llama` is true for Llama.cpp and Gufo (llama-style counters); Gufo never gets a llama-server or --metrics text. */
 export function speedSub(input: SpeedSubInput): string | undefined {
   if (input.llama) {
     if (input.value !== undefined) return "average since the model started";
     if (input.haveSpeed) return input.missingText;
     if (input.speedMissing === "no-request") return "no request yet";
-    if (input.speedMissing === "metrics-unread") return "speed not read this time";
+    if (input.speedMissing === "metrics-unread" || input.gufo) return "speed not read this time";
     return input.external ? "start llama-server with --metrics for speed" : "restart the model for speed";
   }
   if (input.value !== undefined) return undefined;
   if (input.haveSpeed) return input.missingText;
   return input.noRequest ? "no request yet" : input.fallback;
+}
+
+/** The Engine tile's sub line for Gufo's GPU context losses: shown only when the count is above 0. */
+export function deviceLostText(count: number | undefined): string | undefined {
+  return count !== undefined && count > 0 ? `GPU context lost ${count} ${count === 1 ? "time" : "times"} since Gufo started` : undefined;
+}
+
+/** The About Images tile's sub line when the server's own image flag and the profile's vision flag disagree; undefined when they agree or one is unknown. Read-only: routing follows the profile. */
+export function imagesNote(engineImages: boolean | undefined, profileVision: boolean | undefined): string | undefined {
+  if (engineImages === undefined || profileVision === undefined || engineImages === profileVision) return undefined;
+  return engineImages ? "the server reports image input; the profile says no vision" : "the server reports no image input; the profile says vision";
 }

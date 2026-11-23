@@ -47,6 +47,38 @@ const llamaMetrics = [
   'llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="0"} 3',
   "",
 ].join("\n");
+// Gufo 8081, recorded 2026-11-23 (creative-hub HUB-44 K8), trimmed; planted text must never come through.
+const gufoProps = {
+  model: "Qwen3.8-27B", model_alias: "Qwen3.8-27B", template: "", model_info: {}, model_path: "SECRET-PATH", build_info: "SECRET-BUILD",
+  total_slots: 1, default_generation_settings: { n_ctx: 32768, params: { temperature: 1, top_k: 20, max_tokens: -1 } },
+  modalities: { vision: true, video: false, audio: false },
+};
+const gufoSlots = [{
+  id: 0, n_ctx: 32768, speculative: true, is_processing: false, id_task: -1, task_id: -1, state: 0, n_prompt_tokens: 0, n_prompt_tokens_cache: 0,
+  n_prompt_tokens_processed: 0, prompt: "SECRET-TEXT", next_token: [{ has_next_token: false, has_new_line: false, n_remain: -1, n_decoded: 0 }], model: "Qwen3.8-27B",
+}];
+const gufoMetrics = [
+  "# HELP gufo_device_lost_total Confirmed GPU context losses",
+  "# TYPE gufo_device_lost_total counter",
+  "gufo_device_lost_total 0",
+  "llamacpp:prompt_tokens_total 18",
+  "llamacpp:prompt_tokens_cached_total 0",
+  "llamacpp:prompt_seconds_total 0.52592850000000002",
+  "llamacpp:tokens_predicted_total 1",
+  "llamacpp:tokens_predicted_seconds_total 0.41458859999999997",
+  "llamacpp:n_tokens_max 19",
+  "llamacpp:spec_decode_num_drafts_total 1",
+  "llamacpp:spec_decode_num_draft_tokens_total 6",
+  "llamacpp:spec_decode_num_accepted_tokens_total 0",
+  "gufo_spec_lookup_tokens_total 0",
+  "gufo_spec_lookup_accepted_tokens_total 0",
+  "llamacpp:prompt_tokens_seconds 34.225184602089449",
+  "llamacpp:predicted_tokens_seconds 2.4120296602463265",
+  "llamacpp:requests_processing 0",
+  "llamacpp:requests_deferred 0",
+  "llamacpp:kv_cache_usage_ratio 0",
+  "",
+].join("\n");
 
 const entry = (id: LocalServerStatusView["id"], state: LocalServerStatusView["state"]): LocalServerStatusView => ({ id, name: id, state, log: [] });
 const answer = (body: unknown, status = 200): ReturnType<MonitorFetch> => Promise.resolve({ ok: status < 300, status, json: async () => body, text: async () => (typeof body === "string" ? body : JSON.stringify(body)) });
@@ -96,7 +128,21 @@ describe("local model monitor", () => {
     expect(JSON.stringify(hostile)).not.toMatch(/Infinity|null/);
   });
 
-  it("keeps keys in the request header, reports an unreachable port and does not call Gufo", async () => {
+  it("maps Gufo's llama-style props, slots and metrics, never text, a path or its build string", () => {
+    const view = mapLlama(gufoProps, gufoSlots, gufoMetrics, "gufo");
+    expect(view).toEqual({
+      kind: "gufo", state: "idle", context: 32768, speed: { decodeTokS: 2.4, prefillTokS: 34.2 }, images: true,
+      slots: [{ id: 0, busy: false, tokens: 0, ctx: 32768 }], requests: [], deviceLost: 0,
+    });
+    expect(JSON.stringify(view)).not.toMatch(/SECRET|Qwen3\.8/);
+    const unread = mapLlama(gufoProps, gufoSlots, undefined, "gufo");
+    expect(unread).toMatchObject({ speedMissing: "metrics-unread" });
+    expect(unread).not.toHaveProperty("speed");
+    expect(mapLlama(gufoProps, gufoSlots, gufoMetrics.replace("gufo_device_lost_total 0", "gufo_device_lost_total 2"), "gufo").deviceLost).toBe(2);
+    expect(mapLlama(llamaProps, llamaSlots, `${llamaMetrics}gufo_device_lost_total 3\n`)).not.toHaveProperty("deviceLost");
+  });
+
+  it("keeps keys in the request header, reports an unreachable port and reads Gufo like llama-server", async () => {
     const seen: Array<{ url: string; headers?: Record<string, string> }> = [];
     // The fake server echoes the key it received in a field the mapper must not copy.
     const echo: MonitorFetch = (url, init) => { seen.push({ url, ...(init.headers ? { headers: init.headers } : {}) }); return answer(strataMetrics({ note: init.headers?.["Authorization"] })); };
@@ -147,9 +193,24 @@ describe("local model monitor", () => {
     // Something else on the port (no total_slots, no default_generation_settings in /props) is not shown as a model.
     expect(await fetchEngine("llama", 8082, undefined, () => answer({ status: "ok" }))).toEqual({ error: "unexpected answer" });
 
-    let calls = 0;
-    expect(await fetchEngine("gufo", 8081, "k", () => { calls += 1; return answer({}); })).toEqual({});
-    expect(calls).toBe(0);
+    const gufoSeen: Array<{ url: string; headers?: Record<string, string> }> = [];
+    const gufoFetch: MonitorFetch = (url, init) => {
+      gufoSeen.push({ url, ...(init.headers ? { headers: init.headers } : {}) });
+      return url.endsWith("/props") ? answer(gufoProps) : url.endsWith("/slots") ? answer(gufoSlots) : answer(gufoMetrics);
+    };
+    const gufo = await fetchEngine("gufo", 8081, "GUFO-KEY-1", gufoFetch);
+    expect(gufo.engine?.kind).toBe("gufo");
+    expect(gufo.engine?.speed?.prefillTokS).toBe(34.2);
+    expect(gufo).not.toHaveProperty("alias");
+    expect(gufoSeen.map((seen) => seen.url).sort()).toEqual(["http://127.0.0.1:8081/metrics", "http://127.0.0.1:8081/props", "http://127.0.0.1:8081/slots"]);
+    expect(gufoSeen.every((seen) => seen.headers?.["Authorization"] === "Bearer GUFO-KEY-1")).toBe(true);
+    expect(JSON.stringify(gufo)).not.toContain("GUFO-KEY-1");
+    // The key never reaches an error either.
+    const refused = await fetchEngine("gufo", 8081, "GUFO-KEY-1", () => answer({}, 401));
+    expect(refused).toEqual({ error: "HTTP 401" });
+    expect(JSON.stringify(refused)).not.toContain("GUFO-KEY-1");
+    // Gufo's /health answer is not a /props: the AAP-51 identity rule holds for Gufo too.
+    expect(await fetchEngine("gufo", 8081, undefined, () => answer({ status: "ok" }))).toEqual({ error: "unexpected answer" });
   });
 
   it("says no local model is loaded when only the embedding server runs", () => {

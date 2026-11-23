@@ -263,15 +263,17 @@ export interface EngineHistoryView { gpuUtilPct?: (number | null)[]; gpuMemUsedB
 /** Strata's conversation cache: finished conversations parked off their slot and restored on the next turn. Numbers only. */
 export interface EngineConversationCacheView { enabled: boolean; slots?: number; parked?: number; bytes?: number; budgetMiB?: number; restores?: number; evictions?: number; requests?: number; requestsReused?: number; reusedTokens?: number }
 export interface EngineView {
-  kind: "strata" | "llama";
+  kind: "strata" | "llama" | "gufo";
   version?: string;
   state: "idle" | "reading" | "generating" | "queued" | "unloaded" | "busy" | "error" | "unknown";
   context?: number;               // tokens one request can use (Strata: engine.context; llama: n_ctx of slot 0, which with -np auto is the whole shared pool)
   images?: boolean;
   slots: EngineSlotView[];
   speed?: { decodeTokS?: number; prefillTokS?: number };
-  /** llama only, when `speed` is absent: "no-request" = /metrics answered with counters but no speed yet (nothing served); with no counters read, "metrics-unread" when /props says `endpoint_metrics: true` (the read failed, was too large, or the answer had none of the counters) and "no-metrics" otherwise (the server runs without --metrics). */
+  /** llama and gufo only, when `speed` is absent: "no-request" = /metrics answered with counters but no speed yet (nothing served); with no counters read, "metrics-unread" when /props says `endpoint_metrics: true` (the read failed, was too large, or the answer had none of the counters) and "no-metrics" otherwise (the server runs without --metrics). Gufo has no `endpoint_metrics` and serves /metrics without a flag: a Gufo read with no counters is always "metrics-unread". */
   speedMissing?: "no-metrics" | "no-request" | "metrics-unread";
+  /** gufo only: `gufo_device_lost_total` from /metrics, confirmed GPU context losses since the server started. */
+  deviceLost?: number;
   reuse?: { reused: number; prompt: number; requests: number };
   strata?: { kv?: string; kvResident?: number; expertSlots?: number; expertCacheMiB?: number; drafting?: string };
   hardware?: { gpuName?: string; gpuUtilPct?: number; gpuMemUsedBytes?: number; gpuMemTotalBytes?: number; gpuTempC?: number; gpuPowerW?: number; diskReadMBs?: number };
@@ -291,7 +293,7 @@ export interface MonitorView {
     profileFacts?: { context?: number; vision?: boolean; specType?: string };  // gufo/llama, from settings
     external?: true;              // answers on the configured port, not started by this app
   };
-  engine?: EngineView;            // absent for gufo, when none is loaded, or when the engine did not answer
+  engine?: EngineView;            // absent for a Gufo image model, when none is loaded, or when the engine did not answer
   engineError?: string;           // "not reachable", "HTTP 401", "unexpected answer"
   host: { cpuName: string; threads: number; cpuPct?: number; ramUsedBytes: number; ramTotalBytes: number };
   connect: { baseUrl?: string; apiKeyNeeded: boolean; localModelIds: string[] };

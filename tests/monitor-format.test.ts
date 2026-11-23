@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gib, sparkGeometry, speedSub, type SpeedSubInput } from "../src/renderer/monitor-format.js";
+import { deviceLostText, gib, imagesNote, sparkGeometry, speedSub, type SpeedSubInput } from "../src/renderer/monitor-format.js";
 
 describe("Monitor formatting", () => {
   it("shows sizes in GiB (1024^3)", () => {
@@ -26,7 +26,19 @@ describe("Monitor formatting", () => {
       ["Llama outside, no --metrics", { llama: true, speedMissing: "no-metrics", external: true }, "start llama-server with --metrics for speed"],
       ["Strata before any request", { noRequest: true }, "no request yet"],
       ["no engine", { fallback: "Engine not reachable" }, "Engine not reachable"],
+      ["Gufo without a speed read", { llama: true, gufo: true }, "speed not read this time"],
     ];
     for (const [name, patch, expected] of rows) expect(speedSub({ ...base, ...patch }), name).toBe(expected);
+  });
+
+  it("notes a GPU context loss and an image flag that disagrees with the profile", () => {
+    expect(deviceLostText(undefined)).toBeUndefined();
+    expect(deviceLostText(0)).toBeUndefined();
+    expect(deviceLostText(1)).toBe("GPU context lost 1 time since Gufo started");
+    expect(deviceLostText(2)).toBe("GPU context lost 2 times since Gufo started");
+    expect(imagesNote(true, false)).toBe("the server reports image input; the profile says no vision");
+    expect(imagesNote(false, true)).toBe("the server reports no image input; the profile says vision");
+    expect(imagesNote(true, true)).toBeUndefined();
+    expect(imagesNote(true, undefined)).toBeUndefined();
   });
 });

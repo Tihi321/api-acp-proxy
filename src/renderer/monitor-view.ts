@@ -1,5 +1,5 @@
 import type { ActivityView, EngineView, MonitorView, ProxyApi } from "../shared/ipc.js";
-import { gib, SPARK_H, SPARK_W, sparkGeometry, speedSub } from "./monitor-format.js";
+import { deviceLostText, gib, imagesNote, SPARK_H, SPARK_W, sparkGeometry, speedSub } from "./monitor-format.js";
 
 /** Page logic of the Monitor and About pages (AAP-47). Read-only: it polls `getMonitor` while one of them is shown and the window is visible. */
 export interface MonitorViewDeps {
@@ -146,8 +146,8 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     if (view.engine) return undefined;
     if (view.local.state === "none") return "No local model loaded";
     if (view.engineError) return view.engineError === "not reachable" ? "Engine not reachable" : `Engine: ${view.engineError}`;
-    if (view.local.server === "gufo") return "No status source for Gufo";
     if (view.local.state === "starting") return "Starting";
+    if (view.local.server === "gufo") return "No status source for Gufo image models";
     return "No engine data";
   }
 
@@ -167,7 +167,7 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     el("mon-model").replaceChildren(
       tile("Model", local?.label ?? local?.modelId, modelSub(local)),
       tile("State", local && local.state !== "none" ? local.state : undefined, local?.error ?? (local?.external ? OUTSIDE : undefined)),
-      tile("Engine", engine ? (engine.state === "unknown" ? undefined : engine.state) : undefined, engine ? undefined : why),
+      tile("Engine", engine ? (engine.state === "unknown" ? undefined : engine.state) : undefined, engine ? deviceLostText(engine.deviceLost) : why),
       tile("Since", local?.readyAt !== undefined ? clock.format(local.readyAt) : undefined, local?.startedAt !== undefined && local.readyAt === undefined ? `started ${clock.format(local.startedAt)}` : undefined),
       tile("Port", local?.port !== undefined ? String(local.port) : undefined),
       tile("Proxy queue", queue ? `${queue.active} / ${queue.limit > 0 ? queue.limit : "unlimited"}` : undefined, queue ? `${queue.queued} queued` : undefined),
@@ -183,10 +183,10 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
     const history = engine?.kind === "strata" ? engine.history : undefined;
     const cache = engine?.kind === "strata" ? engine.conversationCache : undefined;
     const count = (value: number | undefined): string => (value !== undefined ? whole.format(value) : "-");
-    const llama = engine?.kind === "llama";
+    const llama = engine?.kind === "llama" || engine?.kind === "gufo";
     const speedValue = (value: number | undefined): string | undefined => (value === undefined ? undefined : llama ? `${rateText(value)} t/s` : fromStrata(`${rateText(value)} t/s`));
     /** `missingText` is the reason for a dash when the engine has the other speed (for example every prompt was cached, so there is no prefill number). */
-    const speedText = (value: number | undefined, missingText: string): string | undefined => speedSub({ llama, value, haveSpeed: speed !== undefined, missingText, noRequest, speedMissing: engine?.speedMissing, external: local?.external === true, fallback: dashSub(true) });
+    const speedText = (value: number | undefined, missingText: string): string | undefined => speedSub({ llama, gufo: engine?.kind === "gufo", value, haveSpeed: speed !== undefined, missingText, noRequest, speedMissing: engine?.speedMissing, external: local?.external === true, fallback: dashSub(true) });
     el("mon-engine").replaceChildren(
       tile("Decode", speedValue(speed?.decodeTokS), speedText(speed?.decodeTokS, "no reply yet"), spark(history?.decodeTokS, { min: 0 })),
       tile("Prefill", speedValue(speed?.prefillTokS), speedText(speed?.prefillTokS, "no prompt read yet")),
@@ -284,7 +284,7 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
       tile("Model", local?.label ?? local?.modelId, modelSub(local)),
       tile("Engine", engineName, local?.profile && local.server === "gufo" ? `profile ${local.profile}` : undefined),
       tile("Context", context !== undefined ? `${whole.format(context)} tokens` : undefined, context !== undefined ? profileNote(engine?.context) : why ?? "no source"),
-      tile("Images", images === undefined ? undefined : images ? "yes" : "no", images !== undefined ? profileNote(engine?.images) : why ?? "no source"),
+      tile("Images", images === undefined ? undefined : images ? "yes" : "no", images !== undefined ? imagesNote(engine?.images, facts?.vision) ?? profileNote(engine?.images) : why ?? "no source"),
       tile("KV cache", strata?.kv, strata?.kv !== undefined ? (strata.kvResident !== undefined ? `${whole.format(strata.kvResident)} positions resident` : undefined) : "from Strata"),
       tile("Experts in VRAM", strata?.expertSlots !== undefined ? `${whole.format(strata.expertSlots)} slots` : undefined, strata?.expertCacheMiB !== undefined ? `${whole.format(strata.expertCacheMiB)} MiB` : "from Strata"),
       tile("Speculation", speculation, speculation !== undefined ? (strata?.drafting === undefined ? fromProfile : undefined) : why ?? "no source"),
