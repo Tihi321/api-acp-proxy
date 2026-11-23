@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { zipSync } from "fflate";
 import { afterAll, describe, expect, it } from "vitest";
 import { DownloadError } from "../src/download.js";
-import { installLlama } from "../src/llama-install.js";
+import { findInstalledBuild, installLlama } from "../src/llama-install.js";
 import { buildNumber, fetchReleases, parseReleases } from "../src/llama-releases.js";
 import { tempRoot } from "./helpers/temp-root.js";
 
@@ -81,5 +81,20 @@ describe("llama.cpp releases and install", () => {
     digest = "0".repeat(64);
     await expect(installLlama(base)).rejects.toSatisfy((error) => error instanceof DownloadError && error.code === "download_checksum_mismatch");
     expect(fs.readdirSync(binDir)).toEqual([]);
+  });
+
+  it("uses a complete build folder already on disk without any network call, and ignores an incomplete one", async () => {
+    const binDir = path.join(root, "bin-existing");
+    const dir = path.join(binDir, "unsloth-b12649-mix-c7059d6-rocm-gfx1151");
+    fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "bin", "llama-server.exe"), "exe");
+    let calls = 0;
+    const noNetwork = (async () => { calls++; throw new Error("network"); }) as unknown as typeof fetch;
+    const base = { source: "unsloth" as const, tag: "b12649-mix-c7059d6", backend: "rocm-gfx1151", arch: "x64" as const, binDir, fetch: noNetwork };
+    const info = await installLlama(base);
+    expect(calls).toBe(0);
+    expect(info).toMatchObject({ source: "unsloth", tag: "b12649-mix-c7059d6", build: 12649, backend: "rocm-gfx1151", arch: "x64", command: path.join(dir, "bin", "llama-server.exe"), dir: path.join(dir, "bin") });
+    fs.rmSync(path.join(dir, "bin", "llama-server.exe"));
+    expect(await findInstalledBuild(base)).toBeUndefined();
   });
 });

@@ -83,6 +83,9 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   let ownBinary = false;
   let ownModel = false;
   let loadToken = 0;
+  /** Whether the selected source, version, backend and arch is already in the binaries folder (asked through `llamaBuildOnDisk`). */
+  let selectionOnDisk = false;
+  let diskToken = 0;
   const startingProfiles = new Set<string>();
 
   const dirty = (): void => deps.markDirty(true);
@@ -107,6 +110,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     backendSelect.replaceChildren(...names.map((name) => new Option(name, name)));
     backendSelect.value = names.includes(wanted) ? wanted : names.includes(defaultBackend(sourceSelect.value as LlamaSourceView)) ? defaultBackend(sourceSelect.value as LlamaSourceView) : names[0]!;
     updateBuildButtons();
+    void refreshOnDisk();
   }
 
   function fillVersions(): void {
@@ -152,9 +156,33 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     el("llama-custom").hidden = !custom;
   }
 
+  async function refreshOnDisk(): Promise<void> {
+    const release = selectedRelease();
+    const token = ++diskToken;
+    let onDisk = false;
+    if (release && backendSelect.value) {
+      try { onDisk = await api.llamaBuildOnDisk({ source: sourceSelect.value as LlamaSourceView, tag: release.tag, backend: backendSelect.value, arch: binary.arch }); } catch { /* informational */ }
+    }
+    if (token !== diskToken) return;
+    selectionOnDisk = onDisk;
+    updateBuildButtons();
+  }
+
+  /** The selection changed: an earlier "Installed bNNNN." must not stay beside it. */
+  function selectionChanged(): void {
+    if (!binaryBusy) el("llama-install-text").textContent = "";
+  }
+
   function updateBuildButtons(): void {
-    el<HTMLButtonElement>("llama-install").disabled = binaryBusy || !selectedRelease();
-    el<HTMLButtonElement>("llama-install").textContent = binary.installed ? "Download / update" : "Download";
+    const release = selectedRelease();
+    const info = binary.installed;
+    const active = Boolean(release && info && info.source === sourceSelect.value && info.tag === release.tag && info.backend === backendSelect.value && info.arch === binary.arch);
+    const useExisting = Boolean(release) && selectionOnDisk && !active;
+    el<HTMLButtonElement>("llama-install").disabled = binaryBusy || !release;
+    el<HTMLButtonElement>("llama-install").textContent = useExisting ? "Use this build" : info ? "Download / update" : "Download";
+    const note = el("llama-not-active");
+    note.hidden = !release || active || !info;
+    if (!note.hidden && info) note.textContent = `Not active: the app uses ${info.source} ${info.tag} until you click ${useExisting ? "Use this build" : "Download / update"}.`;
     el("llama-install-cancel").hidden = !binaryBusy;
     el<HTMLButtonElement>("llama-releases-refresh").disabled = binaryBusy || releasesLoading;
     el<HTMLButtonElement>("llama-exe-check").disabled = binaryBusy;
@@ -709,12 +737,13 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     binary = { ...binary, source: sourceSelect.value as LlamaSourceView, backend: defaultBackend(sourceSelect.value as LlamaSourceView) };
     backendSelect.replaceChildren(new Option(binary.backend, binary.backend)); backendSelect.value = binary.backend;
     selectedTag = undefined;
+    selectionChanged();
     dirty(); void loadReleases();
   });
-  versionSelect.addEventListener("change", () => { selectedTag = versionSelect.value; fillBackends(); });
-  backendSelect.addEventListener("change", () => { binary = { ...binary, backend: backendSelect.value }; dirty(); updateBuildButtons(); });
+  versionSelect.addEventListener("change", () => { selectionChanged(); selectedTag = versionSelect.value; fillBackends(); });
+  backendSelect.addEventListener("change", () => { selectionChanged(); binary = { ...binary, backend: backendSelect.value }; dirty(); updateBuildButtons(); void refreshOnDisk(); });
   // The version and backend lists only offer assets of this architecture (assetsFor).
-  archSelect.addEventListener("change", () => { binary = { ...binary, arch: archSelect.value === "arm64" ? "arm64" : "x64" }; dirty(); fillVersions(); });
+  archSelect.addEventListener("change", () => { selectionChanged(); binary = { ...binary, arch: archSelect.value === "arm64" ? "arm64" : "x64" }; dirty(); fillVersions(); });
   dirInput.addEventListener("input", dirty);
   exeInput.addEventListener("input", () => { binary = { ...binary, customBuild: undefined }; dirty(); renderInstalled(); });
   el("llama-dir-browse").onclick = async () => { const result = await api.pickDirectory("Folder for the llama.cpp builds", dirInput.value || undefined); if (result.path) { dirInput.value = result.path; dirty(); } };

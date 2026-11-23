@@ -23,7 +23,7 @@ import type { GufoProfile, LlamaProfile, LlamaSource, SecretCodec, SettingsPatch
 import { DownloadError } from "../download.js";
 import { GITHUB_POLICY, fetchReleases } from "../llama-releases.js";
 import type { LlamaReleaseView } from "../llama-releases.js";
-import { installLlama, probeLlamaVersion } from "../llama-install.js";
+import { findInstalledBuild, installLlama, probeLlamaVersion } from "../llama-install.js";
 import { HF_POLICY, downloadHfFiles, listHfFiles, parseHfLink } from "../hf-models.js";
 import type { HfFile, HfFileGroup } from "../hf-models.js";
 import { buildEmbeddingArgs, buildLlamaArgs, checkBuild, checkEmbeddingFiles, checkLlamaFiles, embeddingServerKey } from "../llama-args.js";
@@ -418,6 +418,12 @@ async function main(): Promise<void> {
       releasesCache.set(source, { at: Date.now(), releases });
       return { ok: true, releases };
     } catch (error) { return llamaFailure(error); }
+  });
+  handle("proxy:llamaBuildOnDisk", async (request: unknown): Promise<boolean> => {
+    const r = request as { source?: unknown; tag?: unknown; backend?: unknown; arch?: unknown } | null;
+    if (typeof r !== "object" || r === null || !isLlamaSource(r.source) || !shortString(r.tag, 200) || !shortString(r.backend, 100) || (r.arch !== "x64" && r.arch !== "arm64")) return false;
+    await refreshLocalSettings();
+    return Boolean(await findInstalledBuild({ source: r.source, tag: r.tag, backend: r.backend, arch: r.arch, binDir: llamaSettings!.binary.dir }));
   });
   handle("proxy:installLlama", async (request: unknown): Promise<LlamaInstallResult> => {
     const r = request as { source?: unknown; tag?: unknown; backend?: unknown; arch?: unknown } | null;

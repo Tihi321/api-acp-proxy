@@ -53,6 +53,22 @@ async function findServerExe(root: string): Promise<string | undefined> {
   return undefined;
 }
 
+const INFO_FILE = "llama-install.json";
+const buildDir = (binDir: string, source: LlamaSource, tag: string, backend: string): string => path.join(binDir, `${source}-${tag}-${backend}`);
+
+/** The complete build folder for this selection (it is renamed from `.partial` only after extraction), as an install result; undefined when it is not there. No network. */
+export async function findInstalledBuild(opts: { source: LlamaSource; tag: string; backend: string; arch: "x64" | "arm64"; binDir: string }): Promise<LlamaInstallInfo | undefined> {
+  const finalDir = buildDir(opts.binDir, opts.source, opts.tag, opts.backend);
+  const command = await findServerExe(finalDir).catch(() => undefined);
+  if (!command) return undefined;
+  // A folder from an earlier install has the saved record; a folder put there by hand gets a record without a checksum.
+  const saved = await fsp.readFile(path.join(finalDir, INFO_FILE), "utf8").then((text) => JSON.parse(text) as Partial<LlamaInstallInfo>, () => ({}) as Partial<LlamaInstallInfo>);
+  const build = buildNumber(opts.tag);
+  return { source: opts.source, tag: opts.tag, ...(build !== undefined ? { build } : {}), backend: opts.backend, arch: opts.arch,
+    assetName: typeof saved.assetName === "string" ? saved.assetName : path.basename(finalDir), sha256: typeof saved.sha256 === "string" ? saved.sha256 : "",
+    ...(typeof saved.runtimeAssetName === "string" ? { runtimeAssetName: saved.runtimeAssetName } : {}), command, dir: path.dirname(command), installedAt: new Date().toISOString() };
+}
+
 export async function installLlama(opts: { source: LlamaSource; tag: string; backend: string; arch: "x64" | "arm64"; binDir: string; fetch: typeof fetch;
   signal?: AbortSignal; onProgress?(p: LlamaProgressView): void; policy?: HostPolicy;
   /** Tests only. */ apiBase?: string; statfs?: typeof fs.promises.statfs }): Promise<LlamaInstallInfo> {
@@ -60,6 +76,10 @@ export async function installLlama(opts: { source: LlamaSource; tag: string; bac
   const emit = (p: Omit<LlamaProgressView, "job">) => opts.onProgress?.({ job: "binary", ...p });
   const apiOpts = { fetch: opts.fetch, policy, ...(opts.signal ? { signal: opts.signal } : {}), ...(opts.apiBase ? { apiBase: opts.apiBase } : {}) };
   const headersFor = () => ({ "User-Agent": GITHUB_HEADERS["User-Agent"] });
+
+  // Already on disk: make it the active build without a download.
+  const existing = await findInstalledBuild(opts);
+  if (existing) { emit({ phase: "done" }); return existing; }
 
   emit({ phase: "release", message: `Looking up ${opts.tag}` });
   const raw = await fetchReleaseRaw(opts.source, opts.tag, apiOpts);
@@ -95,8 +115,7 @@ export async function installLlama(opts: { source: LlamaSource; tag: string; bac
   const stamp = `.download-${process.pid}`;
   const zip = path.join(opts.binDir, `${stamp}.zip`);
   const runtimeZip = path.join(opts.binDir, `${stamp}-runtime.zip`);
-  const finalName = `${opts.source}-${opts.tag}-${opts.backend}`;
-  const finalDir = path.join(opts.binDir, finalName);
+  const finalDir = buildDir(opts.binDir, opts.source, opts.tag, opts.backend);
   const partialDir = `${finalDir}.partial`;
   let received = 0;
   const download = async (file: string, item: { name: string; url: string; size: number }, expected: string, base: number) => {
@@ -122,6 +141,7 @@ export async function installLlama(opts: { source: LlamaSource; tag: string; bac
     const build = buildNumber(opts.tag);
     const info: LlamaInstallInfo = { source: opts.source, tag: opts.tag, ...(build !== undefined ? { build } : {}), backend: opts.backend, arch: opts.arch, assetName: asset.entry.name, sha256,
       ...(runtime ? { runtimeAssetName: runtime.name } : {}), command, dir: path.dirname(command), installedAt: new Date().toISOString() };
+    await fsp.writeFile(path.join(finalDir, INFO_FILE), JSON.stringify({ assetName: info.assetName, sha256, ...(info.runtimeAssetName ? { runtimeAssetName: info.runtimeAssetName } : {}) })).catch(() => undefined);
     emit({ phase: "done" });
     return info;
   } catch (error) {
