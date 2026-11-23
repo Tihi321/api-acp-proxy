@@ -1,0 +1,6 @@
+{"ts":"2026-11-23T08:30:00Z","actor":"planner","type":"plan.created","request":"REQ-0031","ticket":"AAP-53-gufo-monitor","detail":"planner wrote the plan (draft)"}
+{"ts":"2026-11-23T08:31:00Z","actor":"director","type":"plan.approved","request":"REQ-0031","ticket":"AAP-53-gufo-monitor","detail":"user: 'use all recommendation, add all possible extras' (given in advance); written by the director"}
+{"ts":"2026-11-23T08:24:07Z","actor":"implement","type":"implement.started","request":"REQ-0031","ticket":"AAP-53-gufo-monitor","detail":"branch AAP-53_gufo-monitor from master 07bccd3"}
+{"ts":"2026-11-23T08:27:47Z","actor":"implement","type":"note","request":"REQ-0031","ticket":"AAP-53-gufo-monitor","detail":"orchestrator made the single slice itself; 4 tests shown failing first","data":{"tasks":["P-01a","P-01b"]}}
+{"ts":"2026-11-23T08:27:47Z","actor":"implement","type":"verify.passed","request":"REQ-0031","ticket":"AAP-53-gufo-monitor","detail":"yarn test 526 passed 1 skipped; typecheck 0; style grep empty"}
+{"ts":"2026-11-23T08:27:52Z","actor":"implement","type":"changelog.written","request":"REQ-0031","ticket":"AAP-53-gufo-monitor","detail":"changelog.md written; commit 73cbf63; status stays in-progress"}
