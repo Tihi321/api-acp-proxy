@@ -1,3 +1,5 @@
 {"ts":"2026-11-22T22:35:00Z","actor":"planner","type":"plan.created","request":"REQ-0031","ticket":"AAP-52-extra-ideas","detail":"planner wrote the plan (draft)"}
 {"ts":"2026-11-22T22:36:00Z","actor":"director","type":"plan.approved","request":"REQ-0031","ticket":"AAP-52-extra-ideas","detail":"user: 'use all recommendation, add all possible extras' (given in advance, the user is away); written by the director"}
 {"ts":"2026-11-22T22:32:49Z","actor":"implement","type":"changelog.written","request":"creative-hub/REQ-0031","ticket":"AAP-52-extra-ideas","detail":"AAP-52 committed on branch"}
+{"ts":"2026-11-23T09:10:00Z","actor":"director-scribe","type":"checker.verdict","request":"creative-hub/REQ-0031","ticket":"AAP-52-extra-ideas","detail":"director-checker PASS (merged 07bccd3)","data":{"verdict":"PASS"}}
+{"ts":"2026-11-23T09:10:00Z","actor":"director-scribe","type":"ticket.done","request":"creative-hub/REQ-0031","ticket":"AAP-52-extra-ideas","detail":"merged and pushed to master (07bccd3)"}

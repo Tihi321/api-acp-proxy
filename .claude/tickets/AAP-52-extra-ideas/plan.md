@@ -1,9 +1,9 @@
 ---
-status: in-progress
+status: done
 request: creative-hub/REQ-0031
 repos: [api-acp-proxy]
 branch: AAP-52_extra-ideas
-updated: 2026-11-22
+updated: 2026-11-23
 ---
 
 # AAP-52 Extra proxy ideas: one MCP code for "does not accept images", AAP-51 leftovers (comment line, unused chart class, multi-byte metrics test)

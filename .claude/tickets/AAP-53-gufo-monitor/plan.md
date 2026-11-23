@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 request: creative-hub/REQ-0031
 repos: [api-acp-proxy]
 branch: AAP-53_gufo-monitor
