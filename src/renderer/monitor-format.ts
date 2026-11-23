@@ -52,6 +52,19 @@ export function speedSub(input: SpeedSubInput): string | undefined {
   return input.noRequest ? "no request yet" : input.fallback;
 }
 
+export interface EngineReasonInput { reachable: boolean; hasEngine: boolean; state: "none" | "starting" | "ready" | "error"; server?: "gufo" | "strata" | "llama" | undefined; image?: boolean | undefined; engineError?: string | undefined }
+/** Why the engine tiles have no numbers; undefined when there is an engine. The image-models text is for a Gufo image profile only; a Gufo that failed to start reads like the other servers' unreachable engine. */
+export function engineReason(input: EngineReasonInput): string | undefined {
+  if (!input.reachable) return "Engine not reachable";
+  if (input.hasEngine) return undefined;
+  if (input.state === "none") return "No local model loaded";
+  if (input.engineError) return input.engineError === "not reachable" ? "Engine not reachable" : `Engine: ${input.engineError}`;
+  if (input.state === "starting") return "Starting";
+  if (input.server === "gufo" && input.image) return "No status source for Gufo image models";
+  if (input.state === "error") return "Engine not reachable";
+  return "No engine data";
+}
+
 /** The Engine tile's sub line for Gufo's GPU context losses: shown only when the count is above 0. */
 export function deviceLostText(count: number | undefined): string | undefined {
   return count !== undefined && count > 0 ? `GPU context lost ${count} ${count === 1 ? "time" : "times"} since Gufo started` : undefined;

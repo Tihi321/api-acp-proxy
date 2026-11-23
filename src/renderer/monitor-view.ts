@@ -1,5 +1,5 @@
 import type { ActivityView, EngineView, MonitorView, ProxyApi } from "../shared/ipc.js";
-import { deviceLostText, gib, imagesNote, SPARK_H, SPARK_W, sparkGeometry, speedSub } from "./monitor-format.js";
+import { deviceLostText, engineReason, gib, imagesNote, SPARK_H, SPARK_W, sparkGeometry, speedSub } from "./monitor-format.js";
 
 /** Page logic of the Monitor and About pages (AAP-47). Read-only: it polls `getMonitor` while one of them is shown and the window is visible. */
 export interface MonitorViewDeps {
@@ -142,13 +142,7 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
 
   /** Why the engine tiles have no numbers. */
   function reason(view: MonitorView | undefined): string | undefined {
-    if (!view) return "Engine not reachable";
-    if (view.engine) return undefined;
-    if (view.local.state === "none") return "No local model loaded";
-    if (view.engineError) return view.engineError === "not reachable" ? "Engine not reachable" : `Engine: ${view.engineError}`;
-    if (view.local.state === "starting") return "Starting";
-    if (view.local.server === "gufo") return "No status source for Gufo image models";
-    return "No engine data";
+    return engineReason({ reachable: view !== undefined, hasEngine: view?.engine !== undefined, state: view?.local.state ?? "error", server: view?.local.server, image: view?.local.image, engineError: view?.engineError });
   }
 
   function renderMonitor(view: MonitorView | undefined): void {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deviceLostText, gib, imagesNote, sparkGeometry, speedSub, type SpeedSubInput } from "../src/renderer/monitor-format.js";
+import { deviceLostText, engineReason, gib, imagesNote, sparkGeometry, speedSub, type SpeedSubInput } from "../src/renderer/monitor-format.js";
 
 describe("Monitor formatting", () => {
   it("shows sizes in GiB (1024^3)", () => {
@@ -40,5 +40,12 @@ describe("Monitor formatting", () => {
     expect(imagesNote(false, true)).toBe("the server reports no image input; the profile says vision");
     expect(imagesNote(true, true)).toBeUndefined();
     expect(imagesNote(true, undefined)).toBeUndefined();
+  });
+
+  it("explains an empty Engine tile: the image-models text only for a Gufo image profile", () => {
+    const base = { reachable: true, hasEngine: false, server: "gufo" as const };
+    expect(engineReason({ ...base, state: "ready", image: true })).toBe("No status source for Gufo image models");
+    expect(engineReason({ ...base, state: "error" })).toBe("Engine not reachable");
+    expect(engineReason({ ...base, state: "starting" })).toBe("Starting");
   });
 });

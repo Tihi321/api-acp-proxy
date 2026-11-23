@@ -291,6 +291,7 @@ export interface MonitorView {
     port?: number; startedAt?: number; readyAt?: number; error?: string;
     queue?: { active: number; queued: number; limit: number };
     profileFacts?: { context?: number; vision?: boolean; specType?: string };  // gufo/llama, from settings
+    image?: true;                 // gufo: the loaded profile is an image model (never probed)
     external?: true;              // answers on the configured port, not started by this app
   };
   engine?: EngineView;            // absent for a Gufo image model, when none is loaded, or when the engine did not answer
