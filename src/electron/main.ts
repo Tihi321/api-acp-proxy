@@ -550,11 +550,13 @@ async function main(): Promise<void> {
       const queue = proxy.queueStats()[server];
       if (profile) { local.label = profile.label; local.modelId = `${server}/${profile.model}`; }
       else if (strataModel) local.modelId = `strata/${strataModel}`;
+      if (gufoProfile?.kind === "image") local.image = true;
       if (gufoProfile) local.profileFacts = { ...(contextFromArgs(gufoProfile.args) !== undefined ? { context: contextFromArgs(gufoProfile.args)! } : {}), vision: gufoProfile.vision };
       if (llamaProfile) local.profileFacts = { ...(llamaProfile.ctxSize !== undefined ? { context: llamaProfile.ctxSize } : {}), vision: llamaProfile.vision, specType: llamaProfile.specType };
       if (queue) local.queue = { active: queue.active, queued: queue.queued, limit: queue.limit };
-      if (local.state === "ready" && local.port !== undefined) {
-        const key = server === "strata" ? strataSettings?.apiKey || undefined : undefined;
+      // A Gufo image model was never probed: no engine read, the page says so.
+      if (local.state === "ready" && local.port !== undefined && gufoProfile?.kind !== "image") {
+        const key = server === "strata" ? strataSettings?.apiKey || undefined : server === "gufo" ? gufoSettings?.apiKey || undefined : undefined;
         const read = await fetchEngine(server, local.port, key, fetch);
         engine = read.engine;
         engineError = read.error;
