@@ -146,11 +146,12 @@ export const LLAMA_PRESETS: readonly LlamaProfile[] = [
     hf: { repo: "ggml-org/Inkling-2-Mini-GGUF", revision: "main", quant: "Q8_0", mmproj: "mmproj-Inkling-2-Mini-BF16.gguf" },
     requires: { minBuild: 12607, sources: ["unsloth"] },
   },
+  // AAP-59: experimental. On Strix Halo (Inkling 2 Mini IQ4_NL, temp 1.0) DSpark measured about 20 t/s against about 33 t/s plain (bench2.md); draft max 3 was the best of 2/3/5/7 (20.4 vs 17.0 at 5, acceptance 0.37 vs 0.21). Needs the Unsloth build (ggml-org cannot load the draft).
   {
-    id: "inkling-2-mini-dspark", label: "Inkling 2 Mini DSpark (Unsloth build)", model: "inkling-2-mini-dspark", vision: true,
+    id: "inkling-2-mini-dspark", label: "Inkling 2 Mini DSpark (Unsloth build, experimental)", model: "inkling-2-mini-dspark", vision: true,
     modelFile: "unsloth/Inkling-2-Mini-GGUF/Inkling-2-Mini-UD-Q8_K_XL.gguf", mmprojFile: "unsloth/Inkling-2-Mini-GGUF/mmproj-F16.gguf",
     ctxSize: 32768, gpuLayers: "all", flashAttn: "on", specType: "draft-dspark", draftFile: "unsloth/Inkling-2-Mini-GGUF/dspark-Inkling-2-Mini-Q8_0.gguf",
-    draftNMax: 5, draftGpuLayers: "all", extraArgs: `${STRIX_HALO_ROCM} ${INKLING_SAMPLING}`,
+    draftNMax: 3, draftGpuLayers: "all", extraArgs: `${STRIX_HALO_ROCM} ${INKLING_SAMPLING}`,
     hf: { repo: "unsloth/Inkling-2-Mini-GGUF", revision: "main", quant: "UD-Q8_K_XL", mmproj: "mmproj-F16.gguf", draft: "dspark-Inkling-2-Mini-Q8_0.gguf" },
     requires: { sources: ["unsloth"] },
   },
@@ -175,7 +176,6 @@ export type LlamaFlagPreset = z.infer<typeof llamaFlagPresetSchema>;
 export const LLAMA_FLAG_PRESETS: readonly LlamaFlagPreset[] = [
   { id: "strix-halo-rocm", label: "Strix Halo ROCm speed", args: `${STRIX_HALO_ROCM} ${INKLING_SAMPLING}` },
   { id: "strix-halo-rocm-kv-q8", label: "Strix Halo ROCm speed, KV cache q8_0 (less memory, needs Flash attention on)", args: `${STRIX_HALO_ROCM} -ctk q8_0 -ctv q8_0 ${INKLING_SAMPLING}` },
-  { id: "dspark-probabilistic", label: "DSpark probabilistic draft (experiment)", args: `${STRIX_HALO_ROCM} --spec-draft-sampling probabilistic ${INKLING_SAMPLING}` },
   { id: "inkling-sampling", label: "Inkling sampling only (the old default)", args: INKLING_SAMPLING },
 ];
 const cloneLlamaFlagPresets = (): LlamaFlagPreset[] => structuredClone(LLAMA_FLAG_PRESETS) as LlamaFlagPreset[];

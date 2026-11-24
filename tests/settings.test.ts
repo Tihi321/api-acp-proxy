@@ -25,7 +25,7 @@ describe("local provider settings", () => {
     const llama = settingsSchema.parse({}).providers.llama;
     expect([llama.port, llama.binary.backend, llama.binary.source, llama.binary.mode, llama.modelsDir, llama.binary.dir]).toEqual([8082, "rocm", "ggml-org", "managed", "D:\\LlamaCpp\\models", "D:\\LlamaCpp\\bin"]);
     expect(llama.profiles.map((p) => [p.id, p.requires])).toEqual([["inkling-2-mini", { minBuild: 12607, sources: ["unsloth"] }], ["inkling-2-mini-dspark", { sources: ["unsloth"] }]]);
-    expect(llama.profiles[1]).toMatchObject({ specType: "draft-dspark", draftNMax: 5, draftGpuLayers: "all", flashAttn: "on", vision: true });
+    expect(llama.profiles[1]).toMatchObject({ specType: "draft-dspark", draftNMax: 3, draftGpuLayers: "all", flashAttn: "on", vision: true });
     const vision = { id: "v", label: "V", model: "v", modelFile: "v.gguf", vision: true };
     expect(() => settingsSchema.parse({ providers: { llama: { profiles: [vision] } } })).toThrow(/mmproj/);
     expect(settingsSchema.parse({ providers: { llama: { profiles: [{ ...vision, mmprojFile: "m.gguf" }] } } }).providers.llama.profiles[0]).toMatchObject({ gpuLayers: "auto", flashAttn: "auto", specType: "none", extraArgs: "" });
@@ -45,7 +45,7 @@ describe("local provider settings", () => {
 describe("llama flag presets", () => {
   it("seeds the flag presets once, keeps the user's lists and never rewrites a stored profile", () => {
     const seeded = settingsSchema.parse({}).providers.llama.flagPresets;
-    expect(seeded.map((p) => p.id)).toEqual(["strix-halo-rocm", "strix-halo-rocm-kv-q8", "dspark-probabilistic", "inkling-sampling"]);
+    expect(seeded.map((p) => p.id)).toEqual(["strix-halo-rocm", "strix-halo-rocm-kv-q8", "inkling-sampling"]);
     for (const preset of seeded) {
       expect(preset.args.endsWith("--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0")).toBe(true);
       expect(preset.args).not.toMatch(/(^|\s)(-fa|-ngl|-c|--spec-draft-n-max|--spec-draft-ngl|--draft-max)(\s|$)/);
@@ -56,7 +56,7 @@ describe("llama flag presets", () => {
     expect(parse(mine)).toEqual(mine);
     expect(() => parse([...mine, ...mine])).toThrow(/Duplicate flag preset id/);
     const restored = restoreMissingLlamaFlagPresets([{ id: "mine", label: "Mine", args: "" }]);
-    expect(restored).toHaveLength(5);
+    expect(restored).toHaveLength(4);
     expect(restored[0]?.id).toBe("mine");
     const old = { ...LLAMA_PRESETS[1]!, flashAttn: "auto" as const, draftNMax: 3, draftGpuLayers: 99 };
     const stored = settingsSchema.parse({ providers: { llama: { profiles: [old] } } }).providers.llama.profiles;
