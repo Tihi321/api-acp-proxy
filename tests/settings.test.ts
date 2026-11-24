@@ -24,12 +24,14 @@ describe("local provider settings", () => {
     expect(mergeSettings(defaultSettings(), { providers: { strata: { args: "--x" } } }).providers.strata.args).toBe("--x");
     const llama = settingsSchema.parse({}).providers.llama;
     expect([llama.port, llama.binary.backend, llama.binary.source, llama.binary.mode, llama.modelsDir, llama.binary.dir]).toEqual([8082, "rocm", "ggml-org", "managed", "D:\\LlamaCpp\\models", "D:\\LlamaCpp\\bin"]);
-    expect(llama.profiles.map((p) => [p.id, p.requires])).toEqual([["inkling-2-mini", { minBuild: 12607, sources: ["unsloth"] }], ["inkling-2-mini-dspark", { sources: ["unsloth"] }]]);
+    expect(llama.profiles.map((p) => [p.id, p.requires])).toEqual([["inkling-2-mini", { minBuild: 12607, sources: ["unsloth"] }], ["inkling-2-mini-dspark", { sources: ["unsloth"] }], ["qwen3.8-27b-dspine", undefined], ["qwen3.8-27b-mtp", { minBuild: 12651, sources: ["unsloth"] }]]);
     expect(llama.profiles[1]).toMatchObject({ specType: "draft-dspark", draftNMax: 3, draftGpuLayers: "all", flashAttn: "on", vision: true });
     const vision = { id: "v", label: "V", model: "v", modelFile: "v.gguf", vision: true };
     expect(() => settingsSchema.parse({ providers: { llama: { profiles: [vision] } } })).toThrow(/mmproj/);
     expect(settingsSchema.parse({ providers: { llama: { profiles: [{ ...vision, mmprojFile: "m.gguf" }] } } }).providers.llama.profiles[0]).toMatchObject({ gpuLayers: "auto", flashAttn: "auto", specType: "none", extraArgs: "" });
-    expect(restoreMissingLlamaPresets(llama.profiles.slice(0, 1))).toHaveLength(2);
+    expect(restoreMissingLlamaPresets(llama.profiles.slice(0, 1))).toHaveLength(4);
+    // AAP-60: a user who has the two Inkling profiles gets the two Qwen ones from "Restore missing presets".
+    expect(restoreMissingLlamaPresets(llama.profiles.slice(0, 2)).slice(2).map((p) => p.id)).toEqual(["qwen3.8-27b-dspine", "qwen3.8-27b-mtp"]);
     // AAP-43: the embedding server is off by default and its port may not be another local server's.
     expect(llama.embedding).toEqual({ enabled: false, port: 8083, model: "nomic-embed-text-v1.5", modelFile: "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", ctxSize: 2048, gpuLayers: "all", maxConcurrent: 4, extraArgs: "", dimensions: 768 });
     expect(mergeSettings(defaultSettings(), { providers: { llama: { embedding: { enabled: true, port: 9000 } as never } } }).providers.llama.embedding).toMatchObject({ enabled: true, port: 9000, ctxSize: 2048 });
@@ -61,7 +63,7 @@ describe("llama flag presets", () => {
     const old = { ...LLAMA_PRESETS[1]!, flashAttn: "auto" as const, draftNMax: 3, draftGpuLayers: 99 };
     const stored = settingsSchema.parse({ providers: { llama: { profiles: [old] } } }).providers.llama.profiles;
     expect(stored[0]).toMatchObject({ flashAttn: "auto", draftNMax: 3, draftGpuLayers: 99 });
-    expect(restoreMissingLlamaPresets([LLAMA_PRESETS[0]!, stored[0]!])).toEqual([LLAMA_PRESETS[0], stored[0]]);
+    expect(restoreMissingLlamaPresets([LLAMA_PRESETS[0]!, stored[0]!]).slice(0, 2)).toEqual([LLAMA_PRESETS[0], stored[0]]);
   });
 });
 

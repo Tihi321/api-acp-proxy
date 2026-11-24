@@ -155,6 +155,23 @@ export const LLAMA_PRESETS: readonly LlamaProfile[] = [
     hf: { repo: "unsloth/Inkling-2-Mini-GGUF", revision: "main", quant: "UD-Q8_K_XL", mmproj: "mmproj-F16.gguf", draft: "dspark-Inkling-2-Mini-Q8_0.gguf" },
     requires: { sources: ["unsloth"] },
   },
+  // AAP-60: DSpine (Tencent) on Qwen3.8-27B, measured on Strix Halo (bench.md): 31.9 t/s average at temp 1.0 against 12.9 plain, draft max 15 (the DSpine block is 16, so 15 is the most; the speed rises up to it). It needs a custom llama.cpp fork build (Ajay9o9/llama.cpp, branch dspine, commit 4703b7d): set the binary to "My own llama-server.exe". The fork has no `draft-dspine` spec type; `draft-dflash` picks the DSpine GGUF up. `requires` stays off on purpose: it cannot say "this fork", and a `sources` gate would block exactly the custom exe this needs (it only warns "unknown" there).
+  {
+    id: "qwen3.8-27b-dspine", label: "Qwen 3.8-27B DSpine (code; custom dspine fork build)", model: "qwen3.8-27b-dspine", vision: false,
+    modelFile: "unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf", ctxSize: 16384, gpuLayers: "all", flashAttn: "on",
+    specType: "draft-dflash", draftFile: "aj9o9/Qwen3.8-27B-DSpine-b16-GGUF/Qwen3.8-27B-DSpine-b16-Q4_K_M.gguf",
+    draftNMax: 15, draftGpuLayers: "all", extraArgs: "-np 1 --jinja",
+    hf: { repo: "unsloth/Qwen3.8-27B-GGUF", revision: "main", quant: "UD-Q4_K_M", draft: "Qwen3.8-27B-DSpine-b16-Q4_K_M.gguf" },
+  },
+  // AAP-60: stock MTP on Qwen3.8-27B (bench.md): draft max 3 averaged 23.8 t/s at temp 1.0 (plain 12.7 to 12.9); prose drops to about 14, so max 2 is the prose-safe value. Ran on the Unsloth b12651 rocm-gfx1151 build and on ggml-org b12675 (Vulkan), hence minBuild 12651 or the Unsloth build.
+  {
+    id: "qwen3.8-27b-mtp", label: "Qwen 3.8-27B MTP", model: "qwen3.8-27b-mtp", vision: false,
+    modelFile: "unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf", ctxSize: 16384, gpuLayers: "all", flashAttn: "on",
+    specType: "draft-mtp", draftFile: "unsloth/Qwen3.8-27B-GGUF/MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
+    draftNMax: 3, draftGpuLayers: "all", extraArgs: "-np 1 --jinja",
+    hf: { repo: "unsloth/Qwen3.8-27B-GGUF", revision: "main", quant: "UD-Q4_K_M", draft: "MTP/mtp-Qwen3.8-27B-Q4_0.gguf" },
+    requires: { minBuild: 12651, sources: ["unsloth"] },
+  },
 ];
 const cloneLlamaPresets = (): LlamaProfile[] => structuredClone(LLAMA_PRESETS) as LlamaProfile[];
 
