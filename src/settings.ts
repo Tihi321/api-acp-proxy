@@ -130,8 +130,13 @@ const llamaProfileSchema = profileBase.extend({
 export type LlamaProfile = z.infer<typeof llamaProfileSchema>;
 
 const INKLING_SAMPLING = "--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0";
-/** AAP-54 Strix Halo ROCm speed flags (research-flags.md 4a): no mmap (slow ROCm loads), larger ubatch (prefill), one slot (full ctx), 16 physical cores. */
-const STRIX_HALO_ROCM = "--no-mmap -ub 1024 -np 1 -t 16";
+/** AAP-54 Strix Halo ROCm speed flags (research-flags.md 4a): no mmap (slow ROCm loads), larger ubatch (prefill), one slot (full ctx), 16 physical cores. AAP-55: current llama-server builds have no `--no-mmap`; `-lm none` (--load-mode: no special loading mode, so no mmap) replaces it. */
+const STRIX_HALO_ROCM = "-lm none -ub 1024 -np 1 -t 16";
+/** AAP-55: rewrites the standalone token `--no-mmap` (rejected by current llama-server builds) to `-lm none`. Pure and idempotent; touches nothing else. */
+export const migrateNoMmap = (args: string): string => args.replace(/(^|\s)--no-mmap(?=\s|$)/g, "$1-lm none");
+const migrateStored = (list: unknown, field: "extraArgs" | "args"): unknown => Array.isArray(list)
+  ? list.map((item) => isPlain(item) && typeof item[field] === "string" ? { ...item, [field]: migrateNoMmap(item[field]) } : item)
+  : list;
 /** The built-in llama.cpp profiles (editable; the exact file names are inferred; pick the files you have, or use "Use found files"). */
 export const LLAMA_PRESETS: readonly LlamaProfile[] = [
   {
@@ -221,8 +226,8 @@ const llamaProviderSchema = z.preprocess((input) => {
   const raw = isPlain(input) ? input : {};
   return {
     ...raw,
-    ...(Array.isArray(raw.profiles) ? {} : { profiles: cloneLlamaPresets() }),
-    ...(Array.isArray(raw.flagPresets) ? {} : { flagPresets: cloneLlamaFlagPresets() }),
+    profiles: Array.isArray(raw.profiles) ? migrateStored(raw.profiles, "extraArgs") : cloneLlamaPresets(),
+    flagPresets: Array.isArray(raw.flagPresets) ? migrateStored(raw.flagPresets, "args") : cloneLlamaFlagPresets(),
   };
 }, z.object({
   enabled: z.boolean().default(true),
