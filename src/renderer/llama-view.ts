@@ -149,7 +149,17 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     fillVersions();
   }
 
+  /** AAP-58: the GPUs the active build finds, or the CPU-only warning when it finds none. */
+  const NO_GPU = "No GPU found: this build runs on the CPU only (slow). For ROCm, use the Unsloth gfx1151 build or install AMD's ROCm SDK; or choose the Vulkan backend.";
+  function renderGpu(): void {
+    const devices = status?.devices;
+    const line = el("llama-gpu");
+    line.className = devices?.length === 0 ? "profile-warn" : "muted small-text";
+    line.textContent = devices === undefined ? "" : devices.length === 0 ? NO_GPU : `GPU: ${devices.join("; ")}`;
+  }
+
   function renderInstalled(): void {
+    renderGpu();
     const info = binary.installed;
     el("llama-installed").textContent = info ? `${info.source} ${info.tag} ${info.backend} - ${info.dir}` : "Nothing downloaded yet.";
     const exe = status?.binary;
@@ -797,6 +807,8 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
         const unknown = unknownFlags(profile.extraArgs, new Set(status.helpFlags));
         if (unknown.length) lines.push(`Unknown to ${buildName()}: ${unknown.join(", ")}. Remove or fix them; llama-server will refuse to start.`);
       }
+      // AAP-58: a build that finds no GPU runs the model on the CPU whatever the layer count says.
+      if (status?.devices?.length === 0 && profile.gpuLayers !== 0) lines.push(NO_GPU);
       // AAP-55: why the last start of this profile ended (exit code + last output line), so a failed Start is visible without proxy.log.
       if (launcher?.state === "error" && launcher.profile === profile.id && launcher.error) lines.push(`Stopped: ${launcher.error}`);
       const host = node.querySelector<HTMLElement>('[data-role="profile-warnings"]')!;

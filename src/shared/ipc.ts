@@ -235,6 +235,8 @@ export interface LlamaStatusView {
   jobs: { binary: boolean; model: boolean };
   /** AAP-56: every flag the active llama-server lists in `--help`; absent when it could not be read (then no flag is reported as unknown). */
   helpFlags?: string[];
+  /** AAP-58: the GPUs `llama-server --list-devices` finds (with the ROCm SDK on PATH when the app adds it); [] = none (CPU only); absent when the check failed. */
+  devices?: string[];
 }
 export type LlamaReleasesResult = { ok: true; releases: LlamaReleaseView[] } | Failure;
 export type LlamaInstallResult = { ok: true; info: LlamaInstallInfoView } | Failure;
