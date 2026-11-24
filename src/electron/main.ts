@@ -445,6 +445,7 @@ async function main(): Promise<void> {
       // Job results are saved without a proxy restart (in-flight requests keep running), patched onto what is stored now.
       await proxy.persistSettings((current) => installPatch(current.providers.llama, { source, backend, arch, info: outcome.value }));
       await refreshLocalSettings();
+      releasesCache.delete(source); // the next Version list refetches, so the new build shows at once
       pushState();
       return { ok: true, info: outcome.value };
     } catch (error) { return llamaFailure(error); }

@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 request: REQ-0011
 repos: [api-acp-proxy]
 branch: AAP-54_llama-speed-presets

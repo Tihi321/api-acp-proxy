@@ -2,7 +2,7 @@ import type {
   Failure, HfFileGroupView, HfListResult, LlamaBinarySettingsView, LlamaFlagPresetView, LlamaLayersView, LlamaLocalFileView, LlamaProfileView, LlamaProgressView,
   LlamaProviderSettingsView, LlamaReleaseView, LlamaScanResult, LlamaSourceView, LlamaStatusView, LocalServerStatusView, ProxyApi,
 } from "../shared/ipc.js";
-import { applyFix, draftMissingFiles, foundFileFixes, profileFromFile, specTypeForDraft, usedBy } from "./llama-models.js";
+import { applyFix, draftMissingFiles, foundFileFixes, nextPresetId, profileFromFile, specTypeForDraft, usedBy } from "./llama-models.js";
 import type { FileField } from "./llama-models.js";
 import { visibleReleases } from "./llama-versions.js";
 
@@ -578,9 +578,8 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
 
     const extra = make("textarea"); extra.rows = 2; extra.spellcheck = false; extra.value = profile.extraArgs;
     extra.addEventListener("input", () => { profile.extraArgs = extra.value; dirty(); });
-    const presetPick = make("select");
-    presetPick.append(new Option("Apply a flag preset…", ""));
-    for (const preset of flagPresets) presetPick.append(new Option(preset.label || preset.id, preset.id));
+    const presetPick = make("select"); presetPick.dataset.role = "preset-pick";
+    fillPresetPicker(presetPick);
     const saveAsPreset = make("button", "small", "Save as flag preset"); saveAsPreset.type = "button";
     saveAsPreset.disabled = extra.value.trim() === "";
     extra.addEventListener("input", () => { saveAsPreset.disabled = extra.value.trim() === ""; });
@@ -591,13 +590,12 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       extra.value = preset.args; profile.extraArgs = preset.args;
       saveAsPreset.disabled = extra.value.trim() === "";
       dirty();
+      flash(el("llama-profiles-msg"), `Applied flag preset '${preset.label || preset.id}'. Save to keep it.`);
     });
     saveAsPreset.onclick = () => {
-      const taken = new Set(flagPresets.map((entry) => entry.id));
-      let n = flagPresets.length + 1;
-      while (taken.has(`preset-${n}`)) n++;
-      flagPresets.push({ id: `preset-${n}`, label: `${profile.label.trim() || profile.id || "Profile"} arguments`, args: extra.value.trim() });
-      dirty(); renderFlagPresets(); renderProfiles();
+      const id = nextPresetId(new Set(flagPresets.map((entry) => entry.id)), flagPresets.length);
+      flagPresets.push({ id, label: `${profile.label.trim() || profile.id || "Profile"} arguments`, args: extra.value.trim() });
+      dirty(); renderFlagPresets(id); refreshPresetPickers();
       flash(el("llama-flag-presets-msg"), "Saved as flag preset; rename it under Flag presets. Save to keep it.");
     };
     const presetRow = make("div", "row");
@@ -638,16 +636,40 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     return card;
   }
 
-  function renderFlagPresets(): void {
+  /** (Re)build the options of one "Apply a flag preset" picker from the current flag presets. */
+  function fillPresetPicker(select: HTMLSelectElement): void {
+    select.replaceChildren(new Option("Apply a flag preset…", ""));
+    for (const preset of flagPresets) select.append(new Option(preset.label || preset.id, preset.id));
+    select.value = "";
+  }
+  /** Refresh the preset pickers inside the existing profile cards, without re-rendering them (focus and scroll stay). */
+  function refreshPresetPickers(): void {
+    for (const select of document.querySelectorAll<HTMLSelectElement>('#llama-profiles select[data-role="preset-pick"]')) fillPresetPicker(select);
+  }
+
+  /** Re-render the Flag presets list; `focusId` puts the cursor in that preset's name field afterwards (the scroll position is kept). */
+  function renderFlagPresets(focusId?: string): void {
+    const scroll = window.scrollY;
     const cards = flagPresets.map((preset, index) => {
       const card = make("div", "profile");
       const head = make("div", "profile-head");
       const name = make("input"); name.type = "text"; name.autocomplete = "off"; name.spellcheck = false; name.value = preset.label;
       name.addEventListener("input", () => { preset.label = name.value; dirty(); });
-      name.addEventListener("change", () => renderProfiles());
-      const remove = make("button", "small push", "Delete"); remove.type = "button";
-      remove.onclick = () => { flagPresets.splice(index, 1); dirty(); renderFlagPresets(); renderProfiles(); };
-      head.append(make("strong", "", preset.id), remove);
+      name.dataset.presetId = preset.id;
+      name.addEventListener("change", () => refreshPresetPickers());
+      const duplicate = make("button", "small push", "Duplicate"); duplicate.type = "button";
+      duplicate.onclick = () => {
+        const id = nextPresetId(new Set(flagPresets.map((entry) => entry.id)), flagPresets.length);
+        flagPresets.splice(index + 1, 0, { id, label: `${preset.label} copy`, args: preset.args });
+        dirty(); renderFlagPresets(id); refreshPresetPickers();
+      };
+      const remove = make("button", "small", "Delete"); remove.type = "button";
+      remove.onclick = () => {
+        flagPresets.splice(index, 1); dirty();
+        const next = flagPresets[Math.min(index, flagPresets.length - 1)];
+        renderFlagPresets(next?.id); refreshPresetPickers();
+      };
+      head.append(make("strong", "", preset.id), duplicate, remove);
       const args = make("textarea"); args.rows = 2; args.spellcheck = false; args.value = preset.args;
       args.addEventListener("input", () => { preset.args = args.value; dirty(); });
       const grid = make("div", "grid");
@@ -656,6 +678,12 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       return card;
     });
     el("llama-flag-presets").replaceChildren(...(cards.length ? cards : [make("p", "note", "No flag presets. Restore the missing presets to get the built-in ones.")]));
+    if (focusId !== undefined) {
+      const target = Array.from(document.querySelectorAll<HTMLInputElement>("#llama-flag-presets input[data-preset-id]")).find((input) => input.dataset.presetId === focusId);
+      target?.focus({ preventScroll: true });
+      if (target) target.select();
+    }
+    window.scrollTo({ top: scroll });
   }
 
   /** "Use found files" (one button when every missing field has exactly one candidate) or one "Use <name>" button per candidate. */

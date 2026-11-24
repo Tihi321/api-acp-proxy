@@ -12,6 +12,13 @@ const slug = (text: string): string => text.toLowerCase().replace(/[^a-z0-9._-]+
 const FIELD_KIND = { modelFile: "model", mmprojFile: "mmproj", draftFile: "draft" } as const;
 const MAX_CANDIDATES = 3;
 
+/** The next free flag preset id: preset-<n>, counting from the list length + 1 and skipping taken ids. */
+export function nextPresetId(taken: ReadonlySet<string>, count: number): string {
+  let n = count + 1;
+  while (taken.has(`preset-${n}`)) n++;
+  return `preset-${n}`;
+}
+
 /** The `specType` for a draft file name: `dspark*` -> draft-dspark, `mtp*` -> draft-mtp, `dflash*` -> draft-dflash, `eagle*` -> draft-eagle3, else draft-simple. */
 export function specTypeForDraft(name: string): string {
   const base = name.replace(/\\/g, "/").split("/").pop() ?? name;
