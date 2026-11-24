@@ -349,6 +349,8 @@ export interface ProxyApi {
   llamaReleases(source: LlamaSourceView, refresh?: boolean): Promise<LlamaReleasesResult>;
   /** On success main saves `binary.installed`, `mode = "managed"`, source, backend and arch. */
   installLlama(request: { source: LlamaSourceView; tag: string; backend: string; arch: "x64" | "arm64" }): Promise<LlamaInstallResult>;
+  /** Makes an already downloaded build the active one; no download (fails when the build is not on disk). */
+  activateLlamaBuild(request: { source: LlamaSourceView; tag: string; backend: string; arch: "x64" | "arm64" }): Promise<LlamaInstallResult>;
   /** True when the complete build folder for this selection is already in the saved binaries folder (then `installLlama` needs no download). */
   llamaBuildOnDisk(request: { source: LlamaSourceView; tag: string; backend: string; arch: "x64" | "arm64" }): Promise<boolean>;
   /** On success main saves `binary.customPath`, `binary.customBuild` and `mode = "custom"`. */

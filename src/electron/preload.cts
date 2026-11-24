@@ -43,6 +43,7 @@ const api: ProxyApi = {
   pickDirectory: (title, defaultPath) => invoke("proxy:pickDirectory", title, defaultPath),
   llamaReleases: (source, refresh) => invoke("proxy:llamaReleases", source, refresh),
   installLlama: (request) => invoke("proxy:installLlama", request),
+  activateLlamaBuild: (request) => invoke("proxy:activateLlamaBuild", request),
   llamaBuildOnDisk: (request) => invoke("proxy:llamaBuildOnDisk", request),
   checkLlamaExecutable: (path) => invoke("proxy:checkLlamaExecutable", path),
   hfListFiles: (link) => invoke("proxy:hfListFiles", link),
