@@ -774,6 +774,8 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       if (entry?.build === "too_old") lines.push(`Needs a newer build${entry.buildMessage ? `: ${entry.buildMessage}` : "."}`);
       else if (entry?.build === "unknown") lines.push("Build unknown.");
       if (missing.length) lines.push(`Missing: ${missing.join(", ")}`);
+      // AAP-55: why the last start of this profile ended (exit code + last output line), so a failed Start is visible without proxy.log.
+      if (launcher?.state === "error" && launcher.profile === profile.id && launcher.error) lines.push(`Stopped: ${launcher.error}`);
       const host = node.querySelector<HTMLElement>('[data-role="profile-warnings"]')!;
       const warnings: HTMLElement[] = lines.map((line) => make("p", "profile-warn", line));
       if (missing.length && profile.hf) {

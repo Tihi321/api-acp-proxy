@@ -65,6 +65,20 @@ describe("llama flag presets", () => {
   });
 });
 
+describe("llama --no-mmap migration (AAP-55)", () => {
+  it("rewrites the removed --no-mmap token in stored profiles and flag presets, idempotently, and nothing else", () => {
+    const parse = () => settingsSchema.parse({ providers: { llama: {
+      profiles: [{ ...LLAMA_PRESETS[0]!, extraArgs: "--no-mmap -ub 1024 --temp 1.0 --no-mmap-like" }],
+      flagPresets: [{ id: "old", label: "Old", args: "-t 16  --no-mmap  -np 1" }],
+    } } }).providers.llama;
+    const once = parse();
+    expect(once.profiles[0]!.extraArgs).toBe("-lm none -ub 1024 --temp 1.0 --no-mmap-like");
+    expect(once.flagPresets[0]!.args).toBe("-t 16  -lm none  -np 1");
+    expect(settingsSchema.parse({ providers: { llama: once } }).providers.llama).toEqual(once);
+    for (const preset of [...LLAMA_PRESETS, ...settingsSchema.parse({}).providers.llama.flagPresets]) expect(JSON.stringify(preset)).not.toContain("--no-mmap");
+  });
+});
+
 describe("gufo profiles", () => {
   it("builds presets, migrates the old args, keeps stored profiles and rejects duplicate models", () => {
     const presets = settingsSchema.parse({}).providers.gufo.profiles;
