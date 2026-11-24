@@ -97,3 +97,14 @@ export function usedBy(path: string, profiles: readonly LlamaProfileView[], embe
   if (embeddingFile && norm(embeddingFile) === wanted) ids.push("embeddings");
   return ids;
 }
+
+/** What a profile card shows for its Start / Restart buttons (AAP-57): `mine` = this profile is starting or ready, `failed` = its last start ended in an error. */
+export function profileButtons(input: { mine: boolean; failed: boolean; anyRunning: boolean; waiting: boolean }): { startLabel: string; startDisabled: boolean; showRestart: boolean; restartDisabled: boolean } {
+  const { mine, failed, anyRunning, waiting } = input;
+  return {
+    startLabel: waiting && !mine ? "Waiting…" : anyRunning && !mine ? "Switch to this" : "Start",
+    startDisabled: mine || waiting,
+    showRestart: mine || failed,
+    restartDisabled: waiting,
+  };
+}

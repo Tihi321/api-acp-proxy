@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyFix, draftMissingFiles, foundFileFixes, nextPresetId, profileFromFile, usedBy } from "../src/renderer/llama-models.js";
+import { applyFix, draftMissingFiles, foundFileFixes, nextPresetId, profileButtons, profileFromFile, usedBy } from "../src/renderer/llama-models.js";
 import { LLAMA_PRESETS } from "../src/settings.js";
 import type { LlamaLocalFileView, LlamaProfileView } from "../src/shared/ipc.js";
 
@@ -54,5 +54,17 @@ describe("llama-models", () => {
   it("picks the next free flag preset id", () => {
     expect(nextPresetId(new Set(["a", "b"]), 2)).toBe("preset-3");
     expect(nextPresetId(new Set(["preset-3", "preset-4"]), 2)).toBe("preset-5");
+  });
+});
+
+describe("profileButtons", () => {
+  const base = { mine: false, failed: false, anyRunning: false, waiting: false };
+  it("offers Restart on the running profile and on one that failed, not on others", () => {
+    expect(profileButtons({ ...base, mine: true, anyRunning: true })).toMatchObject({ startDisabled: true, showRestart: true, restartDisabled: false });
+    expect(profileButtons({ ...base, failed: true })).toMatchObject({ startLabel: "Start", startDisabled: false, showRestart: true });
+    expect(profileButtons({ ...base, anyRunning: true })).toMatchObject({ startLabel: "Switch to this", showRestart: false });
+  });
+  it("disables Restart while a start is in progress", () => {
+    expect(profileButtons({ ...base, mine: true, anyRunning: true, waiting: true }).restartDisabled).toBe(true);
   });
 });

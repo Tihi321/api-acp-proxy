@@ -3,7 +3,7 @@ import type {
   LlamaProviderSettingsView, LlamaReleaseView, LlamaScanResult, LlamaSourceView, LlamaStatusView, LocalServerStatusView, ProxyApi,
 } from "../shared/ipc.js";
 import { unknownFlags } from "../shared/llama-help.js";
-import { applyFix, draftMissingFiles, foundFileFixes, nextPresetId, profileFromFile, specTypeForDraft, usedBy } from "./llama-models.js";
+import { applyFix, draftMissingFiles, foundFileFixes, nextPresetId, profileButtons, profileFromFile, specTypeForDraft, usedBy } from "./llama-models.js";
 import type { FileField } from "./llama-models.js";
 import { visibleReleases } from "./llama-versions.js";
 
@@ -557,9 +557,12 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     const badge = make("span", "badge"); badge.dataset.role = "profile-badge";
     const start = make("button", "primary small", "Start"); start.type = "button"; start.dataset.role = "profile-start";
     start.onclick = () => void startProfile(profile.id);
+    const restart = make("button", "small", "Restart"); restart.type = "button"; restart.dataset.role = "profile-restart";
+    restart.title = "Saves unsaved edits, stops llama-server and starts this profile again with the new settings";
+    restart.onclick = () => void startProfile(profile.id, true);
     const remove = make("button", "small", "Remove"); remove.type = "button";
     remove.onclick = () => { profiles.splice(index, 1); dirty(); renderProfiles(); };
-    head.append(badge, start, remove);
+    head.append(badge, start, restart, remove);
 
     const warnings = make("div"); warnings.dataset.role = "profile-warnings";
 
@@ -771,8 +774,14 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       const mine = launcher !== undefined && launcher.profile === profile.id && anyRunning;
       const waiting = startingProfiles.has(profile.id);
       const start = node.querySelector<HTMLButtonElement>('[data-role="profile-start"]')!;
-      start.disabled = mine || waiting;
-      start.textContent = waiting && !mine ? "Waiting…" : anyRunning && !mine ? "Switch to this" : "Start";
+      const failed = launcher?.state === "error" && launcher.profile === profile.id;
+      const shown = profileButtons({ mine, failed, anyRunning, waiting });
+      start.disabled = shown.startDisabled;
+      start.textContent = shown.startLabel;
+      start.hidden = mine;
+      const restart = node.querySelector<HTMLButtonElement>('[data-role="profile-restart"]')!;
+      restart.hidden = !shown.showRestart;
+      restart.disabled = shown.restartDisabled;
       const badge = node.querySelector<HTMLElement>('[data-role="profile-badge"]')!;
       badge.hidden = !mine;
       if (mine && launcher) deps.setBadge(badge, launcher.state);
@@ -802,13 +811,18 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     }
   }
 
-  async function startProfile(profileId: string): Promise<void> {
+  /** Start, or with `restart` (AAP-57) stop the running llama-server first so the saved settings take effect. */
+  async function startProfile(profileId: string, restart = false): Promise<void> {
     const msg = el("llama-profiles-msg");
     flash(msg, "");
     if (deps.isDirty() && !await deps.save()) return;
     startingProfiles.add(profileId); updateProfileButtons();
-    flash(msg, "Starting or switching… a large model can take many minutes.");
+    flash(msg, restart ? "Restarting… a large model can take many minutes." : "Starting or switching… a large model can take many minutes.");
     try {
+      if (restart) {
+        const stopped = await api.stopLocalServer("llama");
+        if (!stopped.ok) { flash(msg, stopped.message, true); return; }
+      }
       const result = await api.startLocalServer("llama", profileId);
       flash(msg, result.ok ? "" : result.message, !result.ok);
     } catch (error) { flash(msg, errorText(error), true); }
