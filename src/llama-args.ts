@@ -103,7 +103,9 @@ export function checkLlamaFiles(profile: LlamaProfile, modelsDir: string, exists
 export type BuildCheck = { ok: true } | { ok: false; code: "llama_build_too_old"; message: string } | { ok: "unknown"; message: string };
 
 /** Build gate: passes when the source is listed in `requires.sources` or the build is at least `requires.minBuild`. */
-export function checkBuild(profile: LlamaProfile, binary: { source: LlamaSource | "custom"; build?: number }): BuildCheck {
+export function checkBuild(profile: LlamaProfile, rawBinary: { source: LlamaSource | "custom"; build?: number }): BuildCheck {
+  // AAP-61: a self-compiled build reports "build 1" (or 0), not a release number (releases are b4000+); that is unknown, not too old.
+  const binary = rawBinary.build !== undefined && rawBinary.build < 100 ? { source: rawBinary.source } : rawBinary;
   const requires = profile.requires;
   if (!requires || (requires.minBuild === undefined && !requires.sources?.length)) return { ok: true };
   if (binary.source !== "custom" && requires.sources?.includes(binary.source)) return { ok: true };

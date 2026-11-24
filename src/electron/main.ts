@@ -80,17 +80,19 @@ async function llamaHelpFlags(command: string | undefined): Promise<string[] | u
   if (!command) return undefined;
   let mtimeMs: number;
   try { mtimeMs = fs.statSync(command).mtimeMs; } catch { return undefined; }
-  const cached = helpFlagCache.get(command);
+  const { env, added } = llamaChildEnv(command, process.env);
+  const key = `${command}|${added ?? ""}`;
+  const cached = helpFlagCache.get(key);
   if (cached && cached.mtimeMs === mtimeMs) return cached.flags;
   const flags = await new Promise<string[] | undefined>((resolve) => {
-    execFile(command, ["--help"], { windowsHide: true, timeout: 10_000, maxBuffer: 4 * 1024 * 1024, cwd: path.dirname(command) }, (_error, stdout, stderr) => {
+    execFile(command, ["--help"], { windowsHide: true, timeout: 10_000, maxBuffer: 4 * 1024 * 1024, cwd: path.dirname(command), env }, (_error, stdout, stderr) => {
       // llama-server prints --help to stdout (older builds to stderr); a non-zero exit is fine when the text parses
       const parsed = [...parseHelpFlags(`${stdout}
 ${stderr}`)];
       resolve(parsed.length > 0 ? parsed : undefined);
     });
   });
-  helpFlagCache.set(command, { mtimeMs, flags });
+  helpFlagCache.set(key, { mtimeMs, flags });
   return flags;
 }
 

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { DownloadError, downloadResumable, ensureFreeSpace, extractZip, guardedFetch, type HostPolicy } from "./download.js";
+import { llamaChildEnv } from "./llama-rocm-path.js";
 import { buildNumber, fetchReleaseRaw, GITHUB_HEADERS, GITHUB_POLICY, parseAssetName, releaseAssets, type LlamaAssetView } from "./llama-releases.js";
 import type { LlamaProgressView } from "./shared/ipc.js";
 import type { LlamaInstallInfo, LlamaSource } from "./settings.js";
@@ -152,9 +153,9 @@ export async function installLlama(opts: { source: LlamaSource; tag: string; bac
   }
 }
 
-function defaultRun(exe: string, args: string[]): Promise<string> {
+function defaultRun(exe: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(exe, args, { timeout: 15_000, windowsHide: true }, (error, stdout, stderr) => {
+    execFile(exe, args, { timeout: 15_000, windowsHide: true, ...(env ? { env } : {}) }, (error, stdout, stderr) => {
       if (error && !stdout && !stderr) reject(error);
       else resolve(`${stdout}\n${stderr}`.trim());
     });
@@ -162,8 +163,9 @@ function defaultRun(exe: string, args: string[]): Promise<string> {
 }
 
 /** Runs `llama-server --version`; the output format is inferred, an unparsable output gives no build. */
-export async function probeLlamaVersion(exe: string, run: (exe: string, args: string[]) => Promise<string> = defaultRun): Promise<{ build?: number; text: string }> {
-  const text = (await run(exe, ["--version"])).trim();
+// AAP-61: runs with the same environment as the real launch (ROCm PATH fix), or an exe that needs hipblas.dll cannot load and fails with 127.
+export async function probeLlamaVersion(exe: string, run: (exe: string, args: string[], env?: NodeJS.ProcessEnv) => Promise<string> = defaultRun, env: NodeJS.ProcessEnv = llamaChildEnv(exe, process.env).env): Promise<{ build?: number; text: string }> {
+  const text = (await run(exe, ["--version"], env)).trim();
   const match = /version:\s*(\d+)/i.exec(text) ?? /\bb(\d{4,})\b/.exec(text);
   return { ...(match ? { build: Number(match[1]) } : {}), text };
 }

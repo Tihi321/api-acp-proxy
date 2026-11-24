@@ -48,5 +48,8 @@ describe("llama args", () => {
     expect(checkBuild(mini, { source: "unsloth", build: 12588 })).toEqual({ ok: true });
     expect(checkBuild(dspark, { source: "ggml-org", build: 99999 })).toMatchObject({ ok: false, message: expect.stringContaining("Unsloth build") });
     expect(checkBuild(mini, { source: "custom" })).toMatchObject({ ok: "unknown" });
+    // AAP-61: a self-compiled fork reports build 1 (or 0); that is unknown, never "too old"
+    expect(checkBuild(mini, { source: "custom", build: 1 })).toMatchObject({ ok: "unknown" });
+    expect(checkBuild(mini, { source: "custom", build: 4000 })).toMatchObject({ ok: false, code: "llama_build_too_old" });
   });
 });
