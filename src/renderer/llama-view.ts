@@ -2,6 +2,7 @@ import type {
   Failure, HfFileGroupView, HfListResult, LlamaBinarySettingsView, LlamaFlagPresetView, LlamaLayersView, LlamaLocalFileView, LlamaProfileView, LlamaProgressView,
   LlamaProviderSettingsView, LlamaReleaseView, LlamaScanResult, LlamaSourceView, LlamaStatusView, LocalServerStatusView, ProxyApi,
 } from "../shared/ipc.js";
+import { unknownFlags } from "../shared/llama-help.js";
 import { applyFix, draftMissingFiles, foundFileFixes, nextPresetId, profileFromFile, specTypeForDraft, usedBy } from "./llama-models.js";
 import type { FileField } from "./llama-models.js";
 import { visibleReleases } from "./llama-versions.js";
@@ -577,7 +578,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     spec.addEventListener("change", () => { profile.specType = spec.value; dirty(); updateProfileButtons(); });
 
     const extra = make("textarea"); extra.rows = 2; extra.spellcheck = false; extra.value = profile.extraArgs;
-    extra.addEventListener("input", () => { profile.extraArgs = extra.value; dirty(); });
+    extra.addEventListener("input", () => { profile.extraArgs = extra.value; dirty(); updateProfileButtons(); });
     const presetPick = make("select"); presetPick.dataset.role = "preset-pick";
     fillPresetPicker(presetPick);
     const saveAsPreset = make("button", "small", "Save as flag preset"); saveAsPreset.type = "button";
@@ -753,6 +754,14 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     updateProfileButtons();
   }
 
+  /** The active build as the user knows it: its tag, else the name of the folder it runs from. */
+  function buildName(): string {
+    const binary = status?.binary;
+    if (binary?.tag) return binary.tag;
+    const folder = binary?.command?.split(/[\/]/).filter(Boolean).slice(-2, -1)[0];
+    return folder ?? "this llama-server";
+  }
+
   /** Start / Switch buttons, the warnings and the "Use found files" fixes of each card, from the launcher and the status (in place, so typing is not interrupted). */
   function updateProfileButtons(): void {
     const anyRunning = launcher !== undefined && (launcher.state === "starting" || launcher.state === "ready");
@@ -774,6 +783,11 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       if (entry?.build === "too_old") lines.push(`Needs a newer build${entry.buildMessage ? `: ${entry.buildMessage}` : "."}`);
       else if (entry?.build === "unknown") lines.push("Build unknown.");
       if (missing.length) lines.push(`Missing: ${missing.join(", ")}`);
+      // AAP-56: Extra arguments the active build does not list in `--help` (llama-server exits at argument parsing on them).
+      if (status?.helpFlags) {
+        const unknown = unknownFlags(profile.extraArgs, new Set(status.helpFlags));
+        if (unknown.length) lines.push(`Unknown to ${buildName()}: ${unknown.join(", ")}. Remove or fix them; llama-server will refuse to start.`);
+      }
       // AAP-55: why the last start of this profile ended (exit code + last output line), so a failed Start is visible without proxy.log.
       if (launcher?.state === "error" && launcher.profile === profile.id && launcher.error) lines.push(`Stopped: ${launcher.error}`);
       const host = node.querySelector<HTMLElement>('[data-role="profile-warnings"]')!;

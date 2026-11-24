@@ -233,6 +233,8 @@ export interface LlamaStatusView {
   embedding: { missingFiles: string[] };
   /** Running jobs. */
   jobs: { binary: boolean; model: boolean };
+  /** AAP-56: every flag the active llama-server lists in `--help`; absent when it could not be read (then no flag is reported as unknown). */
+  helpFlags?: string[];
 }
 export type LlamaReleasesResult = { ok: true; releases: LlamaReleaseView[] } | Failure;
 export type LlamaInstallResult = { ok: true; info: LlamaInstallInfoView } | Failure;

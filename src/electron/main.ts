@@ -1,5 +1,6 @@
 import { app, clipboard, dialog, ipcMain, net, safeStorage, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -32,6 +33,7 @@ import { scanModelsDir } from "../llama-scan.js";
 import { antigravityRegistration, installAntigravity, readInstallInfo } from "./antigravity.js";
 import { SettingsWindow } from "./settings-window.js";
 import { TrayController } from "./tray.js";
+import { parseHelpFlags } from "../shared/llama-help.js";
 import type { ActionResult, ActivityView, EngineView, FieldError, Failure, GufoProfileView, HfDownloadResult, HfListResult, InstallInfoView, InstallResult, LlamaCheckResult, LlamaFlagPresetView, LlamaInstallResult, LlamaProfileView, LlamaProgressView, LlamaReleasesResult, LlamaScanResult, LlamaStatusView, LocalServerId, MonitorView, OpenTarget, PickResult, SaveResult, StateView, UsageView } from "../shared/ipc.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -68,6 +70,26 @@ function llamaBinary(llama: { binary: { mode: "managed" | "custom"; customPath?:
   if (binary.mode === "custom") return { ...(binary.customPath ? { command: binary.customPath } : {}), source: "custom", ...(binary.customBuild !== undefined ? { build: binary.customBuild } : {}) };
   const installed = binary.installed;
   return { ...(installed ? { command: installed.command } : {}), source: installed?.source ?? "ggml-org", ...(installed?.build !== undefined ? { build: installed.build } : {}) };
+}
+
+/** AAP-56: the flags `<exe> --help` lists, cached per exe path and modified time; undefined when it fails, times out or lists nothing. Never starts a model. */
+const helpFlagCache = new Map<string, { mtimeMs: number; flags: string[] | undefined }>();
+async function llamaHelpFlags(command: string | undefined): Promise<string[] | undefined> {
+  if (!command) return undefined;
+  let mtimeMs: number;
+  try { mtimeMs = fs.statSync(command).mtimeMs; } catch { return undefined; }
+  const cached = helpFlagCache.get(command);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.flags;
+  const flags = await new Promise<string[] | undefined>((resolve) => {
+    execFile(command, ["--help"], { windowsHide: true, timeout: 10_000, maxBuffer: 4 * 1024 * 1024, cwd: path.dirname(command) }, (_error, stdout, stderr) => {
+      // llama-server prints --help to stdout (older builds to stderr); a non-zero exit is fine when the text parses
+      const parsed = [...parseHelpFlags(`${stdout}
+${stderr}`)];
+      resolve(parsed.length > 0 ? parsed : undefined);
+    });
+  });
+  helpFlagCache.set(command, { mtimeMs, flags });
+  return flags;
 }
 
 const RELEASES_TTL_MS = 10 * 60 * 1000;
@@ -536,6 +558,7 @@ async function main(): Promise<void> {
         missingFiles: checkLlamaFiles(profile, llama.modelsDir),
       };
     }
+    const helpFlags = await llamaHelpFlags(binary.command);
     return {
       binary: {
         mode: llama.binary.mode, ...(binary.command ? { command: binary.command } : {}), source: binary.source,
@@ -546,6 +569,7 @@ async function main(): Promise<void> {
       profiles,
       embedding: { missingFiles: checkEmbeddingFiles(llama.embedding, llama.modelsDir) },
       jobs: { binary: Boolean(llamaJobs.binary), model: Boolean(llamaJobs.model) },
+      ...(helpFlags ? { helpFlags } : {}),
     };
   });
   // Monitor and About pages (AAP-47): read-only. The engine's key stays here; the window gets counts, timings and `apiKeyNeeded`.
