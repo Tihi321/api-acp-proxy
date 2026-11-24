@@ -16,6 +16,8 @@ import { LocalModelCoordinator, targetKey } from "../local-models.js";
 import type { LocalModelTarget } from "../local-models.js";
 import { createLocalModelHost } from "../local-host.js";
 import { LOCAL_SERVER_IDS, LocalServerManager } from "../local-servers.js";
+import { llamaChildEnv } from "../llama-rocm-path.js";
+import { parseDevices } from "../shared/llama-devices.js";
 import type { LocalServerSpec } from "../local-servers.js";
 import { contextFromArgs, cpuSampler, fetchEngine, hostView, localState } from "../local-monitor.js";
 import { listMcpServers } from "../mcp-servers.js";
@@ -90,6 +92,23 @@ ${stderr}`)];
   });
   helpFlagCache.set(command, { mtimeMs, flags });
   return flags;
+}
+
+/** AAP-58: the GPUs `<exe> --list-devices` finds, run with the environment the real launch gets; cached per exe path, modified time and PATH fix. Never loads a model. */
+const deviceCache = new Map<string, { mtimeMs: number; devices: string[] | undefined }>();
+async function llamaDevices(command: string | undefined): Promise<string[] | undefined> {
+  if (!command) return undefined;
+  let mtimeMs: number;
+  try { mtimeMs = fs.statSync(command).mtimeMs; } catch { return undefined; }
+  const { env, added } = llamaChildEnv(command, process.env);
+  const key = `${command}|${added ?? ""}`;
+  const cached = deviceCache.get(key);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.devices;
+  const devices = await new Promise<string[] | undefined>((resolve) => {
+    execFile(command, ["--list-devices"], { windowsHide: true, timeout: 20_000, maxBuffer: 4 * 1024 * 1024, cwd: path.dirname(command), env }, (_error, stdout) => resolve(parseDevices(stdout)));
+  });
+  deviceCache.set(key, { mtimeMs, devices });
+  return devices;
 }
 
 const RELEASES_TTL_MS = 10 * 60 * 1000;
@@ -559,6 +578,7 @@ async function main(): Promise<void> {
       };
     }
     const helpFlags = await llamaHelpFlags(binary.command);
+    const devices = await llamaDevices(binary.command);
     return {
       binary: {
         mode: llama.binary.mode, ...(binary.command ? { command: binary.command } : {}), source: binary.source,
@@ -570,6 +590,7 @@ async function main(): Promise<void> {
       embedding: { missingFiles: checkEmbeddingFiles(llama.embedding, llama.modelsDir) },
       jobs: { binary: Boolean(llamaJobs.binary), model: Boolean(llamaJobs.model) },
       ...(helpFlags ? { helpFlags } : {}),
+      ...(devices ? { devices } : {}),
     };
   });
   // Monitor and About pages (AAP-47): read-only. The engine's key stays here; the window gets counts, timings and `apiKeyNeeded`.

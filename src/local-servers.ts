@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import type { Logger } from "./logger.js";
+import { llamaChildEnv } from "./llama-rocm-path.js";
 import { killProcessTree } from "./process-tree.js";
 import type { LocalServerId, LocalServerStatusView } from "./shared/ipc.js";
 
@@ -30,7 +31,7 @@ function checkModelFiles(spec: LocalServerSpec): void {
 }
 
 export interface LocalServerDeps {
-  spawn?(spec: LocalServerSpec, line: string): ChildProcess;
+  spawn?(spec: LocalServerSpec, line: string, env?: NodeJS.ProcessEnv): ChildProcess;
   kill?(child: ChildProcess): Promise<void>;
   probe?(port: number, signal: AbortSignal): Promise<boolean>;
   pollMs?: number;
@@ -47,13 +48,13 @@ const LOG_EMIT_MS = 250;
 const EXIT_WAIT_MS = 5000;
 const PROBE_TIMEOUT_MS = 2000;
 
-function defaultSpawn(spec: LocalServerSpec, line: string): ChildProcess {
+function defaultSpawn(spec: LocalServerSpec, line: string, env: NodeJS.ProcessEnv = process.env): ChildProcess {
   const stdio: ["ignore", "pipe", "pipe"] = ["ignore", "pipe", "pipe"];
   if (process.platform === "win32") {
     // Node refuses to spawn .bat/.cmd directly, so go through cmd.exe (hidden, no console window).
-    return spawn("cmd.exe", ["/d", "/s", "/c", `"${line}"`], { cwd: spec.cwd, windowsHide: true, windowsVerbatimArguments: true, stdio, env: process.env });
+    return spawn("cmd.exe", ["/d", "/s", "/c", `"${line}"`], { cwd: spec.cwd, windowsHide: true, windowsVerbatimArguments: true, stdio, env });
   }
-  return spawn("/bin/sh", ["-c", line], { cwd: spec.cwd, detached: true, stdio, env: process.env });
+  return spawn("/bin/sh", ["-c", line], { cwd: spec.cwd, detached: true, stdio, env });
 }
 
 async function defaultProbe(port: number, signal: AbortSignal): Promise<boolean> {
@@ -86,7 +87,7 @@ class SupersededError extends Error {}
 
 export class LocalServerManager extends EventEmitter {
   private readonly entries = new Map<LocalServerId, Entry>();
-  private readonly spawnFn: (spec: LocalServerSpec, line: string) => ChildProcess;
+  private readonly spawnFn: (spec: LocalServerSpec, line: string, env?: NodeJS.ProcessEnv) => ChildProcess;
   private readonly killFn: (child: ChildProcess) => Promise<void>;
   private readonly probeFn: (port: number, signal: AbortSignal) => Promise<boolean>;
   private readonly pollMs: number;
@@ -151,7 +152,10 @@ export class LocalServerManager extends EventEmitter {
       if (this.cancelled(entry, gen, spec)) return;
       const line = commandLine(spec);
       let child: ChildProcess;
-      try { child = this.spawnFn(spec, line); } catch (error) { throw new Error(error instanceof Error ? error.message : String(error)); }
+      // AAP-58: a ROCm llama-server build without hipblas.dll gets the AMD ROCm SDK on its PATH (the app's own environment stays as it is).
+      const fix = spec.id === "llama" || spec.id === "embed" ? llamaChildEnv(spec.command, process.env) : { env: process.env };
+      if ("added" in fix && fix.added) this.logger?.info(`llama: added ${fix.added} to PATH (build has no hipblas.dll)`);
+      try { child = this.spawnFn(spec, line, fix.env); } catch (error) { throw new Error(error instanceof Error ? error.message : String(error)); }
       this.attach(entry, spec, child);
     } catch (error) {
       if (error instanceof SupersededError) throw error;
