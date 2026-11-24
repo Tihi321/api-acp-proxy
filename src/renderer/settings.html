@@ -515,7 +515,7 @@
               <label class="field"><span>Max concurrent requests <em class="muted">(empty = 1)</em></span><input id="providers.strata.maxConcurrent" type="number" min="0"><small data-note-for="providers.strata.maxConcurrent"></small><small class="error" data-error-for="providers.strata.maxConcurrent"></small></label>
             </div>
             <label class="field wide"><span>Command</span><input id="providers.strata.command" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.strata.command"></small><small class="error" data-error-for="providers.strata.command"></small></label>
-            <label class="field wide"><span>Arguments</span><input id="providers.strata.args" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.strata.args"></small><small class="error" data-error-for="providers.strata.args"></small></label>
+            <label class="field wide"><span>Arguments <em class="muted">(optional)</em></span><input id="providers.strata.args" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.strata.args"></small><small class="error" data-error-for="providers.strata.args"></small></label>
             <label class="field wide"><span>Working folder</span><input id="providers.strata.cwd" type="text" autocomplete="off" spellcheck="false"><small data-note-for="providers.strata.cwd"></small><small class="error" data-error-for="providers.strata.cwd"></small></label>
             <label class="field wide"><span>API key <em class="muted">(optional; sent to the server as a Bearer token, never put on the command line)</em></span>
               <div class="row"><input id="providers.strata.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="strata-key-show">Show</button></div>
@@ -614,6 +614,13 @@
             <p class="note">One model per profile, exposed as <code>llama/&lt;model id&gt;</code>. Starting a large model can take many minutes. Start saves unsaved edits for you.</p>
             <div id="llama-profiles"></div>
             <p class="msg" id="llama-profiles-msg" role="status"></p>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Flag presets</h2></div>
+            <p class="note">Saved sets of extra arguments. Apply one on a profile: it replaces that profile's Extra arguments, which you can then edit. Leave flags that profile fields set (<code>-fa</code>, <code>-ngl</code>, <code>-c</code>, <code>--spec-*</code>) to the fields. To get the AAP-54 speed defaults on an existing profile, apply Strix Halo ROCm speed and set Flash attention to on.</p>
+            <div id="llama-flag-presets"></div>
+            <p class="msg" id="llama-flag-presets-msg" role="status"></p>
           </section>
 
           <section class="card" id="llama-embed-card">

@@ -130,20 +130,22 @@ const llamaProfileSchema = profileBase.extend({
 export type LlamaProfile = z.infer<typeof llamaProfileSchema>;
 
 const INKLING_SAMPLING = "--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0";
+/** AAP-54 Strix Halo ROCm speed flags (research-flags.md 4a): no mmap (slow ROCm loads), larger ubatch (prefill), one slot (full ctx), 16 physical cores. */
+const STRIX_HALO_ROCM = "--no-mmap -ub 1024 -np 1 -t 16";
 /** The built-in llama.cpp profiles (editable; the exact file names are inferred; pick the files you have, or use "Use found files"). */
 export const LLAMA_PRESETS: readonly LlamaProfile[] = [
   {
     id: "inkling-2-mini", label: "Inkling 2 Mini (Q8_0, vision)", model: "inkling-2-mini", vision: true,
     modelFile: "ggml-org/Inkling-2-Mini-GGUF/Inkling-2-Mini-Q8_0.gguf", mmprojFile: "ggml-org/Inkling-2-Mini-GGUF/mmproj-Inkling-2-Mini-BF16.gguf",
-    ctxSize: 32768, gpuLayers: "all", flashAttn: "auto", specType: "none", extraArgs: INKLING_SAMPLING,
+    ctxSize: 32768, gpuLayers: "all", flashAttn: "on", specType: "none", extraArgs: `${STRIX_HALO_ROCM} ${INKLING_SAMPLING}`,
     hf: { repo: "ggml-org/Inkling-2-Mini-GGUF", revision: "main", quant: "Q8_0", mmproj: "mmproj-Inkling-2-Mini-BF16.gguf" },
     requires: { minBuild: 12607, sources: ["unsloth"] },
   },
   {
     id: "inkling-2-mini-dspark", label: "Inkling 2 Mini DSpark (Unsloth build)", model: "inkling-2-mini-dspark", vision: true,
     modelFile: "unsloth/Inkling-2-Mini-GGUF/Inkling-2-Mini-UD-Q8_K_XL.gguf", mmprojFile: "unsloth/Inkling-2-Mini-GGUF/mmproj-F16.gguf",
-    ctxSize: 32768, gpuLayers: "all", flashAttn: "auto", specType: "draft-dspark", draftFile: "unsloth/Inkling-2-Mini-GGUF/dspark-Inkling-2-Mini-Q8_0.gguf",
-    draftNMax: 3, draftGpuLayers: 99, extraArgs: INKLING_SAMPLING,
+    ctxSize: 32768, gpuLayers: "all", flashAttn: "on", specType: "draft-dspark", draftFile: "unsloth/Inkling-2-Mini-GGUF/dspark-Inkling-2-Mini-Q8_0.gguf",
+    draftNMax: 5, draftGpuLayers: "all", extraArgs: `${STRIX_HALO_ROCM} ${INKLING_SAMPLING}`,
     hf: { repo: "unsloth/Inkling-2-Mini-GGUF", revision: "main", quant: "UD-Q8_K_XL", mmproj: "mmproj-F16.gguf", draft: "dspark-Inkling-2-Mini-Q8_0.gguf" },
     requires: { sources: ["unsloth"] },
   },
@@ -155,6 +157,28 @@ export function restoreMissingLlamaPresets(profiles: readonly LlamaProfile[]): L
   const have = new Set(profiles.map((profile) => profile.id));
   const models = new Set(profiles.map((profile) => profile.model));
   return [...structuredClone(profiles) as LlamaProfile[], ...cloneLlamaPresets().filter((preset) => !have.has(preset.id) && !models.has(preset.model))];
+}
+
+const llamaFlagPresetSchema = z.object({
+  id: z.string().regex(/^[a-z0-9._-]{1,48}$/, "A flag preset id is 1 to 48 characters of a-z, 0-9, '.', '_' or '-'."),
+  label: z.string().min(1, "A flag preset needs a name."),
+  /** Copied into a profile's extraArgs when applied; never referenced by a profile. */
+  args: z.string(),
+});
+export type LlamaFlagPreset = z.infer<typeof llamaFlagPresetSchema>;
+/** The built-in flag presets (AAP-54): only flags no profile field generates, so the command line never carries a flag twice. */
+export const LLAMA_FLAG_PRESETS: readonly LlamaFlagPreset[] = [
+  { id: "strix-halo-rocm", label: "Strix Halo ROCm speed", args: `${STRIX_HALO_ROCM} ${INKLING_SAMPLING}` },
+  { id: "strix-halo-rocm-kv-q8", label: "Strix Halo ROCm speed, KV cache q8_0 (less memory, needs Flash attention on)", args: `${STRIX_HALO_ROCM} -ctk q8_0 -ctv q8_0 ${INKLING_SAMPLING}` },
+  { id: "dspark-probabilistic", label: "DSpark probabilistic draft (experiment)", args: `${STRIX_HALO_ROCM} --spec-draft-sampling probabilistic ${INKLING_SAMPLING}` },
+  { id: "inkling-sampling", label: "Inkling sampling only (the old default)", args: INKLING_SAMPLING },
+];
+const cloneLlamaFlagPresets = (): LlamaFlagPreset[] => structuredClone(LLAMA_FLAG_PRESETS) as LlamaFlagPreset[];
+
+/** `presets` plus the built-in flag presets whose id is absent. Pure. */
+export function restoreMissingLlamaFlagPresets(presets: readonly LlamaFlagPreset[]): LlamaFlagPreset[] {
+  const have = new Set(presets.map((preset) => preset.id));
+  return [...structuredClone(presets) as LlamaFlagPreset[], ...cloneLlamaFlagPresets().filter((preset) => !have.has(preset.id))];
 }
 
 const llamaInstallInfoSchema = z.object({
@@ -195,7 +219,11 @@ export type LlamaEmbedding = z.infer<typeof llamaEmbeddingSchema>;
 
 const llamaProviderSchema = z.preprocess((input) => {
   const raw = isPlain(input) ? input : {};
-  return Array.isArray(raw.profiles) ? raw : { ...raw, profiles: cloneLlamaPresets() };
+  return {
+    ...raw,
+    ...(Array.isArray(raw.profiles) ? {} : { profiles: cloneLlamaPresets() }),
+    ...(Array.isArray(raw.flagPresets) ? {} : { flagPresets: cloneLlamaFlagPresets() }),
+  };
 }, z.object({
   enabled: z.boolean().default(true),
   /** 127.0.0.1:<port>: where the proxy sends requests and the launcher probes /v1/models; always passed as `--port`. */
@@ -227,6 +255,14 @@ const llamaProviderSchema = z.preprocess((input) => {
         seen.add(profile[key]);
       });
     }
+  }),
+  /** Named sets of extra arguments (AAP-54); applying one copies `args` into a profile's `extraArgs`. Seeded with the built-ins only when absent. */
+  flagPresets: z.array(llamaFlagPresetSchema).default([]).superRefine((presets, ctx) => {
+    const seen = new Set<string>();
+    presets.forEach((preset, index) => {
+      if (seen.has(preset.id)) ctx.addIssue({ code: "custom", path: [index, "id"], message: `Duplicate flag preset id '${preset.id}'.` });
+      seen.add(preset.id);
+    });
   }),
 }).default({} as never));
 

@@ -51,6 +51,7 @@ const api: ProxyApi = {
   pickModelFile: () => invoke("proxy:pickModelFile"),
   cancelLlamaDownload: (job) => invoke("proxy:cancelLlamaDownload", job),
   restoreLlamaPresets: (profiles) => invoke("proxy:restoreLlamaPresets", profiles),
+  restoreLlamaFlagPresets: (presets) => invoke("proxy:restoreLlamaFlagPresets", presets),
   llamaStatus: () => invoke("proxy:llamaStatus"),
   onLlamaProgress: (callback) => subscribe<LlamaProgressView>("proxy:llamaProgress", callback),
   getMonitor: () => invoke("proxy:monitor"),

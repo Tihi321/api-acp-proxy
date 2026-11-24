@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import path from "node:path";
 import { loadConfig } from "../src/config.js";
 import { createLogger } from "../src/logger.js";
-import { defaultSettings, defaultSettingsPath, mergeSettings, resolveConfig, restoreMissingLlamaPresets, restoreMissingPresets, SettingsStore, settingsSchema, type SecretCodec } from "../src/settings.js";
+import { defaultSettings, defaultSettingsPath, LLAMA_PRESETS, mergeSettings, resolveConfig, restoreMissingLlamaFlagPresets, restoreMissingLlamaPresets, restoreMissingPresets, SettingsStore, settingsSchema, type SecretCodec } from "../src/settings.js";
 import { tempRoot } from "./helpers/temp-root.js";
 
 const dir = tempRoot("settings");
@@ -25,7 +25,7 @@ describe("local provider settings", () => {
     const llama = settingsSchema.parse({}).providers.llama;
     expect([llama.port, llama.binary.backend, llama.binary.source, llama.binary.mode, llama.modelsDir, llama.binary.dir]).toEqual([8082, "rocm", "ggml-org", "managed", "D:\\LlamaCpp\\models", "D:\\LlamaCpp\\bin"]);
     expect(llama.profiles.map((p) => [p.id, p.requires])).toEqual([["inkling-2-mini", { minBuild: 12607, sources: ["unsloth"] }], ["inkling-2-mini-dspark", { sources: ["unsloth"] }]]);
-    expect(llama.profiles[1]).toMatchObject({ specType: "draft-dspark", draftNMax: 3, draftGpuLayers: 99, vision: true });
+    expect(llama.profiles[1]).toMatchObject({ specType: "draft-dspark", draftNMax: 5, draftGpuLayers: "all", flashAttn: "on", vision: true });
     const vision = { id: "v", label: "V", model: "v", modelFile: "v.gguf", vision: true };
     expect(() => settingsSchema.parse({ providers: { llama: { profiles: [vision] } } })).toThrow(/mmproj/);
     expect(settingsSchema.parse({ providers: { llama: { profiles: [{ ...vision, mmprojFile: "m.gguf" }] } } }).providers.llama.profiles[0]).toMatchObject({ gpuLayers: "auto", flashAttn: "auto", specType: "none", extraArgs: "" });
@@ -39,6 +39,29 @@ describe("local provider settings", () => {
     // A file from before the ticket (a chat server on 8083, no embedding key) still loads; only an enabled embedding server must not share the port.
     expect(settingsSchema.parse({ providers: { gufo: { port: 8083 } } }).providers.gufo.port).toBe(8083);
     expect(() => settingsSchema.parse({ providers: { gufo: { port: 8083 }, llama: { embedding: { enabled: true } } } })).toThrow(/embedding port 8083/);
+  });
+});
+
+describe("llama flag presets", () => {
+  it("seeds the flag presets once, keeps the user's lists and never rewrites a stored profile", () => {
+    const seeded = settingsSchema.parse({}).providers.llama.flagPresets;
+    expect(seeded.map((p) => p.id)).toEqual(["strix-halo-rocm", "strix-halo-rocm-kv-q8", "dspark-probabilistic", "inkling-sampling"]);
+    for (const preset of seeded) {
+      expect(preset.args.endsWith("--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0")).toBe(true);
+      expect(preset.args).not.toMatch(/(^|\s)(-fa|-ngl|-c|--spec-draft-n-max|--spec-draft-ngl|--draft-max)(\s|$)/);
+    }
+    const parse = (flagPresets: unknown) => settingsSchema.parse({ providers: { llama: { flagPresets } } }).providers.llama.flagPresets;
+    expect(parse([])).toEqual([]);
+    const mine = [{ id: "mine", label: "Mine", args: "-t 8" }];
+    expect(parse(mine)).toEqual(mine);
+    expect(() => parse([...mine, ...mine])).toThrow(/Duplicate flag preset id/);
+    const restored = restoreMissingLlamaFlagPresets([{ id: "mine", label: "Mine", args: "" }]);
+    expect(restored).toHaveLength(5);
+    expect(restored[0]?.id).toBe("mine");
+    const old = { ...LLAMA_PRESETS[1]!, flashAttn: "auto" as const, draftNMax: 3, draftGpuLayers: 99 };
+    const stored = settingsSchema.parse({ providers: { llama: { profiles: [old] } } }).providers.llama.profiles;
+    expect(stored[0]).toMatchObject({ flashAttn: "auto", draftNMax: 3, draftGpuLayers: 99 });
+    expect(restoreMissingLlamaPresets([LLAMA_PRESETS[0]!, stored[0]!])).toEqual([LLAMA_PRESETS[0], stored[0]]);
   });
 });
 

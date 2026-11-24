@@ -1,0 +1,11 @@
+{"ts":"2026-11-24T09:14:00Z","actor":"implement","type":"implement.started","request":"REQ-0011","ticket":"AAP-54-llama-speed-presets","detail":"branch AAP-54_llama-speed-presets from master 4601fd2"}
+{"ts":"2026-11-24T09:16:00Z","actor":"implement","type":"slice.started","request":"REQ-0011","ticket":"AAP-54-llama-speed-presets","detail":"Worker A settings/main/docs","data":{"tasks":["A"]}}
+{"ts":"2026-11-24T09:16:00Z","actor":"implement","type":"slice.started","request":"REQ-0011","ticket":"AAP-54-llama-speed-presets","detail":"Worker B renderer","data":{"tasks":["B"]}}
+{"ts":"2026-11-24T09:30:00Z","actor":"implement","type":"slice.done","request":"REQ-0011","ticket":"AAP-54-llama-speed-presets","detail":"Worker A done, 22 tests pass","data":{"tasks":["A"]}}
+{"ts":"2026-11-24T09:20:00Z","actor":"implement","type":"slice.done","request":"REQ-0011","ticket":"AAP-54-llama-speed-presets","detail":"Worker B done","data":{"tasks":["B"]}}
+{"ts":"2026-11-24T09:21:00Z","actor":"implement","type":"verify.passed","request":"REQ-0011","ticket":"AAP-54-llama-speed-presets","detail":"yarn test 531 passed, typecheck clean"}
+{"ts":"2026-11-24T09:22:00Z","actor":"implement","type":"changelog.written","request":"REQ-0011","ticket":"AAP-54-llama-speed-presets","detail":"changelog.md written"}
+{"ts":"2026-11-24T09:12:00Z","actor":"director-scribe","type":"plan.created","request":"REQ-0011","ticket":"AAP-54-llama-speed-presets","detail":"plan AAP-54 written; backfilled, recorded after implement"}
+{"ts":"2026-11-24T09:13:30Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0011","ticket":"AAP-54-llama-speed-presets","detail":"user approved the plan (\"Yes, build it\"); backfilled, recorded after implement"}
+{"ts":"2026-11-24T09:19:00Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0011","ticket":"AAP-54-llama-speed-presets","detail":"PASS: S1-S11 pass; S5 code-read only","data":{"verdict":"PASS","criteria":11}}
+{"ts":"2026-11-24T09:19:58Z","actor":"director-scribe","type":"ticket.done","request":"REQ-0011","ticket":"AAP-54-llama-speed-presets","detail":"ticket done after PASS verdict"}

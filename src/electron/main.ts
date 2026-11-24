@@ -18,10 +18,10 @@ import { LOCAL_SERVER_IDS, LocalServerManager } from "../local-servers.js";
 import type { LocalServerSpec } from "../local-servers.js";
 import { contextFromArgs, cpuSampler, fetchEngine, hostView, localState } from "../local-monitor.js";
 import { listMcpServers } from "../mcp-servers.js";
-import { LLAMA_SOURCES, defaultSettingsPath, restoreMissingLlamaPresets, restoreMissingPresets } from "../settings.js";
-import type { GufoProfile, LlamaProfile, LlamaSource, SecretCodec, SettingsPatch } from "../settings.js";
+import { LLAMA_SOURCES, defaultSettingsPath, restoreMissingLlamaFlagPresets, restoreMissingLlamaPresets, restoreMissingPresets } from "../settings.js";
+import type { GufoProfile, LlamaFlagPreset, LlamaProfile, LlamaSource, SecretCodec, SettingsPatch } from "../settings.js";
 import { DownloadError } from "../download.js";
-import { GITHUB_POLICY, fetchReleases } from "../llama-releases.js";
+import { GITHUB_POLICY, fetchRelease, fetchReleases } from "../llama-releases.js";
 import type { LlamaReleaseView } from "../llama-releases.js";
 import { findInstalledBuild, installLlama, probeLlamaVersion } from "../llama-install.js";
 import { HF_POLICY, downloadHfFiles, listHfFiles, parseHfLink } from "../hf-models.js";
@@ -32,7 +32,7 @@ import { scanModelsDir } from "../llama-scan.js";
 import { antigravityRegistration, installAntigravity, readInstallInfo } from "./antigravity.js";
 import { SettingsWindow } from "./settings-window.js";
 import { TrayController } from "./tray.js";
-import type { ActionResult, ActivityView, EngineView, FieldError, Failure, GufoProfileView, HfDownloadResult, HfListResult, InstallInfoView, InstallResult, LlamaCheckResult, LlamaInstallResult, LlamaProfileView, LlamaProgressView, LlamaReleasesResult, LlamaScanResult, LlamaStatusView, LocalServerId, MonitorView, OpenTarget, PickResult, SaveResult, StateView, UsageView } from "../shared/ipc.js";
+import type { ActionResult, ActivityView, EngineView, FieldError, Failure, GufoProfileView, HfDownloadResult, HfListResult, InstallInfoView, InstallResult, LlamaCheckResult, LlamaFlagPresetView, LlamaInstallResult, LlamaProfileView, LlamaProgressView, LlamaReleasesResult, LlamaScanResult, LlamaStatusView, LocalServerId, MonitorView, OpenTarget, PickResult, SaveResult, StateView, UsageView } from "../shared/ipc.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(here, "..", "..");
@@ -374,6 +374,7 @@ async function main(): Promise<void> {
   });
   handle("proxy:restoreGufoPresets", (profiles: unknown): GufoProfileView[] => Array.isArray(profiles) ? restoreMissingPresets(profiles as GufoProfile[]) : []);
   handle("proxy:restoreLlamaPresets", (profiles: unknown): LlamaProfileView[] => Array.isArray(profiles) ? restoreMissingLlamaPresets(profiles as LlamaProfile[]) as LlamaProfileView[] : []);
+  handle("proxy:restoreLlamaFlagPresets", (presets: unknown): LlamaFlagPresetView[] => Array.isArray(presets) ? restoreMissingLlamaFlagPresets(presets as LlamaFlagPreset[]) : []);
   handle("proxy:stopLocalServer", (id: unknown): Promise<ActionResult> | ActionResult => {
     if (!isLocalServerId(id)) return { ok: false, message: "Invalid server" };
     return action(() => servers.stop(id));
@@ -414,7 +415,14 @@ async function main(): Promise<void> {
     const cached = releasesCache.get(source);
     if (cached && refresh !== true && Date.now() - cached.at < RELEASES_TTL_MS) return { ok: true, releases: cached.releases };
     try {
-      const releases = await fetchReleases(source, { fetch: fetch as typeof fetch, policy: GITHUB_POLICY, signal: AbortSignal.timeout(30_000) });
+      const options = { fetch: fetch as typeof fetch, policy: GITHUB_POLICY, signal: AbortSignal.timeout(30_000) };
+      const releases = await fetchReleases(source, options);
+      // AAP-54: the Version list shows the newest few; the installed build may be older than the fetched page, so add it.
+      try {
+        await refreshLocalSettings();
+        const installed = llamaSettings?.binary.installed;
+        if (installed && installed.source === source && !releases.some((release) => release.tag === installed.tag)) releases.push(await fetchRelease(source, installed.tag, options));
+      } catch { /* the list still works without it */ }
       releasesCache.set(source, { at: Date.now(), releases });
       return { ok: true, releases };
     } catch (error) { return llamaFailure(error); }
@@ -437,6 +445,7 @@ async function main(): Promise<void> {
       // Job results are saved without a proxy restart (in-flight requests keep running), patched onto what is stored now.
       await proxy.persistSettings((current) => installPatch(current.providers.llama, { source, backend, arch, info: outcome.value }));
       await refreshLocalSettings();
+      releasesCache.delete(source); // the next Version list refetches, so the new build shows at once
       pushState();
       return { ok: true, info: outcome.value };
     } catch (error) { return llamaFailure(error); }

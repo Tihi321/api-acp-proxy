@@ -77,10 +77,12 @@ export interface LlamaBinarySettingsView {
   mode: "managed" | "custom"; dir: string; source: LlamaSourceView; backend: string; arch: "x64" | "arm64";
   customPath?: string; customBuild?: number; installed?: LlamaInstallInfoView;
 }
-/** `SettingsPatchView` replaces `profiles` and `binary` as whole values. */
+/** A named set of extra arguments (AAP-54; see `LlamaFlagPreset` in settings.ts). Applying one copies `args` into a profile's `extraArgs`. */
+export interface LlamaFlagPresetView { id: string; label: string; args: string }
+/** `SettingsPatchView` replaces `profiles`, `flagPresets` and `binary` as whole values. */
 export interface LlamaProviderSettingsView {
   enabled: boolean; port: number; maxConcurrent?: number; switchWaitMs: number; modelsDir: string; hfToken?: string;
-  binary: LlamaBinarySettingsView; profiles: LlamaProfileView[]; embedding: LlamaEmbeddingSettingsView;
+  binary: LlamaBinarySettingsView; profiles: LlamaProfileView[]; flagPresets: LlamaFlagPresetView[]; embedding: LlamaEmbeddingSettingsView;
 }
 /** The embedding server (AAP-43; see `LlamaEmbedding` in settings.ts). */
 export interface LlamaEmbeddingSettingsView {
@@ -357,6 +359,7 @@ export interface ProxyApi {
   cancelLlamaDownload(job: "binary" | "model"): Promise<void>;
   /** `profiles` plus the built-in llama presets whose id and model are absent (pure). */
   restoreLlamaPresets(profiles: LlamaProfileView[]): Promise<LlamaProfileView[]>;
+  restoreLlamaFlagPresets(presets: LlamaFlagPresetView[]): Promise<LlamaFlagPresetView[]>;
   llamaStatus(): Promise<LlamaStatusView>;
   onLlamaProgress(callback: (progress: LlamaProgressView) => void): () => void;
   /** Read-only snapshot for the Monitor and About pages; reads the loaded local server's status endpoints on 127.0.0.1 with a 1.5 s timeout. */

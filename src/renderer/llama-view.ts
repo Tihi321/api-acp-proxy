@@ -1,9 +1,10 @@
 import type {
-  Failure, HfFileGroupView, HfListResult, LlamaBinarySettingsView, LlamaLayersView, LlamaLocalFileView, LlamaProfileView, LlamaProgressView,
+  Failure, HfFileGroupView, HfListResult, LlamaBinarySettingsView, LlamaFlagPresetView, LlamaLayersView, LlamaLocalFileView, LlamaProfileView, LlamaProgressView,
   LlamaProviderSettingsView, LlamaReleaseView, LlamaScanResult, LlamaSourceView, LlamaStatusView, LocalServerStatusView, ProxyApi,
 } from "../shared/ipc.js";
-import { applyFix, draftMissingFiles, foundFileFixes, profileFromFile, specTypeForDraft, usedBy } from "./llama-models.js";
+import { applyFix, draftMissingFiles, foundFileFixes, nextPresetId, profileFromFile, specTypeForDraft, usedBy } from "./llama-models.js";
 import type { FileField } from "./llama-models.js";
+import { visibleReleases } from "./llama-versions.js";
 
 /** Page logic of the Llama.cpp settings page (build install, models on disk, profiles, Hugging Face downloads). The shared save/dirty plumbing stays in settings.ts. */
 export interface LlamaViewDeps {
@@ -18,6 +19,8 @@ export interface LlamaViewDeps {
 export interface LlamaViewCollected {
   binary: LlamaBinarySettingsView;
   profiles: LlamaProfileView[];
+  /** The saved flag presets (named sets of extra arguments), trimmed. */
+  flagPresets: LlamaFlagPresetView[];
   /** The model file of the embedding server (the other embedding fields are plain inputs read by settings.ts). */
   embeddingModelFile: string;
   switchWaitMs?: number;
@@ -68,6 +71,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
 
   let binary: LlamaBinarySettingsView = { mode: "managed", dir: "", source: "ggml-org", backend: "rocm", arch: "x64" };
   let profiles: LlamaProfileView[] = [];
+  let flagPresets: LlamaFlagPresetView[] = [];
   let status: LlamaStatusView | undefined;
   let launcher: LocalServerStatusView | undefined;
   let embedLauncher: LocalServerStatusView | undefined;
@@ -121,9 +125,11 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     }
     const backend = backendSelect.value || binary.backend;
     const hasBackend = (release: LlamaReleaseView): boolean => assetsFor(release).some((asset) => asset.backend === backend);
-    versionSelect.replaceChildren(...releases.map((release) => new Option(`${release.tag} (${release.publishedAt.slice(0, 10)})${hasBackend(release) ? "" : " - no " + backend}`, release.tag)));
-    const keep = selectedTag && releases.some((release) => release.tag === selectedTag) ? selectedTag : undefined;
-    versionSelect.value = keep ?? (releases.find(hasBackend) ?? releases[0]!).tag;
+    const installed = binary.installed?.source === sourceSelect.value ? binary.installed.tag : undefined;
+    const shown = visibleReleases(releases, [installed, selectedTag]);
+    versionSelect.replaceChildren(...shown.map((release) => new Option(`${release.tag} (${release.publishedAt.slice(0, 10)})${hasBackend(release) ? "" : " - no " + backend}`, release.tag)));
+    const keep = selectedTag && shown.some((release) => release.tag === selectedTag) ? selectedTag : undefined;
+    versionSelect.value = keep ?? (shown.find(hasBackend) ?? shown[0]!).tag;
     selectedTag = versionSelect.value;
     fillBackends();
   }
@@ -572,6 +578,28 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
 
     const extra = make("textarea"); extra.rows = 2; extra.spellcheck = false; extra.value = profile.extraArgs;
     extra.addEventListener("input", () => { profile.extraArgs = extra.value; dirty(); });
+    const presetPick = make("select"); presetPick.dataset.role = "preset-pick";
+    fillPresetPicker(presetPick);
+    const saveAsPreset = make("button", "small", "Save as flag preset"); saveAsPreset.type = "button";
+    saveAsPreset.disabled = extra.value.trim() === "";
+    extra.addEventListener("input", () => { saveAsPreset.disabled = extra.value.trim() === ""; });
+    presetPick.addEventListener("change", () => {
+      const preset = flagPresets.find((entry) => entry.id === presetPick.value);
+      presetPick.value = "";
+      if (!preset) return;
+      extra.value = preset.args; profile.extraArgs = preset.args;
+      saveAsPreset.disabled = extra.value.trim() === "";
+      dirty();
+      flash(el("llama-profiles-msg"), `Applied flag preset '${preset.label || preset.id}'. Save to keep it.`);
+    });
+    saveAsPreset.onclick = () => {
+      const id = nextPresetId(new Set(flagPresets.map((entry) => entry.id)), flagPresets.length);
+      flagPresets.push({ id, label: `${profile.label.trim() || profile.id || "Profile"} arguments`, args: extra.value.trim() });
+      dirty(); renderFlagPresets(id); refreshPresetPickers();
+      flash(el("llama-flag-presets-msg"), "Saved as flag preset; rename it under Flag presets. Save to keep it.");
+    };
+    const presetRow = make("div", "row");
+    presetRow.append(presetPick, saveAsPreset);
 
     /** A file was chosen in a picker: mmproj switches vision on (it was empty) or off (none), a draft sets the spec type when it was none. */
     const picked = (key: FileField, value: string, had: boolean): void => {
@@ -604,8 +632,58 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       field("Request timeout (minutes, empty = server default)", numberInput(profile.requestTimeoutMs, (value) => { profile.requestTimeoutMs = value; }, 60000)),
     );
     const note = make("small", "", "draft-mtp uses the model's own MTP heads. Extra arguments are appended after the generated flags and can override them.");
-    card.append(head, warnings, grid, visionLabel, field("Extra arguments", extra, true), note);
+    card.append(head, warnings, grid, visionLabel, field("Extra arguments", extra, true), presetRow, note);
     return card;
+  }
+
+  /** (Re)build the options of one "Apply a flag preset" picker from the current flag presets. */
+  function fillPresetPicker(select: HTMLSelectElement): void {
+    select.replaceChildren(new Option("Apply a flag preset…", ""));
+    for (const preset of flagPresets) select.append(new Option(preset.label || preset.id, preset.id));
+    select.value = "";
+  }
+  /** Refresh the preset pickers inside the existing profile cards, without re-rendering them (focus and scroll stay). */
+  function refreshPresetPickers(): void {
+    for (const select of document.querySelectorAll<HTMLSelectElement>('#llama-profiles select[data-role="preset-pick"]')) fillPresetPicker(select);
+  }
+
+  /** Re-render the Flag presets list; `focusId` puts the cursor in that preset's name field afterwards (the scroll position is kept). */
+  function renderFlagPresets(focusId?: string): void {
+    const scroll = window.scrollY;
+    const cards = flagPresets.map((preset, index) => {
+      const card = make("div", "profile");
+      const head = make("div", "profile-head");
+      const name = make("input"); name.type = "text"; name.autocomplete = "off"; name.spellcheck = false; name.value = preset.label;
+      name.addEventListener("input", () => { preset.label = name.value; dirty(); });
+      name.dataset.presetId = preset.id;
+      name.addEventListener("change", () => refreshPresetPickers());
+      const duplicate = make("button", "small push", "Duplicate"); duplicate.type = "button";
+      duplicate.onclick = () => {
+        const id = nextPresetId(new Set(flagPresets.map((entry) => entry.id)), flagPresets.length);
+        flagPresets.splice(index + 1, 0, { id, label: `${preset.label} copy`, args: preset.args });
+        dirty(); renderFlagPresets(id); refreshPresetPickers();
+      };
+      const remove = make("button", "small", "Delete"); remove.type = "button";
+      remove.onclick = () => {
+        flagPresets.splice(index, 1); dirty();
+        const next = flagPresets[Math.min(index, flagPresets.length - 1)];
+        renderFlagPresets(next?.id); refreshPresetPickers();
+      };
+      head.append(make("strong", "", preset.id), duplicate, remove);
+      const args = make("textarea"); args.rows = 2; args.spellcheck = false; args.value = preset.args;
+      args.addEventListener("input", () => { preset.args = args.value; dirty(); });
+      const grid = make("div", "grid");
+      grid.append(field("Name", name), field("Arguments", args, true));
+      card.append(head, grid);
+      return card;
+    });
+    el("llama-flag-presets").replaceChildren(...(cards.length ? cards : [make("p", "note", "No flag presets. Restore the missing presets to get the built-in ones.")]));
+    if (focusId !== undefined) {
+      const target = Array.from(document.querySelectorAll<HTMLInputElement>("#llama-flag-presets input[data-preset-id]")).find((input) => input.dataset.presetId === focusId);
+      target?.focus({ preventScroll: true });
+      if (target) target.select();
+    }
+    window.scrollTo({ top: scroll });
   }
 
   /** "Use found files" (one button when every missing field has exactly one candidate) or one "Use <name>" button per candidate. */
@@ -781,11 +859,14 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   el("llama-restore-presets").onclick = async () => {
     try {
       const restored = await api.restoreLlamaPresets(profiles);
+      const restoredFlags = await api.restoreLlamaFlagPresets(flagPresets);
       const added = restored.length - profiles.length;
+      const addedFlags = restoredFlags.length - flagPresets.length;
       profiles = restored;
-      if (added > 0) dirty();
-      renderProfiles();
-      flash(el("llama-profiles-msg"), added > 0 ? `Added ${added} preset${added === 1 ? "" : "s"}. Save to keep them.` : "All presets are present.");
+      flagPresets = restoredFlags;
+      if (added > 0 || addedFlags > 0) dirty();
+      renderFlagPresets(); renderProfiles();
+      flash(el("llama-profiles-msg"), added > 0 || addedFlags > 0 ? `Added ${added} profile preset${added === 1 ? "" : "s"} and ${addedFlags} flag preset${addedFlags === 1 ? "" : "s"}. Save to keep them.` : "All presets are present.");
     } catch (error) { flash(el("llama-profiles-msg"), errorText(error), true); }
   };
   api.onLlamaProgress(applyProgress);
@@ -800,6 +881,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       binary = { ...settings.binary };
       savedModelsDir = settings.modelsDir;
       profiles = settings.profiles.map((profile) => ({ ...profile }));
+      flagPresets = settings.flagPresets.map((preset) => ({ ...preset }));
       embedDraft = { modelFile: settings.embedding.modelFile };
       el<HTMLInputElement>("llama-switch-wait").value = String(Math.round(settings.switchWaitMs / 60000));
       modeInput(binary.mode).checked = true;
@@ -812,6 +894,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       // The release list is kept when the source did not change; the selects are rebuilt from it.
       if (releasesSource !== binary.source) { releases = undefined; selectedTag = undefined; }
       fillVersions();
+      renderFlagPresets();
       renderProfiles();
       updateModelButtons();
       void refreshStatus();
@@ -847,7 +930,9 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
         }
         return copy;
       });
-      return { binary: out, profiles: cleaned, embeddingModelFile, ...(switchWaitMs !== undefined ? { switchWaitMs } : {}), errors };
+      const cleanedPresets = flagPresets.map((preset) => ({ id: preset.id, label: preset.label.trim(), args: preset.args.trim() }));
+      if (cleanedPresets.some((preset) => !preset.label)) errors.push({ path: "providers.llama.flagPresets", message: "A flag preset needs a name." });
+      return { binary: out, profiles: cleaned, flagPresets: cleanedPresets, embeddingModelFile, ...(switchWaitMs !== undefined ? { switchWaitMs } : {}), errors };
     },
     setLauncher(server: LocalServerStatusView): void {
       launcher = server;

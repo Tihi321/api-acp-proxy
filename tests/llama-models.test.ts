@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyFix, draftMissingFiles, foundFileFixes, profileFromFile, usedBy } from "../src/renderer/llama-models.js";
+import { applyFix, draftMissingFiles, foundFileFixes, nextPresetId, profileFromFile, usedBy } from "../src/renderer/llama-models.js";
 import { LLAMA_PRESETS } from "../src/settings.js";
 import type { LlamaLocalFileView, LlamaProfileView } from "../src/shared/ipc.js";
 
@@ -49,5 +49,10 @@ describe("llama-models", () => {
     expect(draftMissingFiles(preset, scan, [])).toEqual([preset.modelFile, preset.mmprojFile]);
     const fixedBoth = applyFix(applyFix(preset, "modelFile", scan[0]!), "mmprojFile", scan[1]!);
     expect(draftMissingFiles(fixedBoth, scan, [])).toEqual([]);
+  });
+
+  it("picks the next free flag preset id", () => {
+    expect(nextPresetId(new Set(["a", "b"]), 2)).toBe("preset-3");
+    expect(nextPresetId(new Set(["preset-3", "preset-4"]), 2)).toBe("preset-5");
   });
 });
