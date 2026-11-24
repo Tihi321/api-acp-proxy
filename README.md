@@ -136,7 +136,7 @@ Settings (`providers.gufo`, `providers.strata`; no environment variables):
 | `apiKey` | unset (sent as a bearer token when set; stored encrypted by the app) | unset |
 | `maxConcurrent` | `1` | `1` |
 
-- **`{port}`** in `args` is replaced with `port`. Strata's bat has port 8080 baked in, so keep `port` at 8080 (or whatever the bat uses): it is only where the proxy connects and probes.
+- **`{port}`** in `args` is replaced with `port`. Strata's bat has port 8080 baked in, so keep `port` at 8080 (or whatever the bat uses): it is only where the proxy connects and probes. Strata `args` may be empty (AAP-54): the settings page saves it empty and the default (an empty string) applies.
 - **One at a time.** Starting one server stops the other. A server is **not** started automatically: not at app start, not by a request.
 - **How it runs.** Hidden, through `cmd.exe` (no console window), in `cwd`. It is ready when `GET /v1/models` on its port answers 200; it fails if that does not happen in 10 minutes. If something already answers on the port, Start is refused (the app never adopts, stops or replaces a server it did not start). A request to `gufo/*` or `strata/*` while the app owns no process for that server and its port answers is passed straight to it, without starting or stopping anything, as before profiles existed. Stop kills the whole process tree, and so does quitting the app.
 - **Strata's `--open`.** The bat opens a browser tab. Point `command` at the venv python without `--open` to avoid it.
@@ -192,7 +192,7 @@ Profile fields (`providers.llama.profiles[]`); the app builds the llama-server c
 | `vision`, `mmprojFile` | `false` | `--mmproj "<path>"` only with `vision`; `vision` needs `mmprojFile`; `mmprojFile` is picked like `modelFile` |
 | `ctxSize` | model default | `-c <n>` |
 | `gpuLayers` | `auto` | `-ngl auto\|all\|<n>` |
-| `flashAttn` | `auto` | `-fa auto\|on\|off` |
+| `flashAttn` | `auto` (both built-in presets: `on`) | `-fa auto\|on\|off` |
 | `specType` | `none` | `--spec-type <type>` (none, draft-simple, draft-eagle3, draft-mtp, draft-dflash, draft-dspark, draft-dflash2, draft-lilicorr, ngram-simple, ngram-map-k, ngram-map-k4v, ngram-mod, ngram-cache) |
 | `draftFile` | - | `--spec-draft-model "<path>"` (only with a `specType`); picked like `modelFile` |
 | `draftNMax`, `draftNMin` | - | `--spec-draft-n-max`, `--spec-draft-n-min` |
@@ -204,12 +204,16 @@ Profile fields (`providers.llama.profiles[]`); the app builds the llama-server c
 
 Start refuses a profile with a missing file (the error names the first; the profile card lists all) or a build gate that fails; an unknown build only warns. The gate passes when the installed source is in `requires.sources` or the build number is at least `requires.minBuild`.
 
-Presets (editable; "Restore missing presets" appends absent ones). Both use `-ngl all`, context 32768 and the Inkling sampling flags in `extraArgs` (`--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0`):
+Presets (editable; "Restore missing presets" appends absent ones). Both use `-ngl all`, context 32768, `-fa on` and, in `extraArgs`, the Strix Halo ROCm speed flags `--no-mmap -ub 1024 -np 1 -t 16` followed by the Inkling sampling flags (`--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0`). The speed flags come from published Strix Halo reports, not from a benchmark of these models (AAP-54, live check UNTESTED); if `-fa on` does not load on a build, set Flash attention back to `auto`. A profile you already saved keeps its own values; to get the new defaults apply the flag preset "Strix Halo ROCm speed" on it and set Flash attention to `on` (for DSpark also Draft tokens max 5 and Draft GPU layers `all`), or remove the built-in profile and click "Restore missing presets" (this loses your file choices on that profile).
 
 | id / model | Files | Build | Notes |
 | --- | --- | --- | --- |
 | `inkling-2-mini` | `ggml-org/Inkling-2-Mini-GGUF`, Q8_0 (about 28 GB) + `mmproj-Inkling-2-Mini-BF16.gguf` (about 0.6 GB) | ggml-org b12607 or newer, or the Unsloth build | vision; no MTP/DSpark |
-| `inkling-2-mini-dspark` | `unsloth/Inkling-2-Mini-GGUF`, UD-Q8_K_XL + `mmproj-F16.gguf` + `dspark-Inkling-2-Mini-Q8_0.gguf` | Unsloth build only | vision; `--spec-type draft-dspark`, draft max 3, draft `-ngl 99` |
+| `inkling-2-mini-dspark` | `unsloth/Inkling-2-Mini-GGUF`, UD-Q8_K_XL + `mmproj-F16.gguf` + `dspark-Inkling-2-Mini-Q8_0.gguf` | Unsloth build only | vision; `--spec-type draft-dspark`, draft max 5, draft `-ngl all` |
+
+**Flag presets (AAP-54).** Named sets of extra arguments, kept in `providers.llama.flagPresets[]` (`id`, `label`, `args`). The Llama.cpp page has a **Flag presets** card to rename, edit and delete them. In a profile card the picker "Apply a flag preset..." copies a preset's `args` into that profile's Extra arguments, replacing them (nothing is referenced, so you can edit the text right after), and **Save as flag preset** turns the current Extra arguments into a new preset. Presets hold only flags that no profile field generates (not `-fa`, `-ngl`, `-c`, `--mmproj`, `--spec-*`). Four are built in (Strix Halo ROCm speed, the same with KV cache q8_0, DSpark probabilistic draft, Inkling sampling only); they are seeded once when the key is absent, an emptied list stays empty, and "Restore missing presets" appends absent built-in ids. Changes are saved with the page's Save.
+
+**Version list.** The Version drop-down of the Binary card shows the 5 newest releases of the chosen source, plus the installed build and the selected one when they are older.
 
 An own executable (custom mode) gets a warning, not a block, for the Unsloth-only preset. An older build answers "<profile> needs a newer build: b12607 or newer from ggml-org, or the Unsloth build" and does not start. DSpark is only known to work on the Unsloth fork, and whether that build loads the ggml-org Q8_0 is unverified. The exact file names are inferred: pick the quant you have; **Use found files** swaps a missing preset file for another quant of the same model in the same folder.
 

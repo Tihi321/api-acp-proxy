@@ -8,6 +8,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { DownloadError } from "../src/download.js";
 import { findInstalledBuild, installLlama } from "../src/llama-install.js";
 import { buildNumber, fetchReleases, parseReleases } from "../src/llama-releases.js";
+import { visibleReleases } from "../src/renderer/llama-versions.js";
 import { tempRoot } from "./helpers/temp-root.js";
 
 const root = tempRoot("llama-install");
@@ -81,6 +82,14 @@ describe("llama.cpp releases and install", () => {
     digest = "0".repeat(64);
     await expect(installLlama(base)).rejects.toSatisfy((error) => error instanceof DownloadError && error.code === "download_checksum_mismatch");
     expect(fs.readdirSync(binDir)).toEqual([]);
+  });
+
+  it("shows the latest 5 releases plus the installed and the selected one", () => {
+    const list = Array.from({ length: 10 }, (_, i) => ({ tag: `b${10 - i}` }));
+    const tags = (keep: Array<string | undefined>) => visibleReleases(list, keep).map((r) => r.tag);
+    expect(tags([])).toEqual(["b10", "b9", "b8", "b7", "b6"]);
+    expect(tags(["b2", undefined, "b8"])).toEqual(["b10", "b9", "b8", "b7", "b6", "b2"]);
+    expect(visibleReleases(list.slice(0, 3), [])).toHaveLength(3);
   });
 
   it("uses a complete build folder already on disk without any network call, and ignores an incomplete one", async () => {

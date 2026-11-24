@@ -2,11 +2,9 @@ import { nextExpiryDelay, usageLimitLine } from "./usage-limit-line.js";
 import { mcpAddCommand, mcpEndpointUrl } from "./mcp-command.js";
 import { initUsageView } from "./usage-view.js";
 import { initLlamaView } from "./llama-view.js";
+import { fields, fieldValue, type Scope } from "./settings-fields.js";
 import { initMonitorView } from "./monitor-view.js";
 import type { ActivityView, GufoProfileView, InstallProgressView, LocalServerId, LocalServerStatusView, ProviderStatusView, SaveResult, SettingsPatchView, StateView } from "../shared/ipc.js";
-
-type Scope = "server" | "codex" | "antigravity" | "claude" | "gufo" | "strata" | "llama";
-interface FieldSpec { path: string; kind: "text" | "number" | "bool" | "select"; scope: Scope; optional?: boolean }
 
 const api = window.proxyApi;
 type TermsProvider = "antigravity" | "claude";
@@ -32,63 +30,6 @@ const termsText: Record<TermsProvider, { title: string; paragraphs: string[]; ur
   },
 };
 let termsUrl = "";
-
-const fields: FieldSpec[] = [
-  { path: "server.host", kind: "text", scope: "server" },
-  { path: "server.port", kind: "number", scope: "server" },
-  { path: "server.apiKey", kind: "text", scope: "server", optional: true },
-  { path: "server.timeoutMs", kind: "number", scope: "server" },
-  { path: "server.maxBodyBytes", kind: "number", scope: "server" },
-  { path: "server.modelsWaitMs", kind: "number", scope: "server" },
-  { path: "server.toolResultTimeoutMs", kind: "number", scope: "server" },
-  { path: "server.maxConcurrent", kind: "number", scope: "server" },
-  { path: "server.maxQueue", kind: "number", scope: "server" },
-  { path: "server.launchAtLogin", kind: "bool", scope: "server" },
-  { path: "server.reuseSessions", kind: "bool", scope: "server" },
-  { path: "server.listBareAliases", kind: "bool", scope: "server" },
-  { path: "providers.codex.enabled", kind: "bool", scope: "codex" },
-  { path: "providers.codex.maxConcurrent", kind: "number", scope: "codex", optional: true },
-  { path: "providers.codex.maxPromptChars", kind: "number", scope: "codex", optional: true },
-  { path: "providers.codex.authMethodId", kind: "select", scope: "codex", optional: true },
-  { path: "providers.codex.isolatedHome", kind: "bool", scope: "codex" },
-  { path: "providers.antigravity.enabled", kind: "bool", scope: "antigravity" },
-  { path: "providers.antigravity.maxConcurrent", kind: "number", scope: "antigravity", optional: true },
-  { path: "providers.antigravity.maxPromptChars", kind: "number", scope: "antigravity", optional: true },
-  { path: "providers.antigravity.authMethodId", kind: "select", scope: "antigravity", optional: true },
-  { path: "providers.antigravity.executablePath", kind: "text", scope: "antigravity", optional: true },
-  { path: "providers.antigravity.apiKey", kind: "text", scope: "antigravity", optional: true },
-  { path: "providers.antigravity.geminiHome", kind: "text", scope: "antigravity", optional: true },
-  { path: "providers.antigravity.purgeSessions", kind: "bool", scope: "antigravity" },
-  { path: "providers.claude.enabled", kind: "bool", scope: "claude" },
-  { path: "providers.claude.maxConcurrent", kind: "number", scope: "claude", optional: true },
-  { path: "providers.claude.maxPromptChars", kind: "number", scope: "claude", optional: true },
-  { path: "providers.claude.authMethodId", kind: "select", scope: "claude", optional: true },
-  { path: "providers.claude.apiKey", kind: "text", scope: "claude", optional: true },
-  { path: "providers.claude.oauthToken", kind: "text", scope: "claude", optional: true },
-  { path: "providers.claude.configDir", kind: "text", scope: "claude", optional: true },
-  { path: "providers.claude.executablePath", kind: "text", scope: "claude", optional: true },
-  { path: "providers.gufo.enabled", kind: "bool", scope: "gufo" },
-  { path: "providers.gufo.port", kind: "number", scope: "gufo" },
-  { path: "providers.gufo.command", kind: "text", scope: "gufo" },
-  { path: "providers.gufo.cwd", kind: "text", scope: "gufo" },
-  { path: "providers.gufo.apiKey", kind: "text", scope: "gufo", optional: true },
-  { path: "providers.gufo.maxConcurrent", kind: "number", scope: "gufo", optional: true },
-  { path: "providers.strata.enabled", kind: "bool", scope: "strata" },
-  { path: "providers.strata.port", kind: "number", scope: "strata" },
-  { path: "providers.strata.command", kind: "text", scope: "strata" },
-  { path: "providers.strata.args", kind: "text", scope: "strata" },
-  { path: "providers.strata.cwd", kind: "text", scope: "strata" },
-  { path: "providers.strata.apiKey", kind: "text", scope: "strata", optional: true },
-  { path: "providers.strata.maxConcurrent", kind: "number", scope: "strata", optional: true },
-  { path: "providers.llama.enabled", kind: "bool", scope: "llama" },
-  { path: "providers.llama.port", kind: "number", scope: "llama" },
-  { path: "providers.llama.maxConcurrent", kind: "number", scope: "llama", optional: true },
-  { path: "providers.llama.modelsDir", kind: "text", scope: "llama" },
-  { path: "providers.llama.hfToken", kind: "text", scope: "llama", optional: true },
-  { path: "providers.llama.embedding.enabled", kind: "bool", scope: "llama" },
-  { path: "providers.llama.embedding.port", kind: "number", scope: "llama" },
-  { path: "providers.llama.embedding.ctxSize", kind: "number", scope: "llama" },
-];
 
 /** Shown before the provider has reported its methods (it is not running yet). */
 const fallbackAuth: Record<string, Array<{ id: string; name: string }>> = {
@@ -668,20 +609,10 @@ function collectPatch(scope: Scope): { patch?: SettingsPatchView; errors: Array<
   for (const spec of fields.filter((entry) => entry.scope === scope)) {
     if (state?.overridden.includes(spec.path)) continue;
     const input = field(spec.path);
-    let value: unknown;
-    if (spec.kind === "bool") value = (input as HTMLInputElement).checked;
-    else if (spec.kind === "number") {
-      if (input.value.trim() === "") { if (!spec.optional) { errors.push({ path: spec.path, message: "Required" }); continue; } setPath(patch, spec.path, null); continue; }
-      value = Number(input.value);
-      if (!Number.isFinite(value)) { errors.push({ path: spec.path, message: "Must be a number" }); continue; }
-    } else {
-      const text = spec.path.endsWith("apiKey") ? input.value : input.value.trim();
-      if (text === "") {
-        if (!spec.optional) { errors.push({ path: spec.path, message: "Required" }); continue; }
-        value = null;
-      } else value = text;
-    }
-    setPath(patch, spec.path, value);
+    if (spec.kind === "bool") { setPath(patch, spec.path, (input as HTMLInputElement).checked); continue; }
+    const result = fieldValue(spec, input.value);
+    if ("error" in result) { errors.push({ path: spec.path, message: result.error }); continue; }
+    setPath(patch, spec.path, result.value);
   }
   if (scope === "gufo") {
     const wait = el<HTMLInputElement>("gufo-switch-wait");
@@ -697,6 +628,7 @@ function collectPatch(scope: Scope): { patch?: SettingsPatchView; errors: Array<
     // `binary` and `profiles` are replaced as whole values.
     setPath(patch, "providers.llama.binary", collected.binary);
     setPath(patch, "providers.llama.profiles", collected.profiles);
+    setPath(patch, "providers.llama.flagPresets", collected.flagPresets);
     setPath(patch, "providers.llama.embedding.modelFile", collected.embeddingModelFile);
   }
   return { patch: patch as SettingsPatchView, errors };

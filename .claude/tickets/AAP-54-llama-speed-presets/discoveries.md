@@ -1,0 +1,1 @@
+- 2026-11-24 implement: releases cache may lack a just-installed tag until TTL expires (src/electron/main.ts ~415) - suggested: clear releasesCache for the source after install

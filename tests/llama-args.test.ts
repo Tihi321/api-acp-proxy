@@ -10,12 +10,15 @@ describe("llama args", () => {
     const base = "D:\\My Models\\unsloth\\Inkling-2-Mini-GGUF";
     const sampling = "--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0";
     expect(buildLlamaArgs(dspark, dir)).toBe(
-      `-m "${base}\\Inkling-2-Mini-UD-Q8_K_XL.gguf" --host 127.0.0.1 --port {port} --alias inkling-2-mini-dspark --metrics -c 32768 -ngl all -fa auto`
+      `-m "${base}\\Inkling-2-Mini-UD-Q8_K_XL.gguf" --host 127.0.0.1 --port {port} --alias inkling-2-mini-dspark --metrics -c 32768 -ngl all -fa on`
       + ` --mmproj "${base}\\mmproj-F16.gguf" --spec-type draft-dspark`
-      + ` --spec-draft-model "${base}\\dspark-Inkling-2-Mini-Q8_0.gguf" --spec-draft-n-max 3 --spec-draft-ngl 99 ${sampling}`);
+      + ` --spec-draft-model "${base}\\dspark-Inkling-2-Mini-Q8_0.gguf" --spec-draft-n-max 5 --spec-draft-ngl all --no-mmap -ub 1024 -np 1 -t 16 ${sampling}`);
+    for (const preset of [mini, dspark]) expect(buildLlamaArgs(preset, dir)).not.toMatch(/(^|\s)--draft(-max|-min)?(\s|$)/);
     expect(buildLlamaArgs({ ...dspark, extraArgs: "--metrics --temp 1.0" }, dir).match(/--metrics/g)).toHaveLength(1);
     const plain = buildLlamaArgs(mini, dir);
     expect(plain).toContain("--mmproj");
+    expect(plain).toContain("-fa on");
+    expect(plain).toContain("--no-mmap -ub 1024 -np 1 -t 16 --temp 1.0");
     expect(plain).not.toContain("--spec-");
     expect(() => buildLlamaArgs({ ...mini, modelFile: "a%PATH%.gguf" }, dir)).toThrow("Unsupported character in modelFile");
     const embedding = defaultSettings().providers.llama.embedding;
