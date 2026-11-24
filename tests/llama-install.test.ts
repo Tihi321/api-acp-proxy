@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { zipSync } from "fflate";
 import { afterAll, describe, expect, it } from "vitest";
 import { DownloadError } from "../src/download.js";
-import { findInstalledBuild, installLlama } from "../src/llama-install.js";
+import { findInstalledBuild, installLlama, probeLlamaVersion } from "../src/llama-install.js";
 import { buildNumber, fetchReleases, parseReleases } from "../src/llama-releases.js";
 import { visibleReleases } from "../src/renderer/llama-versions.js";
 import { tempRoot } from "./helpers/temp-root.js";
@@ -105,5 +105,15 @@ describe("llama.cpp releases and install", () => {
     expect(info).toMatchObject({ source: "unsloth", tag: "b12649-mix-c7059d6", build: 12649, backend: "rocm-gfx1151", arch: "x64", command: path.join(dir, "bin", "llama-server.exe"), dir: path.join(dir, "bin") });
     fs.rmSync(path.join(dir, "bin", "llama-server.exe"));
     expect(await findInstalledBuild(base)).toBeUndefined();
+  });
+});
+
+describe("probeLlamaVersion", () => {
+  it("runs --version with the given (ROCm-fixed) environment and parses a fork's build 1 (AAP-61)", async () => {
+    const env = { PATH: "C:\rocm\bin" };
+    let seen: NodeJS.ProcessEnv | undefined;
+    const probe = await probeLlamaVersion("llama-server.exe", async (_exe, _args, e) => { seen = e; return "version: 1.0.0-dev (build 1, commit 4703b7d)"; }, env);
+    expect(seen).toBe(env);
+    expect(probe.build).toBe(1);
   });
 });
