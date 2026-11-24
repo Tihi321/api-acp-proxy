@@ -194,12 +194,12 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     const release = selectedRelease();
     const info = binary.installed;
     const active = Boolean(release && info && info.source === sourceSelect.value && info.tag === release.tag && info.backend === backendSelect.value && info.arch === binary.arch);
-    const useExisting = Boolean(release) && selectionOnDisk && !active;
     el<HTMLButtonElement>("llama-install").disabled = binaryBusy || !release;
-    el<HTMLButtonElement>("llama-install").textContent = useExisting ? "Use this build" : info ? "Download / update" : "Download";
+    el<HTMLButtonElement>("llama-install").textContent = info ? "Download / update" : "Download";
+    el<HTMLButtonElement>("llama-activate").disabled = binaryBusy || !release || !selectionOnDisk || active;
     const note = el("llama-not-active");
     note.hidden = !release || active || !info;
-    if (!note.hidden && info) note.textContent = `Not active: the app uses ${info.source} ${info.tag} until you click ${useExisting ? "Use this build" : "Download / update"}.`;
+    if (!note.hidden && info) note.textContent = `Not active: the app uses ${info.source} ${info.tag} until you click ${selectionOnDisk ? "Activate" : "Download / update"}.`;
     el("llama-install-cancel").hidden = !binaryBusy;
     el<HTMLButtonElement>("llama-releases-refresh").disabled = binaryBusy || releasesLoading;
     el<HTMLButtonElement>("llama-exe-check").disabled = binaryBusy;
@@ -223,6 +223,25 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       } else { el("llama-install-text").textContent = ""; showError(el("llama-install-error"), failureText(result)); }
     } catch (error) { showError(el("llama-install-error"), errorText(error)); }
     finally { binaryBusy = false; ownBinary = false; el<HTMLProgressElement>("llama-install-progress").hidden = true; updateBuildButtons(); void refreshStatus(); }
+  }
+
+  async function activate(): Promise<void> {
+    const release = selectedRelease();
+    if (!release || binaryBusy) return;
+    const request = { source: sourceSelect.value as LlamaSourceView, tag: release.tag, backend: backendSelect.value, arch: binary.arch };
+    showError(el("llama-install-error"), undefined);
+    binaryBusy = true; ownBinary = true; updateBuildButtons();
+    try {
+      if (deps.isDirty() && !await deps.save()) return;
+      const result = await api.activateLlamaBuild(request);
+      if (result.ok) {
+        binary = { ...binary, mode: "managed", source: request.source, backend: request.backend, arch: request.arch, installed: result.info };
+        modeInput("managed").checked = true; renderMode(); renderInstalled();
+        el("llama-install-text").textContent = `Activated ${result.info.tag}.`;
+        await deps.refresh();
+      } else { el("llama-install-text").textContent = ""; showError(el("llama-install-error"), failureText(result)); }
+    } catch (error) { showError(el("llama-install-error"), errorText(error)); }
+    finally { binaryBusy = false; ownBinary = false; updateBuildButtons(); void refreshStatus(); void refreshOnDisk(); }
   }
 
   async function checkExe(): Promise<void> {
@@ -875,6 +894,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   el("llama-exe-browse").onclick = async () => { const result = await api.pickExecutable(); if (result.path) { exeInput.value = result.path; binary = { ...binary, customBuild: undefined }; dirty(); renderInstalled(); } };
   el("llama-exe-check").onclick = () => void checkExe();
   el("llama-install").onclick = () => void install();
+  el("llama-activate").onclick = () => void activate();
   el("llama-install-cancel").onclick = () => void api.cancelLlamaDownload("binary");
   el("llama-releases-refresh").onclick = () => void loadReleases(true);
   el("llama-token-show").onclick = () => {

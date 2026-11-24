@@ -493,6 +493,21 @@ async function main(): Promise<void> {
       return { ok: true, info: outcome.value };
     } catch (error) { return llamaFailure(error); }
   });
+  handle("proxy:activateLlamaBuild", async (request: unknown): Promise<LlamaInstallResult> => {
+    const r = request as { source?: unknown; tag?: unknown; backend?: unknown; arch?: unknown } | null;
+    if (typeof r !== "object" || r === null || !isLlamaSource(r.source) || !shortString(r.tag, 200) || !shortString(r.backend, 100) || (r.arch !== "x64" && r.arch !== "arm64")) return { ok: false, message: "Invalid install request" };
+    const { source, tag, backend, arch } = r;
+    if (llamaJobs.binary) return { ok: false, message: "A download is already running.", code: "download_busy" };
+    try {
+      await refreshLocalSettings();
+      const info = await findInstalledBuild({ source, tag, backend, arch, binDir: llamaSettings!.binary.dir });
+      if (!info) return { ok: false, message: "This build is not downloaded. Click Download / update." };
+      await proxy.persistSettings((current) => installPatch(current.providers.llama, { source, backend, arch, info }));
+      await refreshLocalSettings();
+      pushState();
+      return { ok: true, info };
+    } catch (error) { return llamaFailure(error); }
+  });
   handle("proxy:checkLlamaExecutable", async (file: unknown): Promise<LlamaCheckResult> => {
     if (!shortString(file, 1000) || !file.toLowerCase().endsWith(".exe")) return { ok: false, message: "Choose a llama-server.exe file." };
     try {
