@@ -213,7 +213,7 @@ Presets (editable; "Restore missing presets" appends absent ones). The two Inkli
 | `inkling-2-mini` | `ggml-org/Inkling-2-Mini-GGUF`, Q8_0 (about 28 GB) + `mmproj-Inkling-2-Mini-BF16.gguf` (about 0.6 GB) | ggml-org b12607 or newer, or the Unsloth build | vision; no MTP/DSpark |
 | `inkling-2-mini-dspark` | `unsloth/Inkling-2-Mini-GGUF`, UD-Q8_K_XL + `mmproj-F16.gguf` + `dspark-Inkling-2-Mini-Q8_0.gguf` | Unsloth build only | vision; experimental: `--spec-type draft-dspark`, draft max 3, draft `-ngl all`; measured slower than the plain profile on Inkling 2 Mini (about 20 vs 33 t/s) |
 | `qwen3.8-27b-dspine` | `unsloth/Qwen3.8-27B-GGUF`, UD-Q4_K_M (about 16.6 GB) + `aj9o9/Qwen3.8-27B-DSpine-b16-GGUF`, `Qwen3.8-27B-DSpine-b16-Q4_K_M.gguf` (about 1.3 GB) | Custom DSpine fork build (no gate) | AAP-60; text only; context 16384; `--spec-type draft-dflash`, draft max 15, draft `-ngl all`, extra args `-np 1 --jinja` |
-| `qwen3.8-27b-mtp` | `unsloth/Qwen3.8-27B-GGUF`, UD-Q4_K_M + `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` (about 1.4 GB) | Unsloth build, or b12651 or newer | AAP-60; text only; context 16384; `--spec-type draft-mtp`, draft max 3 (use 2 for prose), draft `-ngl all`, extra args `-np 1 --jinja` |
+| `qwen3.8-27b-mtp` | `unsloth/Qwen3.8-27B-GGUF`, UD-Q4_K_M + `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` (about 1.4 GB) | b12651 or newer (ggml-org or Unsloth) | AAP-60; text only; context 16384; `--spec-type draft-mtp`, draft max 3 (use 2 for prose), draft `-ngl all`, extra args `-np 1 --jinja` |
 
 **Measured on Strix Halo (AAP-57, AAP-59).** Inkling 2 Mini IQ4_NL, generation at temperature 1.0 ([bench.md](.claude/tickets/AAP-57-llama-restart/bench.md), [bench2.md](.claude/tickets/AAP-57-llama-restart/bench2.md)):
 

@@ -24,7 +24,7 @@ describe("local provider settings", () => {
     expect(mergeSettings(defaultSettings(), { providers: { strata: { args: "--x" } } }).providers.strata.args).toBe("--x");
     const llama = settingsSchema.parse({}).providers.llama;
     expect([llama.port, llama.binary.backend, llama.binary.source, llama.binary.mode, llama.modelsDir, llama.binary.dir]).toEqual([8082, "rocm", "ggml-org", "managed", "D:\\LlamaCpp\\models", "D:\\LlamaCpp\\bin"]);
-    expect(llama.profiles.map((p) => [p.id, p.requires])).toEqual([["inkling-2-mini", { minBuild: 12607, sources: ["unsloth"] }], ["inkling-2-mini-dspark", { sources: ["unsloth"] }], ["qwen3.8-27b-dspine", undefined], ["qwen3.8-27b-mtp", { minBuild: 12651, sources: ["unsloth"] }]]);
+    expect(llama.profiles.map((p) => [p.id, p.requires])).toEqual([["inkling-2-mini", { minBuild: 12607, sources: ["unsloth"] }], ["inkling-2-mini-dspark", { sources: ["unsloth"] }], ["qwen3.8-27b-dspine", undefined], ["qwen3.8-27b-mtp", { minBuild: 12651 }]]);
     expect(llama.profiles[1]).toMatchObject({ specType: "draft-dspark", draftNMax: 3, draftGpuLayers: "all", flashAttn: "on", vision: true });
     const vision = { id: "v", label: "V", model: "v", modelFile: "v.gguf", vision: true };
     expect(() => settingsSchema.parse({ providers: { llama: { profiles: [vision] } } })).toThrow(/mmproj/);

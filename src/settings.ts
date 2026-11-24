@@ -163,14 +163,14 @@ export const LLAMA_PRESETS: readonly LlamaProfile[] = [
     draftNMax: 15, draftGpuLayers: "all", extraArgs: "-np 1 --jinja",
     hf: { repo: "unsloth/Qwen3.8-27B-GGUF", revision: "main", quant: "UD-Q4_K_M", draft: "Qwen3.8-27B-DSpine-b16-Q4_K_M.gguf" },
   },
-  // AAP-60: stock MTP on Qwen3.8-27B (bench.md): draft max 3 averaged 23.8 t/s at temp 1.0 (plain 12.7 to 12.9); prose drops to about 14, so max 2 is the prose-safe value. Ran on the Unsloth b12651 rocm-gfx1151 build and on ggml-org b12675 (Vulkan), hence minBuild 12651 or the Unsloth build.
+  // AAP-60: stock MTP on Qwen3.8-27B (bench.md): draft max 3 averaged 23.8 t/s at temp 1.0 (plain 12.7 to 12.9); prose drops to about 14, so max 2 is the prose-safe value. Ran on the Unsloth b12651 rocm-gfx1151 build and on ggml-org b12675 (Vulkan), hence minBuild 12651 for any source.
   {
     id: "qwen3.8-27b-mtp", label: "Qwen 3.8-27B MTP", model: "qwen3.8-27b-mtp", vision: false,
     modelFile: "unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf", ctxSize: 16384, gpuLayers: "all", flashAttn: "on",
     specType: "draft-mtp", draftFile: "unsloth/Qwen3.8-27B-GGUF/MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
     draftNMax: 3, draftGpuLayers: "all", extraArgs: "-np 1 --jinja",
     hf: { repo: "unsloth/Qwen3.8-27B-GGUF", revision: "main", quant: "UD-Q4_K_M", draft: "MTP/mtp-Qwen3.8-27B-Q4_0.gguf" },
-    requires: { minBuild: 12651, sources: ["unsloth"] },
+    requires: { minBuild: 12651 },
   },
 ];
 const cloneLlamaPresets = (): LlamaProfile[] => structuredClone(LLAMA_PRESETS) as LlamaProfile[];
