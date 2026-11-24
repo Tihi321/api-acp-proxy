@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildEmbeddingArgs, buildLlamaArgs, checkBuild, checkEmbeddingFiles, checkLlamaFiles, embeddingServerKey } from "../src/llama-args.js";
 import { LLAMA_PRESETS, defaultSettings, type LlamaProfile } from "../src/settings.js";
 
-const [mini, dspark] = LLAMA_PRESETS as [LlamaProfile, LlamaProfile];
+const [mini, dspark, qdspine, qmtp] = LLAMA_PRESETS as [LlamaProfile, LlamaProfile, LlamaProfile, LlamaProfile];
 
 describe("llama args", () => {
   it("builds the exact args, prechecks every shard and gates on the build", () => {
@@ -13,6 +13,14 @@ describe("llama args", () => {
       `-m "${base}\\Inkling-2-Mini-UD-Q8_K_XL.gguf" --host 127.0.0.1 --port {port} --alias inkling-2-mini-dspark --metrics -c 32768 -ngl all -fa on`
       + ` --mmproj "${base}\\mmproj-F16.gguf" --spec-type draft-dspark`
       + ` --spec-draft-model "${base}\\dspark-Inkling-2-Mini-Q8_0.gguf" --spec-draft-n-max 3 --spec-draft-ngl all -lm none -ub 1024 -np 1 -t 16 ${sampling}`);
+    // AAP-60: Qwen 3.8-27B; DSpine rides on draft-dflash and needs the custom fork, MTP is stock.
+    const qwen = "D:\\My Models\\unsloth\\Qwen3.8-27B-GGUF";
+    const qbase = `-m "${qwen}\\Qwen3.8-27B-UD-Q4_K_M.gguf" --host 127.0.0.1 --port {port} --alias`;
+    expect(buildLlamaArgs(qdspine, dir)).toBe(`${qbase} qwen3.8-27b-dspine --metrics -c 16384 -ngl all -fa on --spec-type draft-dflash`
+      + ` --spec-draft-model "D:\\My Models\\aj9o9\\Qwen3.8-27B-DSpine-b16-GGUF\\Qwen3.8-27B-DSpine-b16-Q4_K_M.gguf" --spec-draft-n-max 15 --spec-draft-ngl all -np 1 --jinja`);
+    expect(buildLlamaArgs(qmtp, dir)).toBe(`${qbase} qwen3.8-27b-mtp --metrics -c 16384 -ngl all -fa on --spec-type draft-mtp`
+      + ` --spec-draft-model "${qwen}\\MTP\\mtp-Qwen3.8-27B-Q4_0.gguf" --spec-draft-n-max 3 --spec-draft-ngl all -np 1 --jinja`);
+    expect(checkBuild(qdspine, { source: "custom" })).toEqual({ ok: true });
     for (const preset of [mini, dspark]) expect(buildLlamaArgs(preset, dir)).not.toMatch(/(^|\s)--draft(-max|-min)?(\s|$)/);
     expect(buildLlamaArgs({ ...dspark, extraArgs: "--metrics --temp 1.0" }, dir).match(/--metrics/g)).toHaveLength(1);
     const plain = buildLlamaArgs(mini, dir);
