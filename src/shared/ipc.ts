@@ -237,6 +237,8 @@ export interface LlamaStatusView {
   helpFlags?: string[];
   /** AAP-58: the GPUs `llama-server --list-devices` finds (with the ROCm SDK on PATH when the app adds it); [] = none (CPU only); absent when the check failed. */
   devices?: string[];
+  /** AAP-67: the active build ships ggml-hip.dll (a ROCm/HIP build). */
+  rocmBuild?: boolean;
 }
 export type LlamaReleasesResult = { ok: true; releases: LlamaReleaseView[] } | Failure;
 export type LlamaInstallResult = { ok: true; info: LlamaInstallInfoView } | Failure;

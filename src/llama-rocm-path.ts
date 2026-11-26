@@ -32,3 +32,8 @@ export function llamaChildEnv(command: string, env: NodeJS.ProcessEnv, fs: RocmF
   const key = Object.keys(env).find((name) => name.toLowerCase() === "path") ?? "Path";
   return { env: { ...env, [key]: env[key] ? `${added};${env[key]}` : added }, added };
 }
+
+/** AAP-67: true when the llama-server build ships ggml-hip.dll (a ROCm/HIP build). */
+export function isRocmBuild(command: string, fs: RocmFs = realFs): boolean {
+  return fs.exists(path.win32.join(path.win32.dirname(command), "ggml-hip.dll"));
+}
