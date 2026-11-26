@@ -1,0 +1,2 @@
+- 2026-11-26 worker: Server save errors for profile fields are not bound to inputs (no data-error-for), they only show as path + message in the general error line.
+- 2026-11-26 worker: Open state stays under an old id in localStorage if a profile id is edited and never saved (harmless).
