@@ -33,6 +33,8 @@ export interface LlamaViewHandle {
   /** Replaces the draft with the saved settings (only call while there are no unsaved edits). */
   load(settings: LlamaProviderSettingsView): void;
   collect(): LlamaViewCollected;
+  /** Opens the profile cards that the given save errors (paths like `providers.llama.profiles.2.model`) point at, so the error is not hidden in a collapsed card. */
+  revealErrors(errors: Array<{ path: string }>): void;
   setLauncher(server: LocalServerStatusView): void;
   /** The state of the embedding server (`embed`). */
   setEmbedLauncher(server: LocalServerStatusView): void;
@@ -92,6 +94,15 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   let selectionOnDisk = false;
   let diskToken = 0;
   const startingProfiles = new Set<string>();
+  /** AAP-63: ids of the profile cards that are open (cards start collapsed); kept in localStorage so it survives a re-render and a window reopen. */
+  const OPEN_KEY = "llama.openProfiles";
+  const openProfiles = new Set<string>((() => {
+    try { const stored: unknown = JSON.parse(localStorage.getItem(OPEN_KEY) ?? "[]"); return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : []; } catch { return []; }
+  })());
+  const setOpen = (id: string, open: boolean): void => {
+    if (open) openProfiles.add(id); else openProfiles.delete(id);
+    try { localStorage.setItem(OPEN_KEY, JSON.stringify([...openProfiles])); } catch { /* the open state is a convenience */ }
+  };
 
   const dirty = (): void => deps.markDirty(true);
   const modeInput = (mode: string): HTMLInputElement => el<HTMLInputElement>(`llama-mode-${mode}`);
@@ -332,6 +343,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     const taken = new Set(profiles.flatMap((profile) => [profile.id, profile.model]));
     const profile = profileFromFile(file, scanFiles, taken);
     profiles.push(profile);
+    setOpen(profile.id, true);
     dirty(); renderProfiles();
     el("llama-profiles").lastElementChild?.scrollIntoView({ block: "center", behavior: "smooth" });
     flash(el("llama-profiles-msg"), `Added profile "${profile.label}". Save to keep it.`);
@@ -582,7 +594,10 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     const card = make("div", "profile");
     card.dataset.index = String(index);
     const head = make("div", "profile-head");
-    head.append(make("strong", "", profile.label || profile.id || "(new profile)"));
+    const toggle = make("button", "profile-toggle"); toggle.type = "button";
+    toggle.append(make("span", "profile-chevron", "▸"), make("strong", "", profile.label || profile.id || "(new profile)"));
+    toggle.setAttribute("aria-expanded", "false");
+    head.append(toggle);
     const badge = make("span", "badge"); badge.dataset.role = "profile-badge";
     const start = make("button", "primary small", "Start"); start.type = "button"; start.dataset.role = "profile-start";
     start.onclick = () => void startProfile(profile.id);
@@ -590,7 +605,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     restart.title = "Saves unsaved edits, stops llama-server and starts this profile again with the new settings";
     restart.onclick = () => void startProfile(profile.id, true);
     const remove = make("button", "small", "Remove"); remove.type = "button";
-    remove.onclick = () => { profiles.splice(index, 1); dirty(); renderProfiles(); };
+    remove.onclick = () => { profiles.splice(index, 1); setOpen(profile.id, false); dirty(); renderProfiles(); };
     head.append(badge, start, restart, remove);
 
     const warnings = make("div"); warnings.dataset.role = "profile-warnings";
@@ -649,7 +664,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     const grid = make("div", "grid");
     grid.append(
       field("Label", textInput(profile.label, (value) => { profile.label = value; })),
-      field("Profile id (a-z, 0-9, . _ -)", textInput(profile.id, (value) => { profile.id = value; })),
+      field("Profile id (a-z, 0-9, . _ -)", textInput(profile.id, (value) => { const open = openProfiles.has(profile.id); setOpen(profile.id, false); profile.id = value; if (open) setOpen(value, true); })),
       field("Model id (exposed as llama/<model>)", textInput(profile.model, (value) => { profile.model = value; })),
       filePicker(profile, "modelFile", "Model file (first shard if split)", picked),
       filePicker(profile, "mmprojFile", "mmproj file (vision)", picked),
@@ -665,7 +680,17 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       field("Request timeout (minutes, empty = server default)", numberInput(profile.requestTimeoutMs, (value) => { profile.requestTimeoutMs = value; }, 60000)),
     );
     const note = make("small", "", "draft-mtp uses the model's own MTP heads. Extra arguments are appended after the generated flags and can override them.");
-    card.append(head, warnings, grid, visionLabel, field("Extra arguments", extra, true), presetRow, note);
+    const body = make("div", "profile-body");
+    body.append(grid, visionLabel, field("Extra arguments", extra, true), presetRow, note);
+    const show = (open: boolean): void => { body.hidden = !open; toggle.setAttribute("aria-expanded", String(open)); card.classList.toggle("open", open); };
+    show(openProfiles.has(profile.id));
+    // The whole header row toggles (the toggle button is the keyboard target); its Start / Restart / Remove buttons do not.
+    head.addEventListener("click", (event) => {
+      if ((event.target as HTMLElement).closest("button:not(.profile-toggle)")) return;
+      const open = body.hidden;
+      setOpen(profile.id, open); show(open);
+    });
+    card.append(head, warnings, body);
     return card;
   }
 
@@ -916,6 +941,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     let n = profiles.length + 1;
     while (taken.has(`profile-${n}`)) n++;
     profiles.push({ id: `profile-${n}`, label: `Profile ${n}`, model: `profile-${n}`, vision: false, modelFile: "", gpuLayers: "auto", flashAttn: "auto", specType: "none", extraArgs: "" });
+    setOpen(`profile-${n}`, true);
     dirty(); renderProfiles();
   };
   el("llama-restore-presets").onclick = async () => {
@@ -995,6 +1021,15 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
       const cleanedPresets = flagPresets.map((preset) => ({ id: preset.id, label: preset.label.trim(), args: preset.args.trim() }));
       if (cleanedPresets.some((preset) => !preset.label)) errors.push({ path: "providers.llama.flagPresets", message: "A flag preset needs a name." });
       return { binary: out, profiles: cleaned, flagPresets: cleanedPresets, embeddingModelFile, ...(switchWaitMs !== undefined ? { switchWaitMs } : {}), errors };
+    },
+    revealErrors(errors: Array<{ path: string }>): void {
+      let opened = false;
+      for (const error of errors) {
+        const match = /^providers\.llama\.profiles\.(\d+)(\.|$)/.exec(error.path);
+        const profile = match ? profiles[Number(match[1])] : undefined;
+        if (profile && !openProfiles.has(profile.id)) { setOpen(profile.id, true); opened = true; }
+      }
+      if (opened) renderProfiles();
     },
     setLauncher(server: LocalServerStatusView): void {
       launcher = server;

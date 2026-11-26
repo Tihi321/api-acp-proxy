@@ -642,6 +642,7 @@ function showErrors(scope: Scope, errors: Array<{ path: string; message: string 
     const node = root.querySelector<HTMLElement>(`[data-error-for="${error.path}"]`);
     if (node) node.textContent = error.message; else general.push(error.path ? `${error.path}: ${error.message}` : error.message);
   }
+  if (scope === "llama") llama.revealErrors(errors);
   showError(scope === "server" ? el("server-general-error") : role(root, "general-error"), general.join("\n") || undefined);
 }
 
