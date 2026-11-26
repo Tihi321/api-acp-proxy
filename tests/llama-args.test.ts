@@ -23,6 +23,10 @@ describe("llama args", () => {
     expect(checkBuild(qdspine, { source: "custom" })).toEqual({ ok: true });
     for (const preset of [mini, dspark]) expect(buildLlamaArgs(preset, dir)).not.toMatch(/(^|\s)--draft(-max|-min)?(\s|$)/);
     expect(buildLlamaArgs({ ...dspark, extraArgs: "--metrics --temp 1.0" }, dir).match(/--metrics/g)).toHaveLength(1);
+    // AAP-68: ROCm builds get -lv 4 unless extraArgs already sets a log level.
+    expect(buildLlamaArgs(mini, dir, { rocm: true })).toContain(" -lv 4 ");
+    expect(buildLlamaArgs(mini, dir)).not.toContain("-lv");
+    for (const extraArgs of ["-lv 5", "--verbose", "--log-verbosity=2"]) expect(buildLlamaArgs({ ...mini, extraArgs }, dir, { rocm: true })).not.toContain("-lv 4");
     const plain = buildLlamaArgs(mini, dir);
     expect(plain).toContain("--mmproj");
     expect(plain).toContain("-fa on");

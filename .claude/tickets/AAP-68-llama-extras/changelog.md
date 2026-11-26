@@ -1,0 +1,8 @@
+# AAP-68 changelog
+
+- Notes: committed the AAP-63, AAP-64, AAP-66 leftover notes (no binaries).
+- Llama.cpp page: "Expand all" / "Collapse all" link buttons in the Profiles header (`src/renderer/llama-view.ts`, `settings.html`); they update every card and `llama.openProfiles`.
+- Monitor page: shows `ROCM_CPU_FALLBACK` in the notice line when the llama server is running a ROCm build, `gpuLayers` is not 0 and `rocmCpuFallback` (same pure function) says CPU. `MonitorView.local.cpuFallback` is computed in `main.ts` (`proxy:monitor`).
+- ROCm log level: `llama-server --help` (b12681): `-lv N` (default 3, info), `-v` (infinity). At the default no device line appears; `-lv 4` (trace) adds `using device ROCm0 ...` and `offloaded 65/65 layers to GPU`. Tested on port 18093 with Bonsai Q2_0 and one chat request containing a marker word: `-lv 4` log has 278 lines, the marker 0 times, no per-token lines (about 35 lines per request: slot select, sampler params, timings). `-lv 5` is 7970 lines (136 device-ish lines), still no prompt text, but far too noisy. Implemented `-lv 4` for ROCm builds in `buildLlamaArgs(profile, modelsDir, { rocm })` unless `extraArgs` sets `-v/-lv/--verbose/--log-verbose/--verbosity/--log-verbosity/--log-disable`. Limit: the app keeps the last 200 log lines, so the device lines scroll out after a few requests; then `rocmCpuFallback` falls back to the `--list-devices` result as before.
+- Bench: thinking-on numbers in `bench.md`; no preset change.
+- Deleted Ternary-Bonsai-2.5-27B-PTQ1_0.gguf (5.99 GB) and -PTQ1_0-mtp.gguf (6.23 GB) from D:/LlamaCpp/models/prism-ml/Ternary-Bonsai-2.5-27B-GGUF (12.2 GB freed); nothing in src/ or tests/ referenced them.

@@ -1,0 +1,2 @@
+- 2026-11-26 worker: On HF, Ternary-Bonsai-2.5-27B-Q2_0.gguf and ...-Q2_0-mtp.gguf both parse as quant Q2_0 (src/hf-models.ts:138); 'Find on Hugging Face' for the MTP preset may pick the plain file. - suggested: let hf refs name an exact file, or treat a -mtp suffix as its own group.
+- 2026-11-26 worker: `git merge -F -` does not read stdin on this git. - suggested: use a message file for merge commits.

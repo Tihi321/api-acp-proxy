@@ -1,4 +1,5 @@
 import type { ActivityView, EngineView, MonitorView, ProxyApi } from "../shared/ipc.js";
+import { ROCM_CPU_FALLBACK } from "../shared/llama-devices.js";
 import { deviceLostText, engineReason, gib, imagesNote, SPARK_H, SPARK_W, sparkGeometry, speedSub } from "./monitor-format.js";
 
 /** Page logic of the Monitor and About pages (AAP-47). Read-only: it polls `getMonitor` while one of them is shown and the window is visible. */
@@ -166,7 +167,7 @@ export function initMonitorView(deps: MonitorViewDeps): MonitorViewHandle {
       tile("Port", local?.port !== undefined ? String(local.port) : undefined),
       tile("Proxy queue", queue ? `${queue.active} / ${queue.limit > 0 ? queue.limit : "unlimited"}` : undefined, queue ? `${queue.queued} queued` : undefined),
     );
-    el("mon-notice").textContent = !view ? "Engine not reachable. Still trying every 2 seconds." : local?.state === "none" ? "No local model loaded. Start one on the Gufo, Strata or Llama.cpp page, or send a request to a local model." : "";
+    el("mon-notice").textContent = !view ? "Engine not reachable. Still trying every 2 seconds." : local?.state === "none" ? "No local model loaded. Start one on the Gufo, Strata or Llama.cpp page, or send a request to a local model." : local?.cpuFallback ? ROCM_CPU_FALLBACK : "";
 
     const speed = engine?.speed;
     const reuse = engine?.reuse;
