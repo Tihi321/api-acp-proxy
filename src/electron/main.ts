@@ -197,7 +197,7 @@ async function main(): Promise<void> {
         if (gate.ok === false) throw new Error(gate.message);
         const missing = checkLlamaFiles(target.profile, llama.modelsDir);
         if (missing.length > 0) throw new Error(`File not found: ${missing[0]} (put it in the models folder or download it, then pick it on the Llama.cpp page)`);
-        return { id: "llama", command: binary.command, args: buildLlamaArgs(target.profile, llama.modelsDir), cwd: path.dirname(binary.command), port: llama.port, profile: target.profile.id, startTimeoutMs: target.profile.startTimeoutMs };
+        return { id: "llama", command: binary.command, args: buildLlamaArgs(target.profile, llama.modelsDir, { rocm: isRocmBuild(binary.command) }), cwd: path.dirname(binary.command), port: llama.port, profile: target.profile.id, startTimeoutMs: target.profile.startTimeoutMs };
       }
       const settings = gufoSettings;
       if (!settings) throw new Error("Settings are not loaded yet.");

@@ -28,7 +28,7 @@ function safe(value: string, field: string): string {
 const quoted = (value: string, field: string): string => `"${safe(value, field)}"`;
 
 /** The llama-server args of a profile; contains `{port}` for the launcher. */
-export function buildLlamaArgs(profile: LlamaProfile, modelsDir: string): string {
+export function buildLlamaArgs(profile: LlamaProfile, modelsDir: string, opts: { rocm?: boolean } = {}): string {
   const parts: string[] = [
     `-m ${quoted(resolveModelPath(modelsDir, profile.modelFile), "modelFile")}`,
     "--host 127.0.0.1",
@@ -47,6 +47,8 @@ export function buildLlamaArgs(profile: LlamaProfile, modelsDir: string): string
     if (profile.draftNMin !== undefined) parts.push(`--spec-draft-n-min ${profile.draftNMin}`);
     if (profile.draftGpuLayers !== undefined) parts.push(`--spec-draft-ngl ${profile.draftGpuLayers}`);
   }
+  // AAP-68: at the default level a ROCm build prints no device lines; -lv 4 adds "using device" and "offloaded N/N layers" (no prompt text, no per-token lines; measured on b12681), which rocmCpuFallback reads. Skipped when extraArgs sets a level or turns logging off.
+  if (opts.rocm && !/(^|\s)(-v|-lv|--verbose|--log-verbose|--verbosity|--log-verbosity|--log-disable)(\s|=|$)/.test(profile.extraArgs)) parts.push("-lv 4");
   const extra = profile.extraArgs.trim();
   if (extra) parts.push(extra);
   return parts.join(" ");
