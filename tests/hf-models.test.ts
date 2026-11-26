@@ -27,6 +27,10 @@ describe("hf-models", () => {
     expect(groups.find((group) => group.kind === "mmproj")).toMatchObject({ quant: "BF16" });
     expect(groups.find((group) => group.kind === "draft")).toMatchObject({ quant: "Q8_0" });
     expect(groups.some((group) => group.files.some((f) => f.path.includes("imatrix")))).toBe(false);
+    // AAP-65: the MTP file of a repo is its own quant; `:Q2_0` must pick the plain file.
+    const mtp = groupGgufFiles([file("B-Q2_0.gguf", 7), file("B-Q2_0-mtp.gguf", 8), file("mtp-B-Q4_0.gguf", 3)]);
+    expect(mtp.map((group) => [group.kind, group.quant])).toEqual([["model", "Q2_0"], ["model", "Q2_0-mtp"], ["draft", "Q4_0"]]);
+    expect(parseHfLink("o/r:Q2_0-mtp")).toMatchObject({ quant: "Q2_0-mtp" });
     const mainline = groups.find((group) => group.label.endsWith("(mainline)"));
     expect(mainline?.label).toBe("UD-Q4_K_XL (mainline)");
     expect(mainline?.files[0]?.saveAs.endsWith(".gguf")).toBe(true);

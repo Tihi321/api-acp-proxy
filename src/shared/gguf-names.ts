@@ -11,7 +11,11 @@ export const DRAFT_DIR = /^(dspark|mtp)$/i;
 export function quantOf(file: string): string | undefined {
   const stripped = file.replace(/\.gguf(?:_file)?$/i, "").replace(/-\d{5}-of-\d{5}$/i, "");
   const base = stripped.slice(stripped.lastIndexOf("/") + 1);
-  return QUANT.exec(base)?.[1] ?? QUANT.exec(stripped)?.[1];
+  const hit = QUANT.exec(base) ?? QUANT.exec(stripped);
+  if (!hit?.[1]) return undefined;
+  // AAP-65: an "-mtp" tag right after the quant (`X-Q2_0-mtp.gguf`, MTP head inside) is its own quant, so it never clashes with the plain file.
+  const text = QUANT.exec(base) ? base : stripped;
+  return /^[-_]mtp$/i.test(text.slice(hit.index + hit[0].length)) ? `${hit[1]}-mtp` : hit[1];
 }
 
 /** undefined = not a model file to list (not .gguf / .gguf_file, or imatrix*). `path` is posix, relative. */
