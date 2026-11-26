@@ -1,0 +1,1 @@
+- 2026-11-26 worker: GPU_LOG treats a default-level Flash Attention warning mentioning 'assigned to device ROCm0' as a GPU hit even when part of the model fell back to CPU; harmless today (src/shared/llama-devices.ts) - suggested: anchor GPU_LOG to the 'using device' / 'offloaded' lines
