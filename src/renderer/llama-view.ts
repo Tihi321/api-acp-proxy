@@ -940,6 +940,8 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
   el("llama-embed-start").onclick = () => void startEmbed();
   el("llama-embed-stop").onclick = () => void api.stopLocalServer("embed");
   for (const id of ["providers.llama.embedding.enabled", "providers.llama.embedding.port", "providers.llama.embedding.ctxSize"]) el(id).addEventListener(id.endsWith("enabled") ? "change" : "input", dirty);
+  el("llama-expand-all").onclick = () => { for (const profile of profiles) setOpen(profile.id, true); renderProfiles(); };
+  el("llama-collapse-all").onclick = () => { for (const id of [...openProfiles]) setOpen(id, false); renderProfiles(); };
   el("llama-add-profile").onclick = () => {
     const taken = new Set(profiles.flatMap((profile) => [profile.id, profile.model]));
     let n = profiles.length + 1;
