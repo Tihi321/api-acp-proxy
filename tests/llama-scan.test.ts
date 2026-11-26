@@ -24,6 +24,7 @@ describe("scanModelsDir", () => {
     put(dir, "p/q/Q8_0/y-00003-of-00003.gguf", 7);
     put(dir, "dspark-x-Q8_0.gguf", 2);
     put(dir, "imatrix.gguf");
+    put(dir, "t/Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf", 3);
 
     const scan = await scanModelsDir(dir);
     expect(scan).toMatchObject({ missingDir: false, truncated: false });
@@ -33,11 +34,13 @@ describe("scanModelsDir", () => {
       `${inkling}/mmproj-Inkling-2-Mini-Q8_0.gguf`,
       "o/r/Q4_K_M/x-00001-of-00003.gguf",
       "p/q/Q8_0/y-00001-of-00003.gguf",
+      "t/Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf",
     ]);
     const by = (name: string) => scan.files.find((f) => f.name === name)!;
     expect(by("dspark-x-Q8_0.gguf")).toMatchObject({ kind: "draft", folder: "", quant: "Q8_0", size: 2, complete: true });
     expect(by("Inkling-2-Mini-IQ4_NL.gguf")).toMatchObject({ kind: "model", folder: inkling, quant: "IQ4_NL", size: 10, complete: true });
     expect(by("mmproj-Inkling-2-Mini-Q8_0.gguf")).toMatchObject({ kind: "mmproj", quant: "Q8_0", size: 4 });
+    expect(by("Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf")).toMatchObject({ kind: "mmproj", quant: "Q8_0" });
     expect(by("x-00001-of-00003.gguf")).toMatchObject({ kind: "model", shards: 3, size: 15, complete: true });
     expect(by("y-00001-of-00003.gguf")).toMatchObject({ kind: "model", shards: 3, size: 14, complete: false });
   });

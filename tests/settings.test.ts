@@ -24,14 +24,14 @@ describe("local provider settings", () => {
     expect(mergeSettings(defaultSettings(), { providers: { strata: { args: "--x" } } }).providers.strata.args).toBe("--x");
     const llama = settingsSchema.parse({}).providers.llama;
     expect([llama.port, llama.binary.backend, llama.binary.source, llama.binary.mode, llama.modelsDir, llama.binary.dir]).toEqual([8082, "rocm", "ggml-org", "managed", "D:\\LlamaCpp\\models", "D:\\LlamaCpp\\bin"]);
-    expect(llama.profiles.map((p) => [p.id, p.requires])).toEqual([["inkling-2-mini", { minBuild: 12607, sources: ["unsloth"] }], ["inkling-2-mini-dspark", { sources: ["unsloth"] }], ["qwen3.8-27b-dspine", undefined], ["qwen3.8-27b-mtp", { minBuild: 12651 }]]);
+    expect(llama.profiles.map((p) => [p.id, p.requires])).toEqual([["inkling-2-mini", { minBuild: 12607, sources: ["unsloth"] }], ["inkling-2-mini-dspark", { sources: ["unsloth"] }], ["qwen3.8-27b-dspine", undefined], ["qwen3.8-27b-mtp", { minBuild: 12651 }], ["bonsai-2.5-27b", { minBuild: 11556 }], ["bonsai-2.5-27b-mtp", { minBuild: 11556 }]]);
     expect(llama.profiles[1]).toMatchObject({ specType: "draft-dspark", draftNMax: 3, draftGpuLayers: "all", flashAttn: "on", vision: true });
     const vision = { id: "v", label: "V", model: "v", modelFile: "v.gguf", vision: true };
     expect(() => settingsSchema.parse({ providers: { llama: { profiles: [vision] } } })).toThrow(/mmproj/);
     expect(settingsSchema.parse({ providers: { llama: { profiles: [{ ...vision, mmprojFile: "m.gguf" }] } } }).providers.llama.profiles[0]).toMatchObject({ gpuLayers: "auto", flashAttn: "auto", specType: "none", extraArgs: "" });
-    expect(restoreMissingLlamaPresets(llama.profiles.slice(0, 1))).toHaveLength(4);
-    // AAP-60: a user who has the two Inkling profiles gets the two Qwen ones from "Restore missing presets".
-    expect(restoreMissingLlamaPresets(llama.profiles.slice(0, 2)).slice(2).map((p) => p.id)).toEqual(["qwen3.8-27b-dspine", "qwen3.8-27b-mtp"]);
+    expect(restoreMissingLlamaPresets(llama.profiles.slice(0, 1))).toHaveLength(6);
+    // AAP-60: a user who has the two Inkling profiles gets the two Qwen and two Bonsai ones from "Restore missing presets".
+    expect(restoreMissingLlamaPresets(llama.profiles.slice(0, 2)).slice(2).map((p) => p.id)).toEqual(["qwen3.8-27b-dspine", "qwen3.8-27b-mtp", "bonsai-2.5-27b", "bonsai-2.5-27b-mtp"]);
     // AAP-43: the embedding server is off by default and its port may not be another local server's.
     expect(llama.embedding).toEqual({ enabled: false, port: 8083, model: "nomic-embed-text-v1.5", modelFile: "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", ctxSize: 2048, gpuLayers: "all", maxConcurrent: 4, extraArgs: "", dimensions: 768 });
     expect(mergeSettings(defaultSettings(), { providers: { llama: { embedding: { enabled: true, port: 9000 } as never } } }).providers.llama.embedding).toMatchObject({ enabled: true, port: 9000, ctxSize: 2048 });

@@ -172,6 +172,22 @@ export const LLAMA_PRESETS: readonly LlamaProfile[] = [
     hf: { repo: "unsloth/Qwen3.8-27B-GGUF", revision: "main", quant: "UD-Q4_K_M", draft: "MTP/mtp-Qwen3.8-27B-Q4_0.gguf" },
     requires: { minBuild: 12651 },
   },
+  // AAP-64: PrismML Ternary Bonsai 2.5 27B (Qwen3.8-27B base, ternary Q2_0, 7.7 GB). Stock llama.cpp runs Q2_0 from build b11556 on (older builds print garbage). Sampling is the vendor thinking-mode set (temp 1.0, top-p 0.95, top-k 20, min-p 0; llama.cpp defaults min-p to 0.05). Measured speeds: .claude/tickets/AAP-64-bonsai-2-5/bench.md.
+  {
+    id: "bonsai-2.5-27b", label: "Bonsai 2.5 27B (ternary Q2_0)", model: "bonsai-2.5-27b", vision: true,
+    modelFile: "prism-ml/Ternary-Bonsai-2.5-27B-GGUF/Ternary-Bonsai-2.5-27B-Q2_0.gguf", mmprojFile: "prism-ml/Ternary-Bonsai-2.5-27B-GGUF/Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf",
+    ctxSize: 32768, gpuLayers: "all", flashAttn: "on", specType: "none", extraArgs: "-np 1 --jinja --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0",
+    hf: { repo: "prism-ml/Ternary-Bonsai-2.5-27B-GGUF", revision: "main", quant: "Q2_0", mmproj: "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf" },
+    requires: { minBuild: 11556 },
+  },
+  // AAP-64: the same model from the "-mtp" GGUF, which carries its draft head inside (no draft file). MTP draft max 3 gave 45 t/s average on ROCm and 38 on Vulkan against 24 / 23 plain; prose is the slowest prompt (35 t/s at max 3; max 2 gives 36.6, max 4 34.3), so 3 is the middle. See bench.md.
+  {
+    id: "bonsai-2.5-27b-mtp", label: "Bonsai 2.5 27B MTP (ternary Q2_0)", model: "bonsai-2.5-27b-mtp", vision: true,
+    modelFile: "prism-ml/Ternary-Bonsai-2.5-27B-GGUF/Ternary-Bonsai-2.5-27B-Q2_0-mtp.gguf", mmprojFile: "prism-ml/Ternary-Bonsai-2.5-27B-GGUF/Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf",
+    ctxSize: 32768, gpuLayers: "all", flashAttn: "on", specType: "draft-mtp", draftNMax: 3, extraArgs: "-np 1 --jinja --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0",
+    hf: { repo: "prism-ml/Ternary-Bonsai-2.5-27B-GGUF", revision: "main", quant: "Q2_0", mmproj: "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf" },
+    requires: { minBuild: 11556 },
+  },
 ];
 const cloneLlamaPresets = (): LlamaProfile[] => structuredClone(LLAMA_PRESETS) as LlamaProfile[];
 
