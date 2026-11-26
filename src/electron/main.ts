@@ -17,7 +17,7 @@ import type { LocalModelTarget } from "../local-models.js";
 import { createLocalModelHost } from "../local-host.js";
 import { LOCAL_SERVER_IDS, LocalServerManager } from "../local-servers.js";
 import { llamaChildEnv, isRocmBuild } from "../llama-rocm-path.js";
-import { parseDevices } from "../shared/llama-devices.js";
+import { parseDevices, rocmCpuFallback } from "../shared/llama-devices.js";
 import type { LocalServerSpec } from "../local-servers.js";
 import { contextFromArgs, cpuSampler, fetchEngine, hostView, localState } from "../local-monitor.js";
 import { listMcpServers } from "../mcp-servers.js";
@@ -631,6 +631,14 @@ async function main(): Promise<void> {
       if (gufoProfile?.kind === "image") local.image = true;
       if (gufoProfile) local.profileFacts = { ...(contextFromArgs(gufoProfile.args) !== undefined ? { context: contextFromArgs(gufoProfile.args)! } : {}), vision: gufoProfile.vision };
       if (llamaProfile) local.profileFacts = { ...(llamaProfile.ctxSize !== undefined ? { context: llamaProfile.ctxSize } : {}), vision: llamaProfile.vision, specType: llamaProfile.specType };
+      if (llamaProfile && local.state !== "error") {
+        const command = llamaBinary(llamaSettings!).command;
+        const log = servers.list().find((entry) => entry.id === "llama")?.log;
+        if (command && isRocmBuild(command)) {
+          const devices = await llamaDevices(command);
+          if (rocmCpuFallback({ rocmBuild: true, gpuLayers: llamaProfile.gpuLayers, ...(devices ? { devices } : {}), ...(log ? { log } : {}) })) local.cpuFallback = true;
+        }
+      }
       if (queue) local.queue = { active: queue.active, queued: queue.queued, limit: queue.limit };
       // A Gufo image model was never probed: no engine read, the page says so.
       if (local.state === "ready" && local.port !== undefined && gufoProfile?.kind !== "image") {

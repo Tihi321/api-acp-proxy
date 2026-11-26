@@ -301,6 +301,7 @@ export interface MonitorView {
     profileFacts?: { context?: number; vision?: boolean; specType?: string };  // gufo/llama, from settings
     image?: true;                 // gufo: the loaded profile is an image model (never probed)
     external?: true;              // answers on the configured port, not started by this app
+    cpuFallback?: true;           // llama: a ROCm build that found no GPU (AAP-68, same check as the Llama.cpp page)
   };
   engine?: EngineView;            // absent for a Gufo image model, when none is loaded, or when the engine did not answer
   engineError?: string;           // "not reachable", "HTTP 401", "unexpected answer"
