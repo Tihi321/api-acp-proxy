@@ -162,7 +162,13 @@ input[type=text], input[type=password] { font-family: var(--font-mono); font-siz
 textarea { width: 100%; padding: 6px var(--space-2); border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface); color: var(--text); font: var(--text-sm) var(--font-mono); resize: vertical; }
 .profile { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); margin-top: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
 .profile-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.profile-head:has(> .profile-toggle) { cursor: pointer; }
 .profile-head strong { flex: 1; min-width: 0; }
+.profile-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-2); border: 0; background: none; padding: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.profile-chevron { display: inline-block; width: 1em; color: var(--text-muted); transition: transform .12s; }
+.profile-toggle[aria-expanded="true"] .profile-chevron { transform: rotate(90deg); }
+.profile-body { display: flex; flex-direction: column; gap: var(--space-3); }
+.profile-body[hidden] { display: none; }
 input:hover:not(:disabled), select:hover:not(:disabled) { border-color: var(--text-faint); }
 input:disabled, select:disabled { opacity: .6; cursor: not-allowed; }
 .check { display: inline-flex; align-items: flex-start; gap: var(--space-2); cursor: pointer; padding: 2px 0; }
