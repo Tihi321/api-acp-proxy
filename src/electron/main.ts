@@ -16,7 +16,7 @@ import { LocalModelCoordinator, targetKey } from "../local-models.js";
 import type { LocalModelTarget } from "../local-models.js";
 import { createLocalModelHost } from "../local-host.js";
 import { LOCAL_SERVER_IDS, LocalServerManager } from "../local-servers.js";
-import { llamaChildEnv } from "../llama-rocm-path.js";
+import { llamaChildEnv, isRocmBuild } from "../llama-rocm-path.js";
 import { parseDevices } from "../shared/llama-devices.js";
 import type { LocalServerSpec } from "../local-servers.js";
 import { contextFromArgs, cpuSampler, fetchEngine, hostView, localState } from "../local-monitor.js";
@@ -608,6 +608,7 @@ async function main(): Promise<void> {
       jobs: { binary: Boolean(llamaJobs.binary), model: Boolean(llamaJobs.model) },
       ...(helpFlags ? { helpFlags } : {}),
       ...(devices ? { devices } : {}),
+      ...(binary.command && isRocmBuild(binary.command) ? { rocmBuild: true } : {}),
     };
   });
   // Monitor and About pages (AAP-47): read-only. The engine's key stays here; the window gets counts, timings and `apiKeyNeeded`.

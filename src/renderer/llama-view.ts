@@ -3,6 +3,7 @@ import type {
   LlamaProviderSettingsView, LlamaReleaseView, LlamaScanResult, LlamaSourceView, LlamaStatusView, LocalServerStatusView, ProxyApi,
 } from "../shared/ipc.js";
 import { unknownFlags } from "../shared/llama-help.js";
+import { ROCM_CPU_FALLBACK, rocmCpuFallback } from "../shared/llama-devices.js";
 import { applyFix, draftMissingFiles, foundFileFixes, nextPresetId, profileButtons, profileFromFile, specTypeForDraft, usedBy } from "./llama-models.js";
 import type { FileField } from "./llama-models.js";
 import { visibleReleases } from "./llama-versions.js";
@@ -166,7 +167,7 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
     const devices = status?.devices;
     const line = el("llama-gpu");
     line.className = devices?.length === 0 ? "profile-warn" : "muted small-text";
-    line.textContent = devices === undefined ? "" : devices.length === 0 ? NO_GPU : `GPU: ${devices.join("; ")}`;
+    line.textContent = devices === undefined ? "" : devices.length === 0 ? (status?.rocmBuild ? ROCM_CPU_FALLBACK : NO_GPU) : `GPU: ${devices.join("; ")}`;
   }
 
   function renderInstalled(): void {
@@ -852,7 +853,10 @@ export function initLlamaView(deps: LlamaViewDeps): LlamaViewHandle {
         if (unknown.length) lines.push(`Unknown to ${buildName()}: ${unknown.join(", ")}. Remove or fix them; llama-server will refuse to start.`);
       }
       // AAP-58: a build that finds no GPU runs the model on the CPU whatever the layer count says.
-      if (status?.devices?.length === 0 && profile.gpuLayers !== 0) lines.push(NO_GPU);
+      // AAP-67: a ROCm build that did not load ggml-hip.dll (no ROCm device in `--list-devices` or in this profile's running server log) says so; other builds keep the generic text.
+      const log = mine && launcher ? launcher.log : undefined;
+      if (rocmCpuFallback({ rocmBuild: status?.rocmBuild === true, gpuLayers: profile.gpuLayers, ...(status?.devices ? { devices: status.devices } : {}), ...(log ? { log } : {}) })) lines.push(ROCM_CPU_FALLBACK);
+      else if (!status?.rocmBuild && status?.devices?.length === 0 && profile.gpuLayers !== 0) lines.push(NO_GPU);
       // AAP-55: why the last start of this profile ended (exit code + last output line), so a failed Start is visible without proxy.log.
       if (launcher?.state === "error" && launcher.profile === profile.id && launcher.error) lines.push(`Stopped: ${launcher.error}`);
       const host = node.querySelector<HTMLElement>('[data-role="profile-warnings"]')!;
