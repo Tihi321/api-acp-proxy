@@ -185,7 +185,7 @@ export const LLAMA_PRESETS: readonly LlamaProfile[] = [
     id: "bonsai-2.5-27b-mtp", label: "Bonsai 2.5 27B MTP (ternary Q2_0)", model: "bonsai-2.5-27b-mtp", vision: true,
     modelFile: "prism-ml/Ternary-Bonsai-2.5-27B-GGUF/Ternary-Bonsai-2.5-27B-Q2_0-mtp.gguf", mmprojFile: "prism-ml/Ternary-Bonsai-2.5-27B-GGUF/Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf",
     ctxSize: 32768, gpuLayers: "all", flashAttn: "on", specType: "draft-mtp", draftNMax: 3, extraArgs: "-np 1 --jinja --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0",
-    hf: { repo: "prism-ml/Ternary-Bonsai-2.5-27B-GGUF", revision: "main", quant: "Q2_0", mmproj: "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf" },
+    hf: { repo: "prism-ml/Ternary-Bonsai-2.5-27B-GGUF", revision: "main", quant: "Q2_0-mtp", mmproj: "Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf" },
     requires: { minBuild: 11556 },
   },
 ];
