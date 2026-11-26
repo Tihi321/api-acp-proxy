@@ -10,7 +10,7 @@ import type { ControllerStatus } from "../controller.js";
 import { createLogger } from "../logger.js";
 import { claudeRegistration } from "../providers/claude.js";
 import { codexRegistration } from "../providers/codex.js";
-import { createGufoRegistration, createLlamaRegistration, createStrataRegistration } from "../providers/local-openai.js";
+import { createGufoRegistration, createLlamaRegistration, createStrataRegistration, ollamaRegistration } from "../providers/local-openai.js";
 import type { EmbedHost } from "../providers/local-openai.js";
 import { LocalModelCoordinator, targetKey } from "../local-models.js";
 import type { LocalModelTarget } from "../local-models.js";
@@ -114,7 +114,7 @@ async function llamaDevices(command: string | undefined): Promise<string[] | und
 }
 
 const RELEASES_TTL_MS = 10 * 60 * 1000;
-const LOCAL_PROVIDER_IDS: readonly string[] = ["gufo", "strata", "llama"];
+const LOCAL_PROVIDER_IDS: readonly string[] = ["gufo", "strata", "llama", "ollama"];
 const HF_REPO = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/;
 const isLocalServerId = (id: unknown): id is LocalServerId => typeof id === "string" && (LOCAL_SERVER_IDS as readonly string[]).includes(id);
 const isLlamaSource = (value: unknown): value is LlamaSource => typeof value === "string" && (LLAMA_SOURCES as readonly string[]).includes(value);
@@ -238,7 +238,7 @@ async function main(): Promise<void> {
     settingsPath,
     logger,
     ...(secretCodec ? { secretCodec } : {}),
-    registry: [codexRegistration, antigravityRegistration, claudeRegistration, createGufoRegistration({ coordinator }), createStrataRegistration({ coordinator }), createLlamaRegistration({ coordinator, embed: embedHost })],
+    registry: [codexRegistration, antigravityRegistration, claudeRegistration, createGufoRegistration({ coordinator }), createStrataRegistration({ coordinator }), createLlamaRegistration({ coordinator, embed: embedHost }), ollamaRegistration],
     ctx: {
       dataDir,
       nodeRuntime: { command: process.execPath, argsPrefix: ["--require", hideWindows], env: { ELECTRON_RUN_AS_NODE: "1", NODE_OPTIONS: nodeOptions } },

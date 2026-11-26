@@ -6,11 +6,13 @@ import { estimateTokens } from "../usage.js";
 import type { Logger } from "../logger.js";
 import { ConcurrencyLimiter, type LimiterStats } from "../limiter.js";
 import { AcpUnavailableError, type EmbeddingResult, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type ImagePassthrough, type ModelInfo, type Provider, type ProviderState, type ProviderStatus } from "../provider.js";
-import type { GufoProfile, LlamaEmbedding, LlamaProfile } from "../settings.js";
+import { OLLAMA_DEFAULT_URL, type GufoProfile, type LlamaEmbedding, type LlamaProfile } from "../settings.js";
 import type { LocalServerId } from "../shared/ipc.js";
 
+/** The providers this class serves: the launcher-managed local servers and Ollama (AAP-69), which manages itself. */
+export type LocalProviderId = LocalServerId | "ollama";
 export interface LocalOpenAiOptions {
-  id: LocalServerId; displayName: string;
+  id: LocalProviderId; displayName: string;
   /** "http://127.0.0.1:<port>/v1" */
   baseUrl: string;
   apiKey?: string; logger: Logger;
@@ -46,7 +48,9 @@ const DEFAULT_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
 const GENERATION_FIELDS = ["prompt", "size", "steps", "seed", "negative_prompt", "guidance_scale", "n"] as const;
 type WireContent = string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
 
-export function notRunningMessage(displayName: string): string { return `${displayName} is not running — start it from the app.`; }
+export function notRunningMessage(displayName: string, id?: LocalProviderId): string {
+  return id === "ollama" ? `${displayName} is not running or not reachable — start Ollama (the proxy does not start it) or check its URL in Settings.` : `${displayName} is not running — start it from the app.`;
+}
 
 const NOT_RUNNING = "local_server_not_running";
 const CONNECTION_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
@@ -59,7 +63,7 @@ function errorCode(error: unknown): string | undefined {
 
 /** A generic OpenAI-compatible HTTP upstream (a local llama-server style process such as Gufo or Strata); text only, no tools. */
 export class LocalOpenAiProvider implements Provider {
-  readonly id: LocalServerId;
+  readonly id: LocalProviderId;
   readonly displayName: string;
   readonly ownedBy: string;
   readonly exposeUnprefixed = false;
@@ -156,7 +160,7 @@ export class LocalOpenAiProvider implements Provider {
       if (profile?.kind === "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' generates images; it does not answer chat requests.`, "model");
       if (this.profiles && hasImage(messages) && !this.acceptsImages(model)) throw refuseImages();
     } else if (profile && profile.kind !== "image") throw new ApiError(400, "model_not_capable", `The model '${this.id}/${model}' does not generate images.`, "model");
-    const leaseId = profile ? targetKey(this.id, profile.id) : this.leaseProfile;
+    const leaseId = profile ? targetKey(this.id as LocalServerId, profile.id) : this.leaseProfile; // a profile exists only on Gufo and Llama.cpp
     const lease = leaseId && this.coordinator ? await this.coordinator.acquire(leaseId, signal) : undefined;
     if (messages && !this.profiles && hasImage(messages) && !this.acceptsImages(model)) {
       await this.listModels().catch(() => undefined); // Strata is ready once the lease resolved
@@ -183,7 +187,7 @@ export class LocalOpenAiProvider implements Provider {
   }
 
   private notRunning(cause: unknown): AcpUnavailableError {
-    const message = notRunningMessage(this.displayName);
+    const message = notRunningMessage(this.displayName, this.id);
     this.setState("stopped", message);
     return new AcpUnavailableError(message, cause, NOT_RUNNING);
   }
@@ -396,7 +400,7 @@ export class LocalOpenAiProvider implements Provider {
 /** `embed` (Llama.cpp only, the desktop app): starts the embedding server on demand. */
 export interface GufoHost { coordinator?: LocalModelCoordinator; embed?: EmbedHost }
 
-function registration(id: LocalServerId, displayName: string, host: GufoHost = {}): ProviderRegistration {
+function registration(id: LocalProviderId, displayName: string, host: GufoHost = {}): ProviderRegistration {
   return {
     id, displayName,
     // Node's global fetch on purpose, not ctx.fetch (Electron net.fetch): Strata refuses a POST that carries a browser Origin header.
@@ -410,6 +414,12 @@ export const gufoRegistration: ProviderRegistration = createGufoRegistration();
 /** Strata; `host.coordinator` (the app) makes each request hold a lease on the `strata` profile so a Gufo switch cannot kill it mid-generation. */
 export function createStrataRegistration(host: GufoHost = {}): ProviderRegistration { return registration("strata", "Strata", host); }
 export const strataRegistration: ProviderRegistration = createStrataRegistration();
+/** Ollama (AAP-69): `providers.ollama.baseUrl` plus `/v1`, no coordinator lease (the proxy neither starts nor stops Ollama), models listed from Ollama as `ollama/<name>:<tag>`. */
+export function ollamaBaseUrl(baseUrl: string): string { const trimmed = baseUrl.trim().replace(/\/+$/, "").replace(/\/v1$/, ""); return `${trimmed}/v1`; }
+export const ollamaRegistration: ProviderRegistration = {
+  id: "ollama", displayName: "Ollama",
+  create: ({ providerSettings, ctx }) => new LocalOpenAiProvider({ id: "ollama", displayName: "Ollama", baseUrl: ollamaBaseUrl(typeof providerSettings.baseUrl === "string" ? providerSettings.baseUrl : OLLAMA_DEFAULT_URL), ...(typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? { apiKey: providerSettings.apiKey } : {}), logger: ctx.logger.child("ollama") }),
+};
 /** Llama.cpp with its profiles; `host.coordinator` (the app) switches the single server to the model a request names. */
 export function createLlamaRegistration(host: GufoHost = {}): ProviderRegistration { return registration("llama", "Llama.cpp", host); }
 export const llamaRegistration: ProviderRegistration = createLlamaRegistration();

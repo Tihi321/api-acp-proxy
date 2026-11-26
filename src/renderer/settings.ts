@@ -51,7 +51,7 @@ const providerOrder = ["codex", "claude", "antigravity"] as const;
 /** The local servers that have a page; `embed` (the embedding server) is a card of the Llama.cpp page. */
 type PageServerId = Exclude<LocalServerId, "embed">;
 const localOrder: readonly PageServerId[] = ["gufo", "strata", "llama"];
-const views = ["overview", "usage", "requests", "monitor", "about", "server", "codex", "claude", "antigravity", "gufo", "strata", "llama"] as const;
+const views = ["overview", "usage", "requests", "monitor", "about", "server", "codex", "claude", "antigravity", "gufo", "strata", "llama", "ollama"] as const;
 type ViewName = (typeof views)[number];
 const VIEW_KEY = "acp-proxy.view";
 const featureChips: Array<{ label: string; on: (status: ProviderStatusView) => boolean }> = [
@@ -64,7 +64,7 @@ const featureChips: Array<{ label: string; on: (status: ProviderStatusView) => b
 
 let state: StateView | undefined;
 let activity: ActivityView[] = [];
-const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, claude: false, gufo: false, strata: false, llama: false };
+const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, claude: false, gufo: false, strata: false, llama: false, ollama: false };
 /** Launcher state of the local model servers, in the order gufo, strata, llama. */
 let localServers: LocalServerStatusView[] = [];
 const usage = initUsageView({ api, showView: (name) => showView(name) });
@@ -202,6 +202,20 @@ function renderProvider(provider: string, current: StateView): void {
   role(root, "model-count").textContent = models.length ? `(${models.length})` : "";
   const list = role<HTMLElement>(root, "models");
   list.replaceChildren(...(models.length ? models.map((model) => Object.assign(document.createElement("li"), { textContent: model.id, title: model.name ?? "" })) : [Object.assign(document.createElement("li"), { className: "empty", textContent: providerState === "ready" || providerState === "needs_login" ? "No models discovered yet." : "No models (provider not running)." })]));
+}
+
+/** Ollama's page (AAP-69): fields, badge, error and models; no launcher, so no Start/Stop. */
+function renderOllama(current: StateView): void {
+  const root = card("ollama");
+  const status = current.status.providers.find((entry) => entry.id === "ollama");
+  const providerState = status?.state ?? "disabled";
+  setBadge(role(root, "badge"), providerState);
+  showError(role(root, "error"), status?.error);
+  renderFields("ollama", current);
+  const models = status?.models ?? [];
+  role(root, "model-count").textContent = models.length ? `(${models.length})` : "";
+  const list = role<HTMLElement>(root, "models");
+  list.replaceChildren(...(models.length ? models.map((model) => Object.assign(document.createElement("li"), { textContent: model.id, title: model.name ?? "" })) : [Object.assign(document.createElement("li"), { className: "empty", textContent: providerState === "disabled" ? "Enable and save to list Ollama's models." : "No models listed yet." })]));
 }
 
 /** Fields, provider badge and models of a local model server page (no login or terms parts). */
@@ -532,6 +546,7 @@ function render(current: StateView): void {
   renderProvider("claude", current);
   renderProvider("antigravity", current);
   for (const id of localOrder) renderLocal(id, current);
+  renderOllama(current);
   renderOverview(current);
   renderInstall(current);
   el("settings-path").textContent = current.settingsPath;
@@ -540,6 +555,7 @@ function render(current: StateView): void {
   setNavDot("server", server.state);
   for (const id of providerOrder) setNavDot(id, current.status.providers.find((entry) => entry.id === id)?.state ?? "disabled");
   for (const id of localOrder) setNavDot(id, localDotState(id));
+  setNavDot("ollama", current.status.providers.find((entry) => entry.id === "ollama")?.state ?? "disabled");
   usage.setState(current);
 }
 
@@ -767,6 +783,21 @@ function wire(): void {
       const input = event.currentTarget as HTMLInputElement;
       if (input.checked && !await ensureTerms(provider)) input.checked = false;
     });
+  }
+
+  {
+    const root = card("ollama");
+    const msg = role<HTMLElement>(root, "msg");
+    role(root, "save").onclick = () => void saveScope("ollama");
+    role(root, "refresh").onclick = async () => {
+      const result = await api.refreshModels("ollama");
+      if (!result.ok) flash(msg, result.message, true);
+    };
+    el("ollama-key-show").onclick = () => {
+      const input = field("providers.ollama.apiKey") as HTMLInputElement;
+      input.type = input.type === "password" ? "text" : "password";
+      el("ollama-key-show").textContent = input.type === "password" ? "Show" : "Hide";
+    };
   }
 
   for (const id of localOrder) {

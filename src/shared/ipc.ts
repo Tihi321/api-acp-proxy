@@ -51,8 +51,11 @@ export interface SettingsView {
     gufo: GufoProviderSettingsView;
     strata: LocalProviderSettingsView;
     llama: LlamaProviderSettingsView;
+    ollama: OllamaProviderSettingsView;
   };
 }
+/** Ollama (AAP-69): no launcher fields; the base URL is where Ollama listens. */
+export interface OllamaProviderSettingsView { enabled: boolean; baseUrl: string; apiKey?: string; maxConcurrent?: number }
 export interface LocalProviderSettingsView { enabled: boolean; port: number; command: string; args: string; cwd: string; apiKey?: string; maxConcurrent?: number }
 /** One Gufo model profile (see `GufoProfile` in settings.ts); `SettingsPatchView` replaces `profiles` as a whole array. */
 export interface GufoProfileView { id: string; label: string; model: string; kind: "llm" | "image"; args: string; vision: boolean; startTimeoutMs?: number; requestTimeoutMs?: number }
@@ -114,6 +117,7 @@ export type SettingsPatchView = {
     gufo?: { [K in keyof GufoProviderSettingsView]?: GufoProviderSettingsView[K] | null };
     strata?: { [K in keyof LocalProviderSettingsView]?: LocalProviderSettingsView[K] | null };
     llama?: { [K in keyof LlamaProviderSettingsView]?: LlamaProviderSettingsView[K] | null };
+    ollama?: { [K in keyof OllamaProviderSettingsView]?: OllamaProviderSettingsView[K] | null };
   };
 };
 
