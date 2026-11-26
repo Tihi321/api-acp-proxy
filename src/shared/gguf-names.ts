@@ -20,7 +20,7 @@ export function ggufKind(path: string): GgufKind | undefined {
   const parts = path.split("/");
   const name = parts[parts.length - 1] ?? path;
   if (/^imatrix/i.test(name)) return undefined;
-  if (/^mmproj/i.test(name)) return "mmproj";
+  if (/(?:^|[-_.])mmproj(?:[-_.]|$)/i.test(name)) return "mmproj";
   return DRAFT_NAME.test(name) || parts.slice(0, -1).some((dir) => DRAFT_DIR.test(dir)) ? "draft" : "model";
 }
 
