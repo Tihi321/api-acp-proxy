@@ -36,6 +36,7 @@
         <button type="button" class="nav-item" data-view="gufo"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Gufo</span></button>
         <button type="button" class="nav-item" data-view="strata"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Strata</span></button>
         <button type="button" class="nav-item" data-view="llama"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Llama.cpp</span></button>
+        <button type="button" class="nav-item" data-view="ollama"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Ollama</span></button>
       </nav>
 
       <div class="sidebar-foot">
@@ -535,6 +536,45 @@
           <div class="save-bar">
             <button type="button" class="primary" data-role="save">Save and restart</button>
             <span class="muted hint">Saving restarts the proxy server; in-flight requests will be dropped after 5 s. A running local server is not restarted.</span>
+            <p class="msg" data-role="msg" role="status"></p>
+            <p class="error" data-role="general-error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Ollama -->
+      <section class="view" id="view-ollama" data-view="ollama" aria-labelledby="ollama-title" hidden>
+        <div class="view-body provider local" data-provider="ollama" id="card-ollama">
+          <div class="view-head">
+            <div><h1 id="ollama-title">Ollama</h1><p class="view-sub">Models served by Ollama on this PC. Ollama runs itself: this app does not start or stop it.</p></div>
+            <div class="view-actions">
+              <span class="badge" data-role="badge" title="The proxy's view of the provider">-</span>
+              <label class="switch"><input id="providers.ollama.enabled" type="checkbox"><span>Enabled</span></label>
+            </div>
+          </div>
+          <small data-note-for="providers.ollama.enabled"></small>
+          <p class="note">Ollama loads a model into GPU memory on its own, beside the local server this app runs (Gufo, Strata or Llama.cpp). Both can run out of GPU memory: use one or the other at a time.</p>
+
+          <section class="card">
+            <div class="card-head"><h2>Server</h2></div>
+            <p class="error" data-role="error" hidden></p>
+            <div class="grid">
+              <label class="field wide"><span>Base URL</span><input id="providers.ollama.baseUrl" type="text" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:11434"><small>Where Ollama listens; the proxy uses its OpenAI-compatible <code>/v1</code> API.</small><small data-note-for="providers.ollama.baseUrl"></small><small class="error" data-error-for="providers.ollama.baseUrl"></small></label>
+              <label class="field"><span>Max concurrent requests <em class="muted">(empty = 1)</em></span><input id="providers.ollama.maxConcurrent" type="number" min="0"><small data-note-for="providers.ollama.maxConcurrent"></small><small class="error" data-error-for="providers.ollama.maxConcurrent"></small></label>
+            </div>
+            <label class="field wide"><span>API key <em class="muted">(optional; sent as a Bearer token)</em></span>
+              <div class="row"><input id="providers.ollama.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="ollama-key-show">Show</button></div>
+              <small data-note-for="providers.ollama.apiKey"></small><small class="error" data-error-for="providers.ollama.apiKey"></small></label>
+          </section>
+
+          <section class="card models">
+            <div class="card-head"><h2>Models <span class="muted" data-role="model-count"></span></h2><button type="button" class="small push" data-role="refresh">Refresh models</button></div>
+            <ul class="chips" data-role="models"></ul>
+          </section>
+
+          <div class="save-bar">
+            <button type="button" class="primary" data-role="save">Save and restart</button>
+            <span class="muted hint">Saving restarts the proxy server; in-flight requests will be dropped after 5 s.</span>
             <p class="msg" data-role="msg" role="status"></p>
             <p class="error" data-role="general-error" hidden></p>
           </div>

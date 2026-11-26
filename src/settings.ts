@@ -27,6 +27,16 @@ const localProviderSchema = (defaults: { port: number; command: string; args: st
   args: z.string().default(defaults.args),
 }).default({});
 
+/** Ollama (AAP-69): a server that manages itself, so no launcher fields; the proxy only talks to its OpenAI-compatible `/v1`. */
+export const OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434";
+const ollamaProviderSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Where Ollama listens; a trailing `/` or `/v1` is ignored. */
+  baseUrl: z.string().trim().refine((value) => { try { return /^https?:$/.test(new URL(value).protocol); } catch { return false; } }, "must be an http:// or https:// URL").default(OLLAMA_DEFAULT_URL),
+  apiKey: z.string().optional(),
+  maxConcurrent: z.number().int().min(0).default(1),
+}).default({});
+
 /** Fields shared by the Gufo and Llama.cpp profiles. */
 const profileBase = z.object({
   /** Slug, unique in the list. */
@@ -405,6 +415,7 @@ export const settingsSchema = z.object({
     gufo: gufoProviderSchema,
     llama: llamaProviderSchema,
     strata: localProviderSchema({ port: 8080, command: "D:\\Strata\\terminal\\run-unsloth-ud-iq4_xs.bat", args: "", cwd: "D:\\Strata" }),
+    ollama: ollamaProviderSchema,
   }).default({}),
   /** MCP servers a Responses request may name by `server_label` (JSON only, no settings-window editor). Headers and env are stored as written. */
   mcpServers: z.record(mcpLabel, mcpServerSchema).default({}),
@@ -456,7 +467,7 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
 
 function mapSecrets(settings: Settings, map: (value: string) => string | undefined): Settings {
   const copy = structuredClone(settings);
-  const holders: Array<[Record<string, unknown>, string]> = [[copy.server, "apiKey"], [copy.providers.antigravity, "apiKey"], [copy.providers.claude, "apiKey"], [copy.providers.claude, "oauthToken"], [copy.providers.gufo, "apiKey"], [copy.providers.strata, "apiKey"], [copy.providers.llama, "hfToken"]];
+  const holders: Array<[Record<string, unknown>, string]> = [[copy.server, "apiKey"], [copy.providers.antigravity, "apiKey"], [copy.providers.claude, "apiKey"], [copy.providers.claude, "oauthToken"], [copy.providers.gufo, "apiKey"], [copy.providers.strata, "apiKey"], [copy.providers.ollama, "apiKey"], [copy.providers.llama, "hfToken"]];
   for (const [holder, key] of holders) {
     const value = holder[key];
     if (typeof value !== "string") continue;

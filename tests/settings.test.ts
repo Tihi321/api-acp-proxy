@@ -14,6 +14,13 @@ const fresh = () => path.join(dir, `case-${counter++}`, "settings.json");
 const logger = createLogger({ console: false });
 
 describe("local provider settings", () => {
+  it("defaults Ollama to one request at a time on 127.0.0.1:11434 and refuses a base URL that is not http(s)", () => {
+    const ollama = settingsSchema.parse({}).providers.ollama;
+    expect([ollama.enabled, ollama.baseUrl, ollama.maxConcurrent]).toEqual([true, "http://127.0.0.1:11434", 1]);
+    expect(settingsSchema.parse({ providers: { ollama: { baseUrl: " http://pc:11434/ " } } }).providers.ollama.baseUrl).toBe("http://pc:11434/");
+    expect(() => settingsSchema.parse({ providers: { ollama: { baseUrl: "11434" } } })).toThrow(/http/);
+  });
+
   it("keeps and defaults the gufo and strata keys", () => {
     const parsed = settingsSchema.parse({ providers: { gufo: { port: 9000 } } });
     expect(parsed.providers.gufo.port).toBe(9000);

@@ -1,4 +1,4 @@
-export type Scope = "server" | "codex" | "antigravity" | "claude" | "gufo" | "strata" | "llama";
+export type Scope = "server" | "codex" | "antigravity" | "claude" | "gufo" | "strata" | "llama" | "ollama";
 export interface FieldSpec { path: string; kind: "text" | "number" | "bool" | "select"; scope: Scope; optional?: boolean }
 
 export const fields: FieldSpec[] = [
@@ -48,6 +48,10 @@ export const fields: FieldSpec[] = [
   { path: "providers.strata.cwd", kind: "text", scope: "strata" },
   { path: "providers.strata.apiKey", kind: "text", scope: "strata", optional: true },
   { path: "providers.strata.maxConcurrent", kind: "number", scope: "strata", optional: true },
+  { path: "providers.ollama.enabled", kind: "bool", scope: "ollama" },
+  { path: "providers.ollama.baseUrl", kind: "text", scope: "ollama" },
+  { path: "providers.ollama.apiKey", kind: "text", scope: "ollama", optional: true },
+  { path: "providers.ollama.maxConcurrent", kind: "number", scope: "ollama", optional: true },
   { path: "providers.llama.enabled", kind: "bool", scope: "llama" },
   { path: "providers.llama.port", kind: "number", scope: "llama" },
   { path: "providers.llama.maxConcurrent", kind: "number", scope: "llama", optional: true },

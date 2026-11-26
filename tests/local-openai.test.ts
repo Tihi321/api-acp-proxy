@@ -8,7 +8,7 @@ import type { ProxyConfig } from "../src/config.js";
 import type { LocalModelCoordinator } from "../src/local-models.js";
 import { createLogger } from "../src/logger.js";
 import { LLAMA_PRESETS, type GufoProfile } from "../src/settings.js";
-import { createLlamaRegistration, LocalOpenAiProvider } from "../src/providers/local-openai.js";
+import { createLlamaRegistration, LocalOpenAiProvider, ollamaBaseUrl, ollamaRegistration } from "../src/providers/local-openai.js";
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
 import { tempRoot } from "./helpers/temp-root.js";
@@ -189,6 +189,41 @@ describe("LocalOpenAiProvider", () => {
     const res = await fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "strata/any", messages: [{ role: "user", content: "hi" }] }) });
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ error: { code: "local_server_not_running", message: "Strata is not running — start it from the app." } });
+  });
+
+  it("serves ollama/<name>:<tag> from Ollama's /v1, passes reasoning_effort, and names Ollama in the not-running error", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const upstream = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/v1/models") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ object: "list", data: [{ id: "qwen3.8:latest" }, { id: "inkling-2-mini:latest" }] })); return; }
+      if (request.method === "POST" && request.url === "/v1/chat/completions") {
+        let raw = ""; request.on("data", (chunk) => { raw += String(chunk); });
+        request.on("end", () => {
+          seen.push(JSON.parse(raw) as Record<string, unknown>);
+          response.setHeader("content-type", "text/event-stream");
+          response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Hi" } }] })}\n\n`);
+          response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+          response.end("data: [DONE]\n\n");
+        });
+        return;
+      }
+      response.statusCode = 404; response.end();
+    });
+    const port = await listen(upstream);
+    expect(ollamaBaseUrl(`http://127.0.0.1:${port}/`)).toBe(`http://127.0.0.1:${port}/v1`);
+    expect(ollamaBaseUrl(`http://127.0.0.1:${port}/v1`)).toBe(`http://127.0.0.1:${port}/v1`);
+    const provider = ollamaRegistration.create({ providerSettings: { enabled: true, baseUrl: `http://127.0.0.1:${port}` } as never, ctx: { logger } as never } as never);
+    const client = new OpenAI({ baseURL: await serve(new ProviderRouter({ providers: [provider] })), apiKey: "test" });
+    expect((await client.models.list()).data.map((model) => model.id).sort()).toEqual(["ollama/inkling-2-mini:latest", "ollama/qwen3.8:latest"]);
+    const answer = await client.chat.completions.create({ model: "ollama/qwen3.8:latest", messages: [{ role: "user", content: "hi" }], reasoning_effort: "low" });
+    expect(answer.choices[0]?.message.content).toBe("Hi");
+    expect(seen[0]).toMatchObject({ model: "qwen3.8:latest", reasoning_effort: "low", stream: true });
+
+    const probe = createServer();
+    const closed = await listen(probe);
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    const down = await fetch(`${await serve(new ProviderRouter({ providers: [new LocalOpenAiProvider({ id: "ollama", displayName: "Ollama", baseUrl: ollamaBaseUrl(`http://127.0.0.1:${closed}`), logger })] }))}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "ollama/qwen3.8:latest", messages: [{ role: "user", content: "hi" }] }) });
+    expect(down.status).toBe(503);
+    expect(await down.json()).toMatchObject({ error: { code: "local_server_not_running", message: expect.stringContaining("Ollama is not running or not reachable") } });
   });
 
   const profile = (id: string, kind: "llm" | "image", vision = false, extra: Partial<GufoProfile> = {}): GufoProfile => ({ id, label: id, model: id, kind, vision, args: "", ...extra });
