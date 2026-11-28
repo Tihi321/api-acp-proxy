@@ -131,7 +131,7 @@ export class ProviderRouter implements AcpLike {
       if (provider) {
         const model = id.slice(slash + 1);
         const models = this.known.get(provider.id) ?? [];
-        if (model && (!models.length || models.some((m) => m.id === model))) return { provider, model };
+        if (model && (!models.length || models.some((m) => m.id === model) || provider.acceptsModel?.(model) === true)) return { provider, model };
       }
     }
     const owner = this.unprefixedOwners().get(id) ?? (slash < 0 && id ? this.providers.find((provider) => provider.exposeUnprefixed && !this.known.get(provider.id)?.length) : undefined);
@@ -183,8 +183,9 @@ export class ProviderRouter implements AcpLike {
     const out: ListedModel[] = [];
     for (const provider of this.providers) {
       const until = this.exhaustedUntilMs(provider.id);
-      const limit = { ...(provider.maxPromptChars ? { maxPromptChars: provider.maxPromptChars } : {}), ...(until !== undefined ? { exhaustedUntil: new Date(until).toISOString() } : {}) };
       for (const model of this.known.get(provider.id) ?? []) {
+        const chars = provider.maxPromptCharsFor?.(model.id) ?? provider.maxPromptChars;
+        const limit = { ...(chars ? { maxPromptChars: chars } : {}), ...(until !== undefined ? { exhaustedUntil: new Date(until).toISOString() } : {}) };
         const kind = { ...(model.kind ? { kind: model.kind } : {}), ...(model.vision !== undefined ? { vision: model.vision } : {}) };
         if (this.options.listBareAliases !== false && owners.get(model.id) === provider) out.push({ id: model.id, ownedBy: provider.ownedBy, provider: provider.id, ...kind, ...limit });
         out.push({ id: `${provider.id}/${model.id}`, ownedBy: provider.ownedBy, provider: provider.id, ...kind, ...limit });
@@ -194,7 +195,12 @@ export class ProviderRouter implements AcpLike {
   }
 
   private async refreshOne(provider: Provider, waitMs: number, force: boolean): Promise<void> {
-    const task = provider.listModels({ force }).then((models) => this.update(provider, models), (error) => this.log.debug(`Listing models for '${provider.id}' failed: ${error instanceof Error ? error.message : String(error)}`));
+    const task = provider.listModels({ force }).then((models) => {
+      this.update(provider, models);
+      const known = provider.usageLimitState?.();
+      if (known instanceof UsageLimitError) { if (this.exhaustedUntilMs(provider.id) === undefined) this.markExhausted(provider, known); }
+      else if (known === null && this.exhausted.delete(provider.id)) this.options.onExhaustedChange?.();
+    }, (error) => this.log.debug(`Listing models for '${provider.id}' failed: ${error instanceof Error ? error.message : String(error)}`));
     if (waitMs <= 0) { await task; return; }
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([task, new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs); })]);
@@ -218,8 +224,11 @@ export class ProviderRouter implements AcpLike {
     const provider = this.resolve(model)?.provider;
     if (!provider) return;
     this.refuseIfExhausted(provider);
-    provider.checkPrompt?.(messages, options);
+    provider.checkPrompt?.(messages, options, this.resolve(model)?.model);
   }
+
+  /** Whether the model's provider forwards the output limit upstream (the server then does not cut the text). */
+  forwardsOutputLimit(model: string): boolean { return this.resolve(model)?.provider.forwardsOutputLimit === true; }
 
   private now(): number { return this.options.now?.() ?? Date.now(); }
 
@@ -246,13 +255,18 @@ export class ProviderRouter implements AcpLike {
     } catch (error) {
       if (!(error instanceof UsageLimitError)) throw error;
       const now = this.now();
-      const settings = this.options.usageLimit;
-      const until = exhaustedUntil(error.resetText, now, settings?.cooldownMs ?? DEFAULT_COOLDOWN_MS, settings?.maxMs ?? MAX_RESET_MS, error.resetAt);
-      this.exhausted.set(provider.id, until);
-      this.options.onExhaustedChange?.();
-      this.log.warn(`'${provider.id}' has hit its usage limit; requests are refused until ${new Date(until).toISOString()}.`);
-      throw usageLimitRefusal(provider, until, now, false);
+      throw usageLimitRefusal(provider, this.markExhausted(provider, error), now, false);
     }
+  }
+
+  /** Marks the provider exhausted until the time its error implies (or the cooldown); returns that time (ms). */
+  private markExhausted(provider: Provider, error: UsageLimitError): number {
+    const settings = this.options.usageLimit;
+    const until = exhaustedUntil(error.resetText, this.now(), settings?.cooldownMs ?? DEFAULT_COOLDOWN_MS, settings?.maxMs ?? MAX_RESET_MS, error.resetAt);
+    this.exhausted.set(provider.id, until);
+    this.options.onExhaustedChange?.();
+    this.log.warn(`'${provider.id}' has hit its usage limit; requests are refused until ${new Date(until).toISOString()}.`);
+    return until;
   }
 
   /** Providers whose usage limit is used up, with the ISO time they are refused until (live entries only). */
@@ -266,7 +280,7 @@ export class ProviderRouter implements AcpLike {
     const target = this.resolve(model);
     if (!target) throw new ApiError(404, "model_not_found", `The model '${model}' does not exist.`, "model");
     this.refuseIfExhausted(target.provider);
-    target.provider.checkPrompt?.(messages, options);
+    target.provider.checkPrompt?.(messages, options, target.model);
     const limiter = this.limiters.get(target.provider.id);
     if (!limiter) return this.track(target.provider, () => target.provider.generate(target.model, messages, callbacks, signal, options));
     let release: () => void;

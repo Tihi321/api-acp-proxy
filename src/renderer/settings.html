@@ -32,6 +32,7 @@
         <button type="button" class="nav-item" data-view="codex"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Codex</span></button>
         <button type="button" class="nav-item" data-view="claude"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Claude</span></button>
         <button type="button" class="nav-item" data-view="antigravity"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Antigravity</span></button>
+        <button type="button" class="nav-item" data-view="deepseek"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">DeepSeek</span></button>
         <p class="nav-group">Local models</p>
         <button type="button" class="nav-item" data-view="gufo"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Gufo</span></button>
         <button type="button" class="nav-item" data-view="strata"><span class="nav-dot" data-role="nav-dot"></span><span class="nav-label">Strata</span></button>
@@ -561,10 +562,53 @@
             <div class="grid">
               <label class="field wide"><span>Base URL</span><input id="providers.ollama.baseUrl" type="text" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:11434"><small>Where Ollama listens; the proxy uses its OpenAI-compatible <code>/v1</code> API.</small><small data-note-for="providers.ollama.baseUrl"></small><small class="error" data-error-for="providers.ollama.baseUrl"></small></label>
               <label class="field"><span>Max concurrent requests <em class="muted">(empty = 1)</em></span><input id="providers.ollama.maxConcurrent" type="number" min="0"><small data-note-for="providers.ollama.maxConcurrent"></small><small class="error" data-error-for="providers.ollama.maxConcurrent"></small></label>
+              <label class="field"><span>Max prompt characters <em class="muted">(empty = the model's context length &times; 4, read from Ollama; 0 = no limit)</em></span><input id="providers.ollama.maxPromptChars" type="number" min="0"><small data-note-for="providers.ollama.maxPromptChars"></small><small class="error" data-error-for="providers.ollama.maxPromptChars"></small></label>
             </div>
             <label class="field wide"><span>API key <em class="muted">(optional; sent as a Bearer token)</em></span>
               <div class="row"><input id="providers.ollama.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="ollama-key-show">Show</button></div>
               <small data-note-for="providers.ollama.apiKey"></small><small class="error" data-error-for="providers.ollama.apiKey"></small></label>
+            <p class="note">Usage limit: not applicable (Ollama has no quota).</p>
+          </section>
+
+          <section class="card models">
+            <div class="card-head"><h2>Models <span class="muted" data-role="model-count"></span></h2><button type="button" class="small push" data-role="refresh">Refresh models</button></div>
+            <ul class="chips" data-role="models"></ul>
+          </section>
+
+          <div class="save-bar">
+            <button type="button" class="primary" data-role="save">Save and restart</button>
+            <span class="muted hint">Saving restarts the proxy server; in-flight requests will be dropped after 5 s.</span>
+            <p class="msg" data-role="msg" role="status"></p>
+            <p class="error" data-role="general-error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- DeepSeek -->
+      <section class="view" id="view-deepseek" data-view="deepseek" aria-labelledby="deepseek-title" hidden>
+        <div class="view-body provider" data-provider="deepseek" id="card-deepseek">
+          <div class="view-head">
+            <div><h1 id="deepseek-title">DeepSeek</h1><p class="view-sub">The official DeepSeek API, paid per token. Requests go to api.deepseek.com with your key.</p></div>
+            <div class="view-actions">
+              <span class="badge" data-role="badge" title="The proxy's view of the provider">-</span>
+              <label class="switch"><input id="providers.deepseek.enabled" type="checkbox"><span>Enabled</span></label>
+            </div>
+          </div>
+          <small data-note-for="providers.deepseek.enabled"></small>
+
+          <section class="card">
+            <div class="card-head"><h2>API</h2></div>
+            <p class="error" data-role="error" hidden></p>
+            <p class="note" data-role="balance" hidden></p>
+            <p class="usage-limit" data-role="usage-limit" hidden></p>
+            <div class="grid">
+              <label class="field wide"><span>Base URL</span><input id="providers.deepseek.baseUrl" type="text" autocomplete="off" spellcheck="false" placeholder="https://api.deepseek.com"><small data-note-for="providers.deepseek.baseUrl"></small><small class="error" data-error-for="providers.deepseek.baseUrl"></small></label>
+              <label class="field"><span>Max concurrent requests <em class="muted">(empty = 4)</em></span><input id="providers.deepseek.maxConcurrent" type="number" min="0"><small data-note-for="providers.deepseek.maxConcurrent"></small><small class="error" data-error-for="providers.deepseek.maxConcurrent"></small></label>
+              <label class="field"><span>Max prompt characters <em class="muted">(empty = the model's context &times; 4 = 4,194,304; 0 = no limit)</em></span><input id="providers.deepseek.maxPromptChars" type="number" min="0"><small data-note-for="providers.deepseek.maxPromptChars"></small><small class="error" data-error-for="providers.deepseek.maxPromptChars"></small></label>
+            </div>
+            <label class="field wide"><span>API key <em class="muted">(encrypted on this PC; sent as a Bearer token)</em></span>
+              <div class="row"><input id="providers.deepseek.apiKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="small" id="deepseek-key-show">Show</button></div>
+              <small data-note-for="providers.deepseek.apiKey"></small><small class="error" data-error-for="providers.deepseek.apiKey"></small></label>
           </section>
 
           <section class="card models">

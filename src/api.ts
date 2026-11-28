@@ -586,7 +586,12 @@ export function promptChars(blocks: PromptBlock[]): number {
 
 /** The 400 for a prompt over a provider's limit; the message starts "The prompt is too long" so clients can tell a size problem from other errors. */
 export function promptTooLong(displayName: string, chars: number, limit: number, param = "messages"): ApiError {
-  return new ApiError(400, "context_length_exceeded", `The prompt is too long for ${displayName}: ${chars} characters, the limit is ${limit}. The agent would silently drop the rest, so the proxy refused it. Shorten the prompt or use another model.`, param);
+  return new ApiError(400, "context_length_exceeded", `The prompt is too long for ${displayName}: ${chars} characters, the limit is ${limit}. The proxy refused it rather than let the model cut or drop part of it. Shorten the prompt or use another model.`, param);
+}
+
+/** The 400 for an upstream that refused the prompt as larger than the model's context; same code and prefix as `promptTooLong`. */
+export function contextTooLong(displayName: string, detail: string): ApiError {
+  return new ApiError(400, "context_length_exceeded", `The prompt is too long for ${displayName}: ${detail}`, "messages");
 }
 
 function parsesAsJson(text: string): boolean {

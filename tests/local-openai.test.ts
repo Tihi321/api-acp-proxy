@@ -8,6 +8,7 @@ import type { ProxyConfig } from "../src/config.js";
 import type { LocalModelCoordinator } from "../src/local-models.js";
 import { createLogger } from "../src/logger.js";
 import { LLAMA_PRESETS, type GufoProfile } from "../src/settings.js";
+import { deepseekRegistration } from "../src/providers/deepseek.js";
 import { createLlamaRegistration, LocalOpenAiProvider, ollamaBaseUrl, ollamaRegistration } from "../src/providers/local-openai.js";
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
@@ -206,6 +207,11 @@ describe("LocalOpenAiProvider", () => {
         });
         return;
       }
+      if (request.method === "POST" && request.url === "/api/show") {
+        let raw = ""; request.on("data", (chunk) => { raw += String(chunk); });
+        request.on("end", () => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify((JSON.parse(raw) as { model: string }).model === "qwen3.8:latest" ? { model_info: { "general.architecture": "qwen3", "qwen3.context_length": 64 } } : { model_info: {} })); });
+        return;
+      }
       response.statusCode = 404; response.end();
     });
     const port = await listen(upstream);
@@ -218,12 +224,52 @@ describe("LocalOpenAiProvider", () => {
     expect(answer.choices[0]?.message.content).toBe("Hi");
     expect(seen[0]).toMatchObject({ model: "qwen3.8:latest", reasoning_effort: "low", stream: true });
 
+    // The prompt limit comes from /api/show: context_length 64 tokens -> 256 characters; a model without one has no limit.
+    const base = await serve(new ProviderRouter({ providers: [provider] }));
+    const listed = (await (await fetch(`${base}/models`)).json() as { data: Array<{ id: string; max_prompt_chars?: number }> }).data;
+    expect(listed.find((model) => model.id === "ollama/qwen3.8:latest")?.max_prompt_chars).toBe(256);
+    expect(listed.find((model) => model.id === "ollama/inkling-2-mini:latest")?.max_prompt_chars).toBeUndefined();
+    const ask = (url: string) => fetch(`${url}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "ollama/qwen3.8:latest", stream: true, messages: [{ role: "user", content: "x".repeat(300) }] }) });
+    const sent = seen.length;
+    const refused = await ask(base);
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ error: { code: "context_length_exceeded", message: expect.stringMatching(/^The prompt is too long for Ollama: /) } });
+    expect(seen.length).toBe(sent);
+    const unlimited = ollamaRegistration.create({ providerSettings: { enabled: true, baseUrl: `http://127.0.0.1:${port}`, maxPromptChars: 0 } as never, ctx: { logger } as never } as never);
+    const open = await serve(new ProviderRouter({ providers: [unlimited] }));
+    await fetch(`${open}/models`);
+    expect((await ask(open)).status).toBe(200);
+    expect(seen.length).toBe(sent + 1);
+
     const probe = createServer();
     const closed = await listen(probe);
     await new Promise<void>((resolve) => probe.close(() => resolve()));
     const down = await fetch(`${await serve(new ProviderRouter({ providers: [new LocalOpenAiProvider({ id: "ollama", displayName: "Ollama", baseUrl: ollamaBaseUrl(`http://127.0.0.1:${closed}`), logger })] }))}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "ollama/qwen3.8:latest", messages: [{ role: "user", content: "hi" }] }) });
     expect(down.status).toBe(503);
     expect(await down.json()).toMatchObject({ error: { code: "local_server_not_running", message: expect.stringContaining("Ollama is not running or not reachable") } });
+  });
+
+  it("passes a forwarded output limit through: upstream text, length stop and usage win", async () => {
+    const bodies: Array<{ max_tokens?: number }> = [];
+    const long = "word ".repeat(40); // 200 chars, far over max_tokens 2 * 4
+    const upstream = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/v1/models") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ data: [{ id: "m:latest" }] })); return; }
+      let raw = ""; request.on("data", (part) => { raw += part; });
+      request.on("end", () => {
+        bodies.push(JSON.parse(raw) as { max_tokens?: number });
+        response.setHeader("content-type", "text/event-stream");
+        for (const chunk of [{ choices: [{ delta: { content: long } }] }, { choices: [{ delta: {}, finish_reason: "length" }] }, { choices: [], usage: { prompt_tokens: 7, completion_tokens: 2, total_tokens: 9 } }]) response.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        response.end("data: [DONE]\n\n");
+      });
+    });
+    const port = await listen(upstream);
+    const base = await serve(new ProviderRouter({ providers: [new LocalOpenAiProvider({ id: "ollama", displayName: "Ollama", baseUrl: `http://127.0.0.1:${port}/v1`, logger })] }));
+    const res = await fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "ollama/m:latest", stream: true, max_tokens: 2, stream_options: { include_usage: true }, messages: [{ role: "user", content: "hi" }] }) });
+    const chunks = (await res.text()).split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)) as { choices: Array<{ delta: { content?: string }; finish_reason: string | null }>; usage?: { completion_tokens: number } | null });
+    expect(bodies[0]?.max_tokens).toBe(2);
+    expect(chunks.map((chunk) => chunk.choices[0]?.delta?.content ?? "").join("")).toBe(long);
+    expect(chunks.find((chunk) => chunk.choices[0]?.finish_reason)?.choices[0]?.finish_reason).toBe("length");
+    expect(chunks.at(-1)?.usage?.completion_tokens).toBe(2);
   });
 
   const profile = (id: string, kind: "llm" | "image", vision = false, extra: Partial<GufoProfile> = {}): GufoProfile => ({ id, label: id, model: id, kind, vision, args: "", ...extra });
@@ -363,5 +409,150 @@ data: [DONE]
     await expect(router.generateImage("gufo/qwen-image-2.1", { kind: "generations", fields: { prompt: "x" } }, abort)).rejects.toMatchObject({ status: 502, code: "local_upstream_auth", message: expect.stringContaining("API key") });
     status = 404;
     await expect(router.generateImage("gufo/qwen-image-2.1", { kind: "generations", fields: { prompt: "x" } }, abort)).rejects.toMatchObject({ status: 502, code: "upstream_error" });
+  });
+});
+
+describe("DeepSeek", () => {
+  interface Fake { chatCalls: number; otherCalls: number; chatBodies: Array<Record<string, unknown>>; auth: Array<string | undefined>; balance: { is_available: boolean }; modelsStatus?: number; chat: (response: ServerResponse) => void }
+  const sseOk = (response: ServerResponse): void => {
+    response.setHeader("content-type", "text/event-stream");
+    const usage = { prompt_tokens: 20, completion_tokens: 9, total_tokens: 29, prompt_cache_hit_tokens: 12, prompt_cache_miss_tokens: 8, completion_tokens_details: { reasoning_tokens: 5 } };
+    for (const chunk of [{ choices: [{ delta: { reasoning_content: "Think. " } }] }, { choices: [{ delta: { content: "Hi" } }] }, { choices: [{ delta: {}, finish_reason: "stop" }], usage }]) response.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    response.end("data: [DONE]\n\n");
+  };
+  const reply = (status: number, error: unknown, headers: Record<string, string> = {}) => (response: ServerResponse): void => { response.statusCode = status; response.setHeader("content-type", "application/json"); for (const [name, value] of Object.entries(headers)) response.setHeader(name, value); response.end(JSON.stringify({ error })); };
+
+  /** A fake DeepSeek on 127.0.0.1 (no /v1 in its paths) behind a DeepSeek provider built by the registration. */
+  async function setup(settings: Record<string, unknown> = { apiKey: "sk-test" }) {
+    const fake: Fake = { chatCalls: 0, otherCalls: 0, chatBodies: [], auth: [], balance: { is_available: true }, chat: sseOk };
+    const upstream = createServer((request, response) => {
+      fake.auth.push(request.headers.authorization);
+      if (request.method === "GET" && request.url === "/models") { fake.otherCalls++; if (fake.modelsStatus) { response.statusCode = fake.modelsStatus; response.end(); return; } response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ object: "list", data: [{ id: "deepseek-flash" }, { id: "deepseek-v4-pro" }] })); return; }
+      if (request.method === "GET" && request.url === "/user/balance") { fake.otherCalls++; response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ ...fake.balance, balance_infos: [{ currency: "USD", total_balance: fake.balance.is_available ? "110.00" : "0.00" }] })); return; }
+      if (request.method === "POST" && request.url === "/chat/completions") {
+        let raw = ""; request.on("data", (part) => { raw += part; });
+        request.on("end", () => { fake.chatCalls++; fake.chatBodies.push(JSON.parse(raw) as Record<string, unknown>); fake.chat(response); });
+        return;
+      }
+      response.statusCode = 404; response.end();
+    });
+    const port = await listen(upstream);
+    const provider = deepseekRegistration.create({ providerSettings: { enabled: true, baseUrl: `http://127.0.0.1:${port}/v1/`, ...settings } as never, ctx: { logger } as never } as never);
+    const router = new ProviderRouter({ providers: [provider] });
+    const activity = new ActivityLog();
+    return { fake, router, provider, base: await serve(router, activity), activity };
+  }
+  const ask = (base: string, extra: Record<string, unknown> = {}, content = "hi") => fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "deepseek/deepseek-flash", messages: [{ role: "user", content }], ...extra }) });
+
+  it("serves deepseek/ models with the upstream usage, cache hits and reasoning", async () => {
+    const { fake, base, activity } = await setup();
+    const client = new OpenAI({ baseURL: base, apiKey: "test" });
+    expect((await client.models.list()).data.map((model) => model.id)).toEqual(["deepseek/deepseek-flash", "deepseek/deepseek-v4-pro"]);
+
+    const whole = await client.chat.completions.create({ model: "deepseek/deepseek-flash", messages: [{ role: "user", content: "hi" }], max_tokens: 50, reasoning_effort: "low", chat_template_kwargs: { enable_thinking: false } } as never) as OpenAI.Chat.ChatCompletion;
+    expect((whole.choices[0]?.message as { reasoning_content?: string }).reasoning_content).toBe("Think. ");
+    expect(whole.usage).toMatchObject({ prompt_tokens: 20, completion_tokens: 9, prompt_tokens_details: { cached_tokens: 12 }, completion_tokens_details: { reasoning_tokens: 5 } });
+    const stream = await client.chat.completions.create({ model: "deepseek/deepseek-flash", messages: [{ role: "user", content: "hi" }], stream: true, stream_options: { include_usage: true } });
+    let reasoning = ""; let usage: OpenAI.CompletionUsage | undefined;
+    for await (const chunk of stream) { reasoning += (chunk.choices[0]?.delta as { reasoning_content?: string } | undefined)?.reasoning_content ?? ""; if (chunk.usage) usage = chunk.usage; }
+    expect(reasoning).toBe("Think. ");
+    expect(usage).toMatchObject({ prompt_tokens: 20, completion_tokens: 9, prompt_tokens_details: { cached_tokens: 12 }, completion_tokens_details: { reasoning_tokens: 5 } });
+
+    expect(fake.auth.every((header) => header === "Bearer sk-test")).toBe(true);
+    expect(fake.chatBodies[0]).toMatchObject({ model: "deepseek-flash", max_tokens: 50, reasoning_effort: "low", stream: true });
+    expect(fake.chatBodies[0]).not.toHaveProperty("chat_template_kwargs");
+    for (let wait = 0; wait < 20 && activity.list().filter((entry) => entry.provider === "deepseek").length < 2; wait++) await new Promise((resolve) => setTimeout(resolve, 50));
+    const chats = activity.list().filter((entry) => entry.provider === "deepseek");
+    expect(chats).toHaveLength(2);
+    for (const entry of chats) { expect(entry).toMatchObject({ inputTokens: 20, outputTokens: 9, cachedTokens: 12, reasoningTokens: 5 }); expect(entry).not.toHaveProperty("estimated"); }
+  });
+
+  it("maps 402 to the usage-limit 429 and 429 to a transient rate limit", async () => {
+    const out = await setup();
+    out.fake.chat = reply(402, { message: "Insufficient Balance" });
+    await fetch(`${out.base}/models`); // lists (and probes: available) before the 402
+    const first = await ask(out.base);
+    expect(first.status).toBe(429);
+    expect(first.headers.get("retry-after")).toMatch(/^\d+$/);
+    expect(await first.json()).toMatchObject({ error: { code: "usage_limit_exceeded" } });
+    const health = await (await fetch(`${out.base.replace(/\/v1$/, "")}/healthz`)).json() as { providers: Record<string, { exhausted_until?: string }> };
+    expect(health.providers.deepseek?.exhausted_until).toEqual(expect.any(String));
+    expect((await ask(out.base)).status).toBe(429);
+    expect(out.fake.chatCalls).toBe(1);
+    // A models refresh within 60 s (the cached list, availability set by the 402) neither clears the mark nor moves its end.
+    const until = out.router.exhaustedProviders().deepseek;
+    await fetch(`${out.base}/models`);
+    expect(out.router.exhaustedProviders().deepseek).toBe(until);
+
+    const rate = await setup();
+    rate.fake.chat = reply(429, { message: "Rate limit reached" }, { "retry-after": "7" });
+    const limited = await ask(rate.base);
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("7");
+    expect(await limited.json()).toMatchObject({ error: { code: "rate_limit_exceeded", message: expect.stringContaining("Rate limit reached") } });
+    expect((await ask(rate.base)).status).toBe(429);
+    expect(rate.fake.chatCalls).toBe(2);
+    expect(rate.router.exhaustedProviders()).toEqual({});
+  });
+
+  it("needs a key, maps 401 to provider_auth_required and a context 400 to context_length_exceeded", async () => {
+    const keyless = await setup({});
+    expect(keyless.provider.status()).toMatchObject({ state: "needs_login", error: expect.stringContaining("API key missing or rejected") });
+    const missing = await ask(keyless.base);
+    expect(missing.status).toBe(503);
+    expect(await missing.json()).toMatchObject({ error: { code: "provider_auth_required" } });
+    expect(keyless.fake.chatCalls + keyless.fake.otherCalls).toBe(0);
+
+    const keyed = await setup();
+    keyed.fake.chat = reply(401, { message: "Authentication Fails" });
+    const rejected = await ask(keyed.base);
+    expect(rejected.status).toBe(503);
+    expect(await rejected.json()).toMatchObject({ error: { code: "provider_auth_required" } });
+    expect(keyed.provider.status().state).toBe("needs_login");
+
+    // A rejected key on /models keeps the static models listed; a stream error keeps its typed code; the legacy id routes (503, not 404).
+    const denied = await setup();
+    denied.fake.modelsStatus = 401; denied.fake.chat = reply(401, { message: "Authentication Fails" });
+    expect((await (await fetch(`${denied.base}/models`)).json() as { data: Array<{ id: string }> }).data.map((model) => model.id)).toEqual(["deepseek/deepseek-flash", "deepseek/deepseek-v4-pro"]);
+    expect(denied.provider.status().state).toBe("needs_login");
+    const streamed = await (await ask(denied.base, { stream: true })).text();
+    expect(streamed).toContain('"code":"provider_auth_required"');
+    expect(streamed).not.toContain("internal_error");
+    // List first so the router knows the static ids; only then does the acceptsModel hook decide the legacy id (503) versus an unknown one (404).
+    await fetch(`${keyless.base}/models`);
+    const chatWith = (model: string) => fetch(`${keyless.base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }) });
+    const legacy = await chatWith("deepseek/deepseek-v4-flash");
+    expect(legacy.status).toBe(503);
+    expect(await legacy.json()).toMatchObject({ error: { code: "provider_auth_required" } });
+    const unknown = await chatWith("deepseek/not-a-model");
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toMatchObject({ error: { code: "model_not_found" } });
+    keyed.fake.chat = reply(400, { message: "This model's maximum context length is 1048576 tokens." });
+    const tooLong = await ask(keyed.base);
+    expect(tooLong.status).toBe(400);
+    expect(await tooLong.json()).toMatchObject({ error: { code: "context_length_exceeded", message: expect.stringMatching(/^The prompt is too long for DeepSeek: /) } });
+
+    // The proxy's own check: the default limit is listed, and a lower setting refuses before any upstream chat call (also for a stream).
+    const listed = (await (await fetch(`${keyed.base}/models`)).json() as { data: Array<{ id: string; max_prompt_chars?: number }> }).data;
+    expect(listed.find((model) => model.id === "deepseek/deepseek-flash")?.max_prompt_chars).toBe(4_194_304);
+    const small = await setup({ apiKey: "sk-test", maxPromptChars: 100 });
+    for (const extra of [{}, { stream: true }]) {
+      const refused = await ask(small.base, extra, "x".repeat(200));
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toMatchObject({ error: { code: "context_length_exceeded", message: expect.stringMatching(/^The prompt is too long for DeepSeek: 200 characters, the limit is 100/) } });
+    }
+    expect(small.fake.chatCalls).toBe(0);
+  });
+
+  it("reads the balance on refresh: unavailable marks exhausted, available clears it", async () => {
+    const { fake, router, provider } = await setup();
+    fake.balance = { is_available: false };
+    await router.refresh("deepseek");
+    expect(Object.keys(router.exhaustedProviders())).toEqual(["deepseek"]);
+    expect(provider.status()).toMatchObject({ balance: "0.00 USD" });
+    fake.balance = { is_available: true };
+    await router.refresh("deepseek");
+    expect(router.exhaustedProviders()).toEqual({});
+    expect(provider.status()).toMatchObject({ balance: "110.00 USD" });
   });
 });

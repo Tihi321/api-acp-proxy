@@ -26,23 +26,24 @@ describe("UsageStore", () => {
     store.add(entry("claude", 3, { inputTokens: 7, outputTokens: 1 }));
     store.add(entry("codex", 10, { inputTokens: 1, outputTokens: 1 }));
     store.add(entry("codex", 40, { inputTokens: 2, outputTokens: 2 }));
+    store.add(entry("codex", 0, { inputTokens: 6, outputTokens: 4, cachedTokens: 3, reasoningTokens: 2 }));
     store.add(entry(undefined, 0, { inputTokens: 99, outputTokens: 99 }));
     const view = store.summary(["codex", "claude", "antigravity"]);
 
     expect(view.today).toBe(localDayKey(NOW));
     expect(view.providers.map((provider) => provider.id)).toEqual(["codex", "claude", "antigravity"]);
     const [codex, claude, antigravity] = view.providers;
-    expect(codex!.today).toEqual({ requests: 3, errors: 1, inputTokens: 14, outputTokens: 7, estimated: 1 });
+    expect(codex!.today).toEqual({ requests: 4, errors: 1, inputTokens: 20, outputTokens: 11, estimated: 1, cachedTokens: 3, reasoningTokens: 2 });
     expect(codex!.last7).toEqual(codex!.today);
-    expect(codex!.last30).toEqual({ requests: 4, errors: 1, inputTokens: 15, outputTokens: 8, estimated: 1 });
-    expect(codex!.allTime).toEqual({ requests: 5, errors: 1, inputTokens: 17, outputTokens: 10, estimated: 1 });
+    expect(codex!.last30).toEqual({ requests: 5, errors: 1, inputTokens: 21, outputTokens: 12, estimated: 1, cachedTokens: 3, reasoningTokens: 2 });
+    expect(codex!.allTime).toEqual({ requests: 6, errors: 1, inputTokens: 23, outputTokens: 14, estimated: 1, cachedTokens: 3, reasoningTokens: 2 });
     expect(claude!.today.requests).toBe(0);
-    expect(claude!.last7).toEqual({ requests: 1, errors: 0, inputTokens: 7, outputTokens: 1, estimated: 0 });
+    expect(claude!.last7).toEqual({ requests: 1, errors: 0, inputTokens: 7, outputTokens: 1, estimated: 0, cachedTokens: 0, reasoningTokens: 0 });
     expect(antigravity!.allTime.requests).toBe(0);
-    expect(view.total.today.requests).toBe(3);
-    expect(view.total.last7.requests).toBe(4);
-    expect(view.total.last30.requests).toBe(5);
-    expect(view.total.allTime).toEqual({ requests: 6, errors: 1, inputTokens: 24, outputTokens: 11, estimated: 1 });
+    expect(view.total.today.requests).toBe(4);
+    expect(view.total.last7.requests).toBe(5);
+    expect(view.total.last30.requests).toBe(6);
+    expect(view.total.allTime).toEqual({ requests: 7, errors: 1, inputTokens: 30, outputTokens: 15, estimated: 1, cachedTokens: 3, reasoningTokens: 2 });
 
     expect(view.days).toHaveLength(30);
     expect(view.days[29]!.day).toBe(view.today);
@@ -69,6 +70,13 @@ describe("UsageStore", () => {
     expect(reloaded.summary(["codex"]).total.allTime.requests).toBe(2);
     expect(reloaded.summary(["codex"]).total.last30.requests).toBe(1);
 
+    const old = file();
+    mkdirSync(path.dirname(old), { recursive: true });
+    writeFileSync(old, JSON.stringify({ version: 1, totals: { codex: { requests: 1, errors: 0, inputTokens: 5, outputTokens: 2, estimated: 0 } }, days: {} }));
+    const legacy = new UsageStore({ file: old, now: () => NOW });
+    await legacy.ready;
+    expect(legacy.summary(["codex"]).total.allTime).toEqual({ requests: 1, errors: 0, inputTokens: 5, outputTokens: 2, estimated: 0, cachedTokens: 0, reasoningTokens: 0 });
+
     const broken = file();
     mkdirSync(path.dirname(broken), { recursive: true });
     writeFileSync(broken, "{not json");
@@ -83,7 +91,7 @@ describe("UsageStore", () => {
     store.add(entry("codex", 2, { inputTokens: 3 }));
     await store.flush();
     await store.reset();
-    expect(store.summary(["codex"]).total.allTime).toEqual({ requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, estimated: 0 });
+    expect(store.summary(["codex"]).total.allTime).toEqual({ requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, estimated: 0, cachedTokens: 0, reasoningTokens: 0 });
     expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ version: 1, since: localDayKey(NOW), totals: {}, days: {} });
     store.add(entry("codex", 0));
     expect(store.summary(["codex"]).total.today.requests).toBe(1);

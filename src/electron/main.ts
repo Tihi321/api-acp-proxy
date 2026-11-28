@@ -10,6 +10,7 @@ import type { ControllerStatus } from "../controller.js";
 import { createLogger } from "../logger.js";
 import { claudeRegistration } from "../providers/claude.js";
 import { codexRegistration } from "../providers/codex.js";
+import { deepseekRegistration } from "../providers/deepseek.js";
 import { createGufoRegistration, createLlamaRegistration, createStrataRegistration, ollamaRegistration } from "../providers/local-openai.js";
 import type { EmbedHost } from "../providers/local-openai.js";
 import { LocalModelCoordinator, targetKey } from "../local-models.js";
@@ -238,7 +239,7 @@ async function main(): Promise<void> {
     settingsPath,
     logger,
     ...(secretCodec ? { secretCodec } : {}),
-    registry: [codexRegistration, antigravityRegistration, claudeRegistration, createGufoRegistration({ coordinator }), createStrataRegistration({ coordinator }), createLlamaRegistration({ coordinator, embed: embedHost }), ollamaRegistration],
+    registry: [codexRegistration, antigravityRegistration, claudeRegistration, createGufoRegistration({ coordinator }), createStrataRegistration({ coordinator }), createLlamaRegistration({ coordinator, embed: embedHost }), ollamaRegistration, deepseekRegistration],
     ctx: {
       dataDir,
       nodeRuntime: { command: process.execPath, argsPrefix: ["--require", hideWindows], env: { ELECTRON_RUN_AS_NODE: "1", NODE_OPTIONS: nodeOptions } },

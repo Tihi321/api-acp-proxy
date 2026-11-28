@@ -6,7 +6,7 @@
   --text: #1f2328; --text-muted: #5f6670; --text-faint: #8a9099;
   --accent: #2f5bd3; --accent-hover: #264bb0; --accent-fg: #ffffff; --accent-soft: #e6ecfb;
   --ok: #1a7f4b; --ok-soft: #e3f3ea; --warn: #a35f00; --warn-soft: #fbefdc; --err: #c4322b; --err-soft: #fbe5e3;
-  --series-codex: #2f5bd3; --series-claude: #c2573a; --series-antigravity: #24877b; --series-gufo: #8f4fc4; --series-strata: #b8860b; --series-llama: #c2467a; --series-other: #8a9099;
+  --series-codex: #2f5bd3; --series-claude: #c2573a; --series-antigravity: #24877b; --series-gufo: #8f4fc4; --series-strata: #b8860b; --series-llama: #c2467a; --series-ollama: #4a7a2a; --series-deepseek: #3a5fa8; --series-other: #8a9099;
   --shadow-1: 0 1px 2px rgba(20, 22, 26, .06);
 
   --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
@@ -22,7 +22,7 @@
     --text: #e7e9ec; --text-muted: #a1a8b1; --text-faint: #737b85;
     --accent: #7a9cf5; --accent-hover: #93b0f8; --accent-fg: #0e1420; --accent-soft: #233057;
     --ok: #4cc38a; --ok-soft: #173326; --warn: #e5a54b; --warn-soft: #3a2a12; --err: #f07167; --err-soft: #3d1c1a;
-    --series-codex: #7a9cf5; --series-claude: #e08a68; --series-antigravity: #4fc1b3; --series-gufo: #b88ae6; --series-strata: #e0b84a; --series-llama: #e878a8; --series-other: #737b85;
+    --series-codex: #7a9cf5; --series-claude: #e08a68; --series-antigravity: #4fc1b3; --series-gufo: #b88ae6; --series-strata: #e0b84a; --series-llama: #e878a8; --series-ollama: #8cc46a; --series-deepseek: #86a6e6; --series-other: #737b85;
     --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
   }
 }

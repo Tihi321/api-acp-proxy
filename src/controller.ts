@@ -14,6 +14,7 @@ import type { UsageView } from "./shared/ipc.js";
 import { codexRegistration } from "./providers/codex.js";
 import { antigravityRegistration } from "./providers/antigravity.js";
 import { claudeRegistration } from "./providers/claude.js";
+import { deepseekRegistration } from "./providers/deepseek.js";
 import { gufoRegistration, llamaRegistration, ollamaRegistration, strataRegistration } from "./providers/local-openai.js";
 import { defaultRuntimeContext } from "./provider.js";
 import type { ModelInfo, Provider, ProviderStatus, RuntimeContext } from "./provider.js";
@@ -88,7 +89,7 @@ export class ProxyController extends EventEmitter {
     this.logger = options.logger ?? createLogger();
     const settingsPath = options.settingsPath ?? defaultSettingsPath(this.env);
     this.store = new SettingsStore(settingsPath, options.secretCodec, this.logger);
-    this.registry = [...(options.registry ?? [codexRegistration, antigravityRegistration, claudeRegistration, gufoRegistration, strataRegistration, llamaRegistration, ollamaRegistration])];
+    this.registry = [...(options.registry ?? [codexRegistration, antigravityRegistration, claudeRegistration, gufoRegistration, strataRegistration, llamaRegistration, ollamaRegistration, deepseekRegistration])];
     this.drainMs = options.drainMs ?? 5000;
     this.dataDir = options.ctx?.dataDir ?? path.dirname(settingsPath);
     this.ctx = defaultRuntimeContext({ ...options.ctx, logger: this.logger, dataDir: this.dataDir });

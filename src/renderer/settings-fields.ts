@@ -1,4 +1,4 @@
-export type Scope = "server" | "codex" | "antigravity" | "claude" | "gufo" | "strata" | "llama" | "ollama";
+export type Scope = "server" | "codex" | "antigravity" | "claude" | "gufo" | "strata" | "llama" | "ollama" | "deepseek";
 export interface FieldSpec { path: string; kind: "text" | "number" | "bool" | "select"; scope: Scope; optional?: boolean }
 
 export const fields: FieldSpec[] = [
@@ -52,6 +52,12 @@ export const fields: FieldSpec[] = [
   { path: "providers.ollama.baseUrl", kind: "text", scope: "ollama" },
   { path: "providers.ollama.apiKey", kind: "text", scope: "ollama", optional: true },
   { path: "providers.ollama.maxConcurrent", kind: "number", scope: "ollama", optional: true },
+  { path: "providers.ollama.maxPromptChars", kind: "number", scope: "ollama", optional: true },
+  { path: "providers.deepseek.enabled", kind: "bool", scope: "deepseek" },
+  { path: "providers.deepseek.baseUrl", kind: "text", scope: "deepseek" },
+  { path: "providers.deepseek.apiKey", kind: "text", scope: "deepseek", optional: true },
+  { path: "providers.deepseek.maxConcurrent", kind: "number", scope: "deepseek", optional: true },
+  { path: "providers.deepseek.maxPromptChars", kind: "number", scope: "deepseek", optional: true },
   { path: "providers.llama.enabled", kind: "bool", scope: "llama" },
   { path: "providers.llama.port", kind: "number", scope: "llama" },
   { path: "providers.llama.maxConcurrent", kind: "number", scope: "llama", optional: true },

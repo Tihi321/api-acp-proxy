@@ -1,8 +1,8 @@
 import type { StopReason, Usage } from "@agentclientprotocol/sdk";
-import { ApiError, messageText, type Message } from "../api.js";
+import { ApiError, contextTooLong, messageText, promptTooLong, type Message } from "../api.js";
 import type { ProviderRegistration } from "../controller.js";
 import { STRATA_PROFILE_ID, targetKey, type LocalModelCoordinator } from "../local-models.js";
-import { estimateTokens } from "../usage.js";
+import { CHARS_PER_TOKEN, estimateTokens } from "../usage.js";
 import type { Logger } from "../logger.js";
 import { ConcurrencyLimiter, type LimiterStats } from "../limiter.js";
 import { AcpUnavailableError, type EmbeddingResult, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type ImagePassthrough, type ModelInfo, type Provider, type ProviderState, type ProviderStatus } from "../provider.js";
@@ -10,7 +10,7 @@ import { OLLAMA_DEFAULT_URL, type GufoProfile, type LlamaEmbedding, type LlamaPr
 import type { LocalServerId } from "../shared/ipc.js";
 
 /** The providers this class serves: the launcher-managed local servers and Ollama (AAP-69), which manages itself. */
-export type LocalProviderId = LocalServerId | "ollama";
+export type LocalProviderId = LocalServerId | "ollama" | "deepseek";
 export interface LocalOpenAiOptions {
   id: LocalProviderId; displayName: string;
   /** "http://127.0.0.1:<port>/v1" */
@@ -28,6 +28,10 @@ export interface LocalOpenAiOptions {
   embedding?: EmbeddingSettings;
   /** Llama.cpp in the desktop app: starts the embedding server when it is not running and resolves when it answers. Without it requests go straight to the embedding port (headless: start the server yourself). */
   embedHost?: EmbedHost;
+  /** Prompt limit in characters for every model: absent = derived from the model's context size (when known), 0 = no limit. */
+  maxPromptChars?: number;
+  /** Ollama: the context length in tokens of a model, asked once per listed model (see `ollamaContextLookup`). */
+  contextLookup?: (model: string, signal: AbortSignal) => Promise<number | undefined>;
 }
 
 /** What the provider needs of `providers.llama.embedding`. */
@@ -46,7 +50,11 @@ function toEntry(profile: GufoProfile | LlamaProfile): ProfileEntry {
 
 const DEFAULT_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
 const GENERATION_FIELDS = ["prompt", "size", "steps", "seed", "negative_prompt", "guidance_scale", "n"] as const;
-type WireContent = string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
+export type WireContent = string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
+export interface WireMessage { role: "system" | "user" | "assistant"; content: WireContent }
+
+/** An upstream answer that says the prompt does not fit the model's context. */
+export const CONTEXT_ERROR = /context length|context window|context size|maximum context|exceeds the available context|exceed_context_size|n_ctx|prompt is too long|too many tokens/i;
 
 export function notRunningMessage(displayName: string, id?: LocalProviderId): string {
   return id === "ollama" ? `${displayName} is not running or not reachable — start Ollama (the proxy does not start it) or check its URL in Settings.` : `${displayName} is not running — start it from the app.`;
@@ -71,17 +79,22 @@ export class LocalOpenAiProvider implements Provider {
   private profiles?: ProfileEntry[];
   private readonly coordinator?: LocalModelCoordinator;
   private readonly leaseProfile?: string;
-  private readonly baseUrl: string;
-  private readonly apiKey: string | undefined;
-  private readonly logger: Logger;
-  private readonly fetchImpl: typeof fetch;
+  protected readonly baseUrl: string;
+  protected readonly apiKey: string | undefined;
+  protected readonly logger: Logger;
+  protected readonly fetchImpl: typeof fetch;
+  /** Every provider of this family sends the client's output limit upstream as `max_tokens` and reports the upstream stop and usage. */
+  readonly forwardsOutputLimit: boolean = true;
   private state: ProviderState = "stopped";
   private error: string | undefined;
-  private models: ModelInfo[] = [];
+  protected models: ModelInfo[] = [];
   /** True once a provider without profiles has read its upstream model list successfully. */
-  private listed = false;
+  protected listed = false;
   private readonly listeners = new Set<(status: ProviderStatus) => void>();
-  private readonly inflight = new Set<AbortController>();
+  protected readonly inflight = new Set<AbortController>();
+  private readonly contexts = new Map<string, number>();
+  private readonly promptCharsSetting?: number;
+  private readonly contextLookup?: LocalOpenAiOptions["contextLookup"];
   private embedding?: EmbeddingSettings;
   private embedLimiter?: ConcurrencyLimiter;
   private readonly embedHost?: EmbedHost;
@@ -93,6 +106,7 @@ export class LocalOpenAiProvider implements Provider {
     this.coordinator = options.coordinator;
     this.leaseProfile = options.leaseProfile;
     this.embedHost = options.embedHost;
+    this.promptCharsSetting = options.maxPromptChars; this.contextLookup = options.contextLookup;
     if (options.embedding) this.setEmbedding(options.embedding);
     if (options.profiles) this.setProfiles(options.profiles);
   }
@@ -169,20 +183,39 @@ export class LocalOpenAiProvider implements Provider {
     return lease;
   }
 
+  /** The model's context size in tokens, when known (Ollama: from `/api/show`). */
+  protected contextTokens(model: string): number | undefined { return this.contexts.get(model); }
+
+  /** The prompt limit in characters for `model`: the setting (0 = none), else the context size x 4, else none. */
+  maxPromptCharsFor(model: string): number | undefined {
+    if (this.promptCharsSetting === 0) return undefined;
+    if (this.promptCharsSetting !== undefined && this.promptCharsSetting > 0) return this.promptCharsSetting;
+    const tokens = this.contextTokens(model);
+    return tokens ? tokens * CHARS_PER_TOKEN : undefined;
+  }
+
+  /** Throws the 400 `context_length_exceeded` when instructions plus message text are over the model's limit. */
+  checkPrompt(messages: Message[], options?: GenerateOptions, model?: string): void {
+    const limit = model === undefined ? undefined : this.maxPromptCharsFor(model);
+    if (!limit) return;
+    const chars = (options?.instructions?.length ?? 0) + messages.reduce((sum, message) => sum + messageText(message).length, 0);
+    if (chars > limit) throw promptTooLong(this.displayName, chars, limit);
+  }
+
   status(): ProviderStatus {
     return { id: this.id, name: this.displayName, state: this.state, ...(this.error ? { error: this.error } : {}), authMethods: [], models: this.models, capabilities: { image: false }, features: { imageGeneration: false, tools: false, mcp: false, webSearch: false } };
   }
 
   onStatus(listener: (status: ProviderStatus) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
 
-  private setState(state: ProviderState, error?: string): void {
+  protected setState(state: ProviderState, error?: string): void {
     if (this.state === state && this.error === error) return;
     this.state = state; this.error = error;
     const status = this.status();
     for (const listener of this.listeners) { try { listener(status); } catch { /* a listener must not break the provider */ } }
   }
 
-  private headers(json: boolean): Record<string, string> {
+  protected headers(json: boolean): Record<string, string> {
     return { ...(json ? { "content-type": "application/json" } : {}), accept: json ? "text/event-stream" : "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) };
   }
 
@@ -192,12 +225,26 @@ export class LocalOpenAiProvider implements Provider {
     return new AcpUnavailableError(message, cause, NOT_RUNNING);
   }
 
+  /** The error for a request that got no connection. */
+  protected unreachable(cause: unknown): AcpUnavailableError { return this.notRunning(cause); }
+
+  /** The error for a non-2xx chat answer; `detail` is the upstream's message. */
+  protected httpError(status: number, detail: string, _response: Response): Error {
+    if (CONTEXT_ERROR.test(detail)) return contextTooLong(this.displayName, detail);
+    return new AcpUnavailableError(`${this.displayName} answered HTTP ${status}: ${detail}`, undefined, "upstream_error");
+  }
+
+  /** The chat request body; a subclass drops or adds fields its upstream does not take. */
+  protected chatBody(model: string, wire: WireMessage[], options?: GenerateOptions): Record<string, unknown> {
+    return { model, messages: wire, stream: true, stream_options: { include_usage: true }, ...(options?.maxOutputTokens !== undefined ? { max_tokens: options.maxOutputTokens } : {}), ...(options?.reasoningEffort !== undefined ? { reasoning_effort: options.reasoningEffort } : {}), ...(options?.chatTemplateKwargs !== undefined ? { chat_template_kwargs: options.chatTemplateKwargs } : {}) };
+  }
+
   async listModels(): Promise<ModelInfo[]> {
     const controller = new AbortController(); this.inflight.add(controller);
     const timer = setTimeout(() => controller.abort(), 5000);
     let response: Response;
     try { response = await this.fetchImpl(`${this.baseUrl}/models`, { headers: this.headers(false), signal: controller.signal }); }
-    catch (error) { const unavailable = this.notRunning(error); if (this.profiles) return this.models; throw unavailable; }
+    catch (error) { const unavailable = this.unreachable(error); if (this.profiles) return this.models; throw unavailable; }
     finally { clearTimeout(timer); this.inflight.delete(controller); }
     if (!response.ok) { await response.body?.cancel().catch(() => undefined); if (this.profiles) return this.models; throw new AcpUnavailableError(`${this.displayName} answered HTTP ${response.status}`, undefined, "upstream_error"); }
     if (this.profiles) { await response.body?.cancel().catch(() => undefined); this.setState("ready"); return this.models; }
@@ -205,11 +252,25 @@ export class LocalOpenAiProvider implements Provider {
     this.models = (body?.data ?? []).flatMap((entry) => typeof entry.id === "string" ? [{ id: entry.id, ...(Array.isArray(entry.architecture?.input_modalities) && entry.architecture.input_modalities.includes("image") ? { vision: true } : {}) }] : []);
     this.listed = true;
     this.setState("ready");
+    await this.lookupContexts();
     return this.models;
   }
 
+  /** Asks `contextLookup` for every listed model without a known context, in parallel, 3 s each; a failure only leaves that model without a limit. */
+  private async lookupContexts(): Promise<void> {
+    const lookup = this.contextLookup;
+    if (!lookup) return;
+    await Promise.all(this.models.filter((entry) => !this.contexts.has(entry.id)).map(async (entry) => {
+      const controller = new AbortController(); this.inflight.add(controller);
+      const timer = setTimeout(() => controller.abort(), 3000);
+      try { const tokens = await lookup(entry.id, controller.signal); if (typeof tokens === "number" && tokens > 0) this.contexts.set(entry.id, tokens); }
+      catch { /* no limit for this model */ }
+      finally { clearTimeout(timer); this.inflight.delete(controller); }
+    }));
+  }
+
   async generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
-    const wire: Array<{ role: "system" | "user" | "assistant"; content: WireContent }> = [];
+    const wire: WireMessage[] = [];
     const vision = this.acceptsImages(model);
     if (options?.instructions) wire.push({ role: "system", content: options.instructions });
     for (const message of messages) {
@@ -224,18 +285,18 @@ export class LocalOpenAiProvider implements Provider {
     const cancelled = (): GenerationResult => ({ text, stopReason: "cancelled", usage: null, ...(reasoning ? { reasoning } : {}) });
     try {
       let response: Response;
-      try { response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, { method: "POST", headers: this.headers(true), body: JSON.stringify({ model, messages: wire, stream: true, stream_options: { include_usage: true }, ...(options?.maxOutputTokens !== undefined ? { max_tokens: options.maxOutputTokens } : {}), ...(options?.reasoningEffort !== undefined ? { reasoning_effort: options.reasoningEffort } : {}), ...(options?.chatTemplateKwargs !== undefined ? { chat_template_kwargs: options.chatTemplateKwargs } : {}) }), signal: controller.signal }); }
-      catch (error) { if (controller.signal.aborted) return cancelled(); throw this.notRunning(error); }
+      try { response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, { method: "POST", headers: this.headers(true), body: JSON.stringify(this.chatBody(model, wire, options)), signal: controller.signal }); }
+      catch (error) { if (controller.signal.aborted) return cancelled(); throw this.unreachable(error); }
       if (!response.ok) {
         const raw = await response.text().catch(() => "");
         let detail = raw.slice(0, 300);
         try { const parsed = JSON.parse(raw) as { error?: { message?: unknown } | string }; const upstream = typeof parsed.error === "string" ? parsed.error : parsed.error?.message; if (typeof upstream === "string") detail = upstream; } catch { /* not JSON: use the body */ }
-        throw new AcpUnavailableError(`${this.displayName} answered HTTP ${response.status}: ${detail}`, undefined, "upstream_error");
+        throw this.httpError(response.status, detail, response);
       }
       this.setState("ready");
       const handle = (payload: string): void => {
         if (!payload || payload === "[DONE]") return;
-        let chunk: { choices?: Array<{ delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown }; finish_reason?: string | null }>; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; completion_tokens_details?: { reasoning_tokens?: number } } | null; error?: { message?: unknown } | string };
+        let chunk: { choices?: Array<{ delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown }; finish_reason?: string | null }>; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_cache_hit_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; completion_tokens_details?: { reasoning_tokens?: number } } | null; error?: { message?: unknown } | string };
         try { chunk = JSON.parse(payload); } catch { return; }
         if (chunk.error) { const detail = typeof chunk.error === "string" ? chunk.error : String(chunk.error.message ?? "unknown error"); throw new AcpUnavailableError(`${this.displayName} answered HTTP ${response.status}: ${detail}`, undefined, "upstream_error"); }
         const choice = chunk.choices?.[0];
@@ -247,7 +308,7 @@ export class LocalOpenAiProvider implements Provider {
         if (chunk.usage) {
           const finiteOrZero = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
           const inputTotal = finiteOrZero(chunk.usage.prompt_tokens); const outputTokens = finiteOrZero(chunk.usage.completion_tokens);
-          const cached = Math.max(0, Math.min(inputTotal, finiteOrZero(chunk.usage.prompt_tokens_details?.cached_tokens)));
+          const cached = Math.max(0, Math.min(inputTotal, finiteOrZero(chunk.usage.prompt_tokens_details?.cached_tokens ?? chunk.usage.prompt_cache_hit_tokens)));
           usage = { inputTokens: inputTotal - cached, outputTokens, totalTokens: typeof chunk.usage.total_tokens === "number" && Number.isFinite(chunk.usage.total_tokens) ? chunk.usage.total_tokens : inputTotal + outputTokens, ...(cached ? { cachedReadTokens: cached } : {}), ...(finiteOrZero(chunk.usage.completion_tokens_details?.reasoning_tokens) > 0 ? { thoughtTokens: finiteOrZero(chunk.usage.completion_tokens_details?.reasoning_tokens) } : {}) };
           callbacks?.onUsage?.(usage);
         }
@@ -272,11 +333,12 @@ export class LocalOpenAiProvider implements Provider {
       } catch (error) {
         if (controller.signal.aborted) return cancelled();
         if (error instanceof AcpUnavailableError) throw error;
-        if (CONNECTION_CODES.has(errorCode(error) ?? "")) throw this.notRunning(error);
+        if (CONNECTION_CODES.has(errorCode(error) ?? "")) throw this.unreachable(error);
         throw new AcpUnavailableError(`${this.displayName} stream failed: ${error instanceof Error ? error.message : String(error)}`, error, "upstream_error");
       }
       if (controller.signal.aborted) return cancelled();
-      const stopReason: StopReason = finish === "length" ? "max_tokens" : "end_turn";
+      if (finish === "insufficient_system_resource") this.logger.warn(`${this.displayName} stopped ${model} early: insufficient_system_resource.`);
+      const stopReason: StopReason = finish === "length" ? "max_tokens" : finish === "content_filter" ? "refusal" : "end_turn";
       // llama-server streams reasoning_content but reports no reasoning_tokens: estimate them from the text.
       const reported = usage as Usage | null; // assigned inside handle(), which the compiler cannot see
       const estimate = reported !== null && reasoning !== "" && !reported.thoughtTokens;
@@ -320,7 +382,7 @@ export class LocalOpenAiProvider implements Provider {
     try {
       let response: Response;
       try { response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, signal: controller.signal }); }
-      catch (error) { if (controller.signal.aborted) throw error; throw this.notRunning(error); }
+      catch (error) { if (controller.signal.aborted) throw error; throw this.unreachable(error); }
       const raw = await response.text();
       let parsed: unknown;
       try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
@@ -416,9 +478,24 @@ export function createStrataRegistration(host: GufoHost = {}): ProviderRegistrat
 export const strataRegistration: ProviderRegistration = createStrataRegistration();
 /** Ollama (AAP-69): `providers.ollama.baseUrl` plus `/v1`, no coordinator lease (the proxy neither starts nor stops Ollama), models listed from Ollama as `ollama/<name>:<tag>`. */
 export function ollamaBaseUrl(baseUrl: string): string { const trimmed = baseUrl.trim().replace(/\/+$/, "").replace(/\/v1$/, ""); return `${trimmed}/v1`; }
+/** The model's context length in tokens from Ollama's `POST <root>/api/show` (`model_info["<arch>.context_length"]`); `rootUrl` is the Ollama base URL without `/v1`. Undefined when Ollama does not say. */
+export function ollamaContextLookup(rootUrl: string, fetchImpl: typeof fetch): (model: string, signal: AbortSignal) => Promise<number | undefined> {
+  return async (model, signal) => {
+    const response = await fetchImpl(`${rootUrl.replace(/\/+$/, "")}/api/show`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ model }), signal });
+    if (!response.ok) { await response.body?.cancel().catch(() => undefined); return undefined; }
+    const body = await response.json().catch(() => undefined) as { model_info?: Record<string, unknown> } | undefined;
+    const info = body?.model_info;
+    if (!info || typeof info !== "object") return undefined;
+    for (const [key, value] of Object.entries(info)) if (key.endsWith(".context_length") && typeof value === "number" && value > 0) return value;
+    return undefined;
+  };
+}
 export const ollamaRegistration: ProviderRegistration = {
   id: "ollama", displayName: "Ollama",
-  create: ({ providerSettings, ctx }) => new LocalOpenAiProvider({ id: "ollama", displayName: "Ollama", baseUrl: ollamaBaseUrl(typeof providerSettings.baseUrl === "string" ? providerSettings.baseUrl : OLLAMA_DEFAULT_URL), ...(typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? { apiKey: providerSettings.apiKey } : {}), logger: ctx.logger.child("ollama") }),
+  create: ({ providerSettings, ctx }) => {
+    const baseUrl = ollamaBaseUrl(typeof providerSettings.baseUrl === "string" ? providerSettings.baseUrl : OLLAMA_DEFAULT_URL);
+    return new LocalOpenAiProvider({ id: "ollama", displayName: "Ollama", baseUrl, ...(typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? { apiKey: providerSettings.apiKey } : {}), ...(typeof providerSettings.maxPromptChars === "number" ? { maxPromptChars: providerSettings.maxPromptChars } : {}), contextLookup: ollamaContextLookup(baseUrl.replace(/\/v1$/, ""), (input, init) => globalThis.fetch(input, init)), logger: ctx.logger.child("ollama") });
+  },
 };
 /** Llama.cpp with its profiles; `host.coordinator` (the app) switches the single server to the model a request names. */
 export function createLlamaRegistration(host: GufoHost = {}): ProviderRegistration { return registration("llama", "Llama.cpp", host); }

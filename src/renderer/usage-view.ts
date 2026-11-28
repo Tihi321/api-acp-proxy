@@ -12,7 +12,7 @@ type Metric = "requests" | "tokens";
 const RANGE_KEY = "acp-proxy.usageRange";
 const METRIC_KEY = "acp-proxy.usageMetric";
 const RANGES: readonly UsageRangeKey[] = ["today", "last7", "last30", "allTime"];
-const KNOWN_SERIES = ["codex", "claude", "antigravity", "gufo", "strata", "llama"];
+const KNOWN_SERIES = ["codex", "claude", "antigravity", "gufo", "strata", "llama", "ollama", "deepseek"];
 const STALE_MS = 60_000;
 const SVG_NS = "http://www.w3.org/2000/svg";
 /** The chart's vertical grid: a day's bar is drawn in 1000 units, so 15 units is about 2 px of the 140 px chart (the old min-height). */
@@ -123,6 +123,13 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
     return cell;
   }
 
+  /** A token cell; the tooltip says how much of it was cached (input) or thinking (output). */
+  function tokenCell(value: number, estimated: boolean, part: number, word: string): HTMLTableCellElement {
+    const cell = numberCell(value, estimated);
+    if (part > 0) cell.title = `of which ${full.format(part)} ${word}`;
+    return cell;
+  }
+
   function renderTable(): void {
     const body = el("usage-body");
     const foot = el("usage-foot");
@@ -132,14 +139,14 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
       const row = make("tr", counts.requests === 0 ? "is-zero" : "");
       const first = make("td");
       first.append(swatch(id), document.createTextNode(nameOf(id)));
-      row.append(first, numberCell(counts.requests), numberCell(counts.errors, false, counts.errors > 0 ? "bad" : ""), numberCell(counts.inputTokens, counts.estimated > 0), numberCell(counts.outputTokens, counts.estimated > 0));
+      row.append(first, numberCell(counts.requests), numberCell(counts.errors, false, counts.errors > 0 ? "bad" : ""), tokenCell(counts.inputTokens, counts.estimated > 0, counts.cachedTokens, "cached"), tokenCell(counts.outputTokens, counts.estimated > 0, counts.reasoningTokens, "thinking"));
       if (counts.estimated > 0) row.title = approxNote(counts);
       return row;
     });
     body.replaceChildren(...rows);
     const total = usage.total[range];
     const totalRow = make("tr", "total");
-    totalRow.append(make("td", "", "All providers"), numberCell(total.requests), numberCell(total.errors, false, total.errors > 0 ? "bad" : ""), numberCell(total.inputTokens, total.estimated > 0), numberCell(total.outputTokens, total.estimated > 0));
+    totalRow.append(make("td", "", "All providers"), numberCell(total.requests), numberCell(total.errors, false, total.errors > 0 ? "bad" : ""), tokenCell(total.inputTokens, total.estimated > 0, total.cachedTokens, "cached"), tokenCell(total.outputTokens, total.estimated > 0, total.reasoningTokens, "thinking"));
     foot.replaceChildren(totalRow);
   }
 

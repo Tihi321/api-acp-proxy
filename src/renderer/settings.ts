@@ -51,7 +51,7 @@ const providerOrder = ["codex", "claude", "antigravity"] as const;
 /** The local servers that have a page; `embed` (the embedding server) is a card of the Llama.cpp page. */
 type PageServerId = Exclude<LocalServerId, "embed">;
 const localOrder: readonly PageServerId[] = ["gufo", "strata", "llama"];
-const views = ["overview", "usage", "requests", "monitor", "about", "server", "codex", "claude", "antigravity", "gufo", "strata", "llama", "ollama"] as const;
+const views = ["overview", "usage", "requests", "monitor", "about", "server", "codex", "claude", "antigravity", "deepseek", "gufo", "strata", "llama", "ollama"] as const;
 type ViewName = (typeof views)[number];
 const VIEW_KEY = "acp-proxy.view";
 const featureChips: Array<{ label: string; on: (status: ProviderStatusView) => boolean }> = [
@@ -64,7 +64,7 @@ const featureChips: Array<{ label: string; on: (status: ProviderStatusView) => b
 
 let state: StateView | undefined;
 let activity: ActivityView[] = [];
-const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, claude: false, gufo: false, strata: false, llama: false, ollama: false };
+const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, deepseek: false, claude: false, gufo: false, strata: false, llama: false, ollama: false };
 /** Launcher state of the local model servers, in the order gufo, strata, llama. */
 let localServers: LocalServerStatusView[] = [];
 const usage = initUsageView({ api, showView: (name) => showView(name) });
@@ -216,6 +216,25 @@ function renderOllama(current: StateView): void {
   role(root, "model-count").textContent = models.length ? `(${models.length})` : "";
   const list = role<HTMLElement>(root, "models");
   list.replaceChildren(...(models.length ? models.map((model) => Object.assign(document.createElement("li"), { textContent: model.id, title: model.name ?? "" })) : [Object.assign(document.createElement("li"), { className: "empty", textContent: providerState === "disabled" ? "Enable and save to list Ollama's models." : "No models listed yet." })]));
+}
+
+/** DeepSeek's page (AAP-70): like Ollama's, plus the balance and the usage-limit lines. */
+function renderDeepSeek(current: StateView): void {
+  const root = card("deepseek");
+  const status = current.status.providers.find((entry) => entry.id === "deepseek");
+  const providerState = status?.state ?? "disabled";
+  setBadge(role(root, "badge"), providerState);
+  showError(role(root, "error"), status?.error);
+  const limitLine = usageLimitLine(status?.exhaustedUntil, Date.now());
+  const limitNode = role(root, "usage-limit");
+  limitNode.textContent = limitLine ?? ""; limitNode.hidden = !limitLine;
+  const balanceNode = role(root, "balance");
+  balanceNode.textContent = status?.balance ? `Balance: ${status.balance}` : ""; balanceNode.hidden = !status?.balance;
+  renderFields("deepseek", current);
+  const models = status?.models ?? [];
+  role(root, "model-count").textContent = models.length ? `(${models.length})` : "";
+  const list = role<HTMLElement>(root, "models");
+  list.replaceChildren(...(models.length ? models.map((model) => Object.assign(document.createElement("li"), { textContent: model.id, title: model.name ?? "" })) : [Object.assign(document.createElement("li"), { className: "empty", textContent: "Enter the API key, enable and save to list DeepSeek's models." })]));
 }
 
 /** Fields, provider badge and models of a local model server page (no login or terms parts). */
@@ -547,6 +566,7 @@ function render(current: StateView): void {
   renderProvider("antigravity", current);
   for (const id of localOrder) renderLocal(id, current);
   renderOllama(current);
+  renderDeepSeek(current);
   renderOverview(current);
   renderInstall(current);
   el("settings-path").textContent = current.settingsPath;
@@ -556,6 +576,7 @@ function render(current: StateView): void {
   for (const id of providerOrder) setNavDot(id, current.status.providers.find((entry) => entry.id === id)?.state ?? "disabled");
   for (const id of localOrder) setNavDot(id, localDotState(id));
   setNavDot("ollama", current.status.providers.find((entry) => entry.id === "ollama")?.state ?? "disabled");
+  setNavDot("deepseek", current.status.providers.find((entry) => entry.id === "deepseek")?.state ?? "disabled");
   usage.setState(current);
 }
 
@@ -797,6 +818,21 @@ function wire(): void {
       const input = field("providers.ollama.apiKey") as HTMLInputElement;
       input.type = input.type === "password" ? "text" : "password";
       el("ollama-key-show").textContent = input.type === "password" ? "Show" : "Hide";
+    };
+  }
+
+  {
+    const root = card("deepseek");
+    const msg = role<HTMLElement>(root, "msg");
+    role(root, "save").onclick = () => void saveScope("deepseek");
+    role(root, "refresh").onclick = async () => {
+      const result = await api.refreshModels("deepseek");
+      if (!result.ok) flash(msg, result.message, true);
+    };
+    el("deepseek-key-show").onclick = () => {
+      const input = field("providers.deepseek.apiKey") as HTMLInputElement;
+      input.type = input.type === "password" ? "text" : "password";
+      el("deepseek-key-show").textContent = input.type === "password" ? "Show" : "Hide";
     };
   }
 
