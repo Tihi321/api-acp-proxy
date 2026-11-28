@@ -5,6 +5,8 @@
 .series-gufo { background: var(--series-gufo); }
 .series-strata { background: var(--series-strata); }
 .series-llama { background: var(--series-llama); }
+.series-ollama { background: var(--series-ollama); }
+.series-deepseek { background: var(--series-deepseek); }
 .series-other { background: var(--series-other); }
 
 #usage-table th:not(:first-child) { text-align: right; }
@@ -23,6 +25,8 @@
 .chart-svg .series-gufo { fill: var(--series-gufo); }
 .chart-svg .series-strata { fill: var(--series-strata); }
 .chart-svg .series-llama { fill: var(--series-llama); }
+.chart-svg .series-ollama { fill: var(--series-ollama); }
+.chart-svg .series-deepseek { fill: var(--series-deepseek); }
 .chart-svg .series-other { fill: var(--series-other); }
 .chart-axis { display: flex; gap: 2px; height: 18px; margin-top: var(--space-1); color: var(--text-faint); font-size: var(--text-xs); }
 .chart-tick { flex: 1; min-width: 0; position: relative; }

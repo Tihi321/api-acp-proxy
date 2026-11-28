@@ -35,6 +35,22 @@ const ollamaProviderSchema = z.object({
   baseUrl: z.string().trim().refine((value) => { try { return /^https?:$/.test(new URL(value).protocol); } catch { return false; } }, "must be an http:// or https:// URL").default(OLLAMA_DEFAULT_URL),
   apiKey: z.string().optional(),
   maxConcurrent: z.number().int().min(0).default(1),
+  /** Prompt limit in characters for every model (0 = no limit; absent = the model's context length x 4, read from Ollama). */
+  maxPromptChars: z.number().int().min(0).optional(),
+}).default({});
+
+/** DeepSeek (AAP-70): the official cloud API, paid per token; the key is encrypted at rest and `PROXY_DEEPSEEK_API_KEY` overrides it. */
+export const DEEPSEEK_DEFAULT_URL = "https://api.deepseek.com";
+const deepseekProviderSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** The API root; a trailing `/` or `/v1` is ignored. `https:` only, except `http:` for localhost (tests, fakes). */
+  baseUrl: z.string().trim().refine((value) => {
+    try { const url = new URL(value); return url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)); } catch { return false; }
+  }, "must be an https:// URL (http:// only for localhost)").default(DEEPSEEK_DEFAULT_URL),
+  apiKey: z.string().optional(),
+  maxConcurrent: z.number().int().min(0).default(4),
+  /** Prompt limit in characters for every model (0 = no limit; absent = the model's context length x 4). */
+  maxPromptChars: z.number().int().min(0).optional(),
 }).default({});
 
 /** Fields shared by the Gufo and Llama.cpp profiles. */
@@ -416,6 +432,7 @@ export const settingsSchema = z.object({
     llama: llamaProviderSchema,
     strata: localProviderSchema({ port: 8080, command: "D:\\Strata\\terminal\\run-unsloth-ud-iq4_xs.bat", args: "", cwd: "D:\\Strata" }),
     ollama: ollamaProviderSchema,
+    deepseek: deepseekProviderSchema,
   }).default({}),
   /** MCP servers a Responses request may name by `server_label` (JSON only, no settings-window editor). Headers and env are stored as written. */
   mcpServers: z.record(mcpLabel, mcpServerSchema).default({}),
@@ -467,7 +484,7 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
 
 function mapSecrets(settings: Settings, map: (value: string) => string | undefined): Settings {
   const copy = structuredClone(settings);
-  const holders: Array<[Record<string, unknown>, string]> = [[copy.server, "apiKey"], [copy.providers.antigravity, "apiKey"], [copy.providers.claude, "apiKey"], [copy.providers.claude, "oauthToken"], [copy.providers.gufo, "apiKey"], [copy.providers.strata, "apiKey"], [copy.providers.ollama, "apiKey"], [copy.providers.llama, "hfToken"]];
+  const holders: Array<[Record<string, unknown>, string]> = [[copy.server, "apiKey"], [copy.providers.antigravity, "apiKey"], [copy.providers.claude, "apiKey"], [copy.providers.claude, "oauthToken"], [copy.providers.gufo, "apiKey"], [copy.providers.strata, "apiKey"], [copy.providers.ollama, "apiKey"], [copy.providers.deepseek, "apiKey"], [copy.providers.llama, "hfToken"]];
   for (const [holder, key] of holders) {
     const value = holder[key];
     if (typeof value !== "string") continue;
@@ -594,6 +611,7 @@ export function resolveConfig(settings: Settings, env: NodeJS.ProcessEnv = proce
   apply("providers.claude.enabled", parseBool(env.PROXY_CLAUDE_ENABLED), (v) => { providers.claude.enabled = v; });
   apply("providers.claude.executablePath", env.PROXY_CLAUDE_EXECUTABLE || undefined, (v) => { providers.claude.executablePath = v; });
   apply("providers.claude.termsAcknowledgedAt", parseBool(env.PROXY_CLAUDE_ACCEPT_TERMS) ? providers.claude.termsAcknowledgedAt ?? new Date().toISOString() : undefined, (v) => { providers.claude.termsAcknowledgedAt = v; });
+  apply("providers.deepseek.apiKey", env.PROXY_DEEPSEEK_API_KEY || undefined, (v) => { providers.deepseek.apiKey = v; });
   const config: ProxyConfig = {
     host: server.host,
     port: server.port,

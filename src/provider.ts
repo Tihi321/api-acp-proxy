@@ -8,6 +8,7 @@ import type { ToolBridgeHub } from "./tool-bridge.js";
 import type { ParsedPlanLimits } from "./plan-limits.js";
 import type { PlanLimitsView, RateLimitHintView } from "./shared/ipc.js";
 import type { ProviderSettings } from "./settings.js";
+import type { UsageLimitError } from "./usage-limit.js";
 
 /** An image the agent generated: base64 `data` as taken from the agent's update; Codex also reports the prompt it actually used. */
 export interface GeneratedImage { mimeType: string; data: string; revisedPrompt?: string; }
@@ -18,7 +19,7 @@ export interface McpCallResult { server: string; name: string; /** The JSON text
 export interface WebSearchResult { query: string; status: "completed" | "failed"; sources?: Array<{ title?: string; url: string }>; }
 export interface GenerationResult { text: string; stopReason: StopReason | "tool_calls"; usage: Usage | null; images?: GeneratedImage[]; toolCalls?: ToolCall[]; /** The remote MCP calls the agent made during this response (only for a request with `mcpServers`). */ mcpCalls?: McpCallResult[]; /** The web searches the agent ran during this response (only for a request with `webSearch`). */ searches?: WebSearchResult[]; /** The whole thinking text of this answer; absent or "" when the model sent none. */ reasoning?: string; /** True when usage.thoughtTokens is the chars/4 estimate from `reasoning` (the server reported usage without reasoning tokens). */ reasoningEstimated?: true; }
 /** `instructions` is extra prompt text kept out of the client-visible messages; `images` lets the agent generate images (its image permission is allowed for this request only). `tools` gives the agent the client's function tools through the MCP bridge (`toolChoice` and `parallelToolCalls` as the request said). */
-export interface GenerateOptions { instructions?: string; images?: true; tools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** Remote MCP servers the agent may call inside its turn (a Responses `mcp` tool); the agent talks to them itself. */ mcpServers?: McpServerSpec[]; /** The request asked for web search: the agent may use its search tool (and nothing else on the web); the hints go into the prompt. */ webSearch?: WebSearchRequest; /** The client's output limit (max_tokens / max_completion_tokens / max_output_tokens). Local OpenAI-compatible providers forward it upstream as `max_tokens`; ACP providers ignore it. */ maxOutputTokens?: number; /** The client's thinking switch. Local OpenAI-compatible providers forward these upstream as `reasoning_effort` / `chat_template_kwargs`; ACP providers ignore them. */ reasoningEffort?: string; chatTemplateKwargs?: Record<string, unknown>; }
+export interface GenerateOptions { instructions?: string; images?: true; tools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** Remote MCP servers the agent may call inside its turn (a Responses `mcp` tool); the agent talks to them itself. */ mcpServers?: McpServerSpec[]; /** The request asked for web search: the agent may use its search tool (and nothing else on the web); the hints go into the prompt. */ webSearch?: WebSearchRequest; /** The client's output limit (max_tokens / max_completion_tokens / max_output_tokens). Providers with `forwardsOutputLimit` (the local OpenAI-compatible family) forward it upstream as `max_tokens`; ACP providers ignore it. */ maxOutputTokens?: number; /** The client's thinking switch. Local OpenAI-compatible providers forward these upstream as `reasoning_effort` / `chat_template_kwargs`; ACP providers ignore them. */ reasoningEffort?: string; chatTemplateKwargs?: Record<string, unknown>; }
 export interface GenerationCallbacks {
   onText?: (text: string) => void;
   /** A piece of the model's thinking (reasoning_content / agent_thought_chunk); never part of the answer text. */
@@ -55,7 +56,7 @@ export type ProviderState = "disabled" | "stopped" | "starting" | "ready" | "nee
 export interface ProviderFeatures { imageGeneration: boolean; tools: boolean; mcp: boolean; webSearch: boolean; }
 /** Where the agent keeps its login. `shared` is true when that is the user's own folder of the tool (~/.codex, ~/.claude, ~/.gemini): logging out there signs the user out of the tool on this machine. */
 export interface LoginHome { path: string; shared: boolean; }
-export interface ProviderStatus { id: string; name: string; state: ProviderState; error?: string; authMethods: AuthMethodInfo[]; models: ModelInfo[]; /** Browser URL printed by the agent for an interactive login (present while a login may be pending). */ loginUrl?: string; /** Version reported by the agent in initialize.agentInfo. */ agentVersion?: string; /** Signed-in account label pushed by the agent (e.g. via _auth/status_update). */ account?: string; /** How the provider authenticates (`descriptor.authMethod`); absent when not known. Never a secret. */ authMethod?: ProviderAuthMethod; /** What the agent said it accepts in `initialize` (present once it has started). */ capabilities?: { image: boolean }; /** What the proxy can do through this provider. */ features?: ProviderFeatures; /** Where the login lives (see `LoginHome`); undefined when the provider does not say. */ loginHome?: LoginHome; /** ISO UTC time the usage limit resets; set by the controller from the router while the provider is exhausted, never by a provider. */ exhaustedUntil?: string; }
+export interface ProviderStatus { id: string; name: string; state: ProviderState; error?: string; authMethods: AuthMethodInfo[]; models: ModelInfo[]; /** Browser URL printed by the agent for an interactive login (present while a login may be pending). */ loginUrl?: string; /** Version reported by the agent in initialize.agentInfo. */ agentVersion?: string; /** Signed-in account label pushed by the agent (e.g. via _auth/status_update). */ account?: string; /** How the provider authenticates (`descriptor.authMethod`); absent when not known. Never a secret. */ authMethod?: ProviderAuthMethod; /** What the agent said it accepts in `initialize` (present once it has started). */ capabilities?: { image: boolean }; /** What the proxy can do through this provider. */ features?: ProviderFeatures; /** Where the login lives (see `LoginHome`); undefined when the provider does not say. */ loginHome?: LoginHome; /** ISO UTC time the usage limit resets; set by the controller from the router while the provider is exhausted, never by a provider. */ exhaustedUntil?: string; /** Account balance as text ("110.00 USD"); never a secret. */ balance?: string; }
 
 /** How to run an agent process. Under Electron this is process.execPath + ELECTRON_RUN_AS_NODE=1. */
 export interface NodeRuntime { command: string; argsPrefix: string[]; env: Record<string, string>; }
@@ -95,7 +96,7 @@ export interface ProviderDescriptor {
   ownedBy: string;
   /** Also expose raw model ids without the `<id>/` prefix. */
   exposeUnprefixed: boolean;
-  /** Default limit on the prompt text in characters (the agent silently drops the rest); absent = unlimited. The `maxPromptChars` setting overrides it. */
+  /** Default limit on the prompt text in characters (an ACP agent silently drops the rest; a local provider's model has a context size); absent = unlimited. The `maxPromptChars` setting overrides it. */
   maxPromptChars?: number;
   /** Fixed model list; when set no session is needed to list models. */
   staticModels?: readonly string[];
@@ -219,8 +220,14 @@ export interface Provider {
   readonly mcpSupport?: boolean;
   /** The effective limit on the prompt text in characters; absent = none. */
   readonly maxPromptChars?: number;
-  /** Throws a 400 `context_length_exceeded` when the prompt built from these messages is over `maxPromptChars`. Synchronous, no side effects. */
-  checkPrompt?(messages: Message[], options?: GenerateOptions): void;
+  /** The effective limit for one model (a model-specific limit, e.g. from its context size); wins over `maxPromptChars` in /v1/models. */
+  maxPromptCharsFor?(model: string): number | undefined;
+  /** Throws a 400 `context_length_exceeded` when the prompt built from these messages is over the limit (`model` selects a per-model limit; ACP ignores it). Synchronous, no side effects. */
+  checkPrompt?(messages: Message[], options?: GenerateOptions, model?: string): void;
+  /** The provider sends the output limit upstream and reports the real stop and usage; the server does not cut its text. */
+  readonly forwardsOutputLimit?: boolean;
+  /** What the provider last learned outside a request (a balance probe): an error = exhausted now, `null` = known available, `undefined` = unknown. */
+  usageLimitState?(): UsageLimitError | null | undefined;
   /** Whether this model accepts image input; the router prefers it over `status().capabilities.image`. `undefined` = not known yet (callers refuse only on an explicit `false`). */
   acceptsImages?(model: string): boolean | undefined;
   /** Whether this model generates images; the router prefers it over `imageGeneration`. */

@@ -25,6 +25,8 @@ export interface ProviderStatusView {
   loginHome?: { path: string; shared: boolean };
   /** ISO UTC time the provider's usage limit resets; present only while the router holds it exhausted. */
   exhaustedUntil?: string;
+  /** Account balance the provider last read (DeepSeek), e.g. "110.00 USD". Never a secret. */
+  balance?: string;
 }
 export interface StatusView {
   server: { state: ServerState; host: string; port: number; baseUrl?: string; error?: { code?: string; message: string } };
@@ -52,10 +54,13 @@ export interface SettingsView {
     strata: LocalProviderSettingsView;
     llama: LlamaProviderSettingsView;
     ollama: OllamaProviderSettingsView;
+    deepseek: DeepSeekProviderSettingsView;
   };
 }
 /** Ollama (AAP-69): no launcher fields; the base URL is where Ollama listens. */
-export interface OllamaProviderSettingsView { enabled: boolean; baseUrl: string; apiKey?: string; maxConcurrent?: number }
+export interface OllamaProviderSettingsView { enabled: boolean; baseUrl: string; apiKey?: string; maxConcurrent?: number; maxPromptChars?: number }
+/** DeepSeek (AAP-70): the official API; `baseUrl` defaults to https://api.deepseek.com, `apiKey` is encrypted at rest. */
+export interface DeepSeekProviderSettingsView { enabled: boolean; baseUrl: string; apiKey?: string; maxConcurrent?: number; maxPromptChars?: number }
 export interface LocalProviderSettingsView { enabled: boolean; port: number; command: string; args: string; cwd: string; apiKey?: string; maxConcurrent?: number }
 /** One Gufo model profile (see `GufoProfile` in settings.ts); `SettingsPatchView` replaces `profiles` as a whole array. */
 export interface GufoProfileView { id: string; label: string; model: string; kind: "llm" | "image"; args: string; vision: boolean; startTimeoutMs?: number; requestTimeoutMs?: number }
@@ -118,6 +123,7 @@ export type SettingsPatchView = {
     strata?: { [K in keyof LocalProviderSettingsView]?: LocalProviderSettingsView[K] | null };
     llama?: { [K in keyof LlamaProviderSettingsView]?: LlamaProviderSettingsView[K] | null };
     ollama?: { [K in keyof OllamaProviderSettingsView]?: OllamaProviderSettingsView[K] | null };
+    deepseek?: { [K in keyof DeepSeekProviderSettingsView]?: DeepSeekProviderSettingsView[K] | null };
   };
 };
 
@@ -145,7 +151,7 @@ export interface ActivityView {
   reasoningEstimated?: boolean;
 }
 /** One provider's (or the total's) counts over a range. `estimated`: requests whose token counts are the chars/4 estimate. */
-export interface UsageCountsView { requests: number; errors: number; inputTokens: number; outputTokens: number; estimated: number }
+export interface UsageCountsView { requests: number; errors: number; inputTokens: number; outputTokens: number; estimated: number; cachedTokens: number; reasoningTokens: number }
 export type UsageRangeKey = "today" | "last7" | "last30" | "allTime";
 export interface UsageProviderView { id: string; today: UsageCountsView; last7: UsageCountsView; last30: UsageCountsView; allTime: UsageCountsView }
 /** One local day; `byProvider` has an entry for every provider of `UsageView.providers` (zeros included). */

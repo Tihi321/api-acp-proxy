@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../src/config.js";
+import { deepseekBaseUrl } from "../src/providers/deepseek.js";
 import { createLogger } from "../src/logger.js";
 import { defaultSettings, defaultSettingsPath, LLAMA_PRESETS, mergeSettings, resolveConfig, restoreMissingLlamaFlagPresets, restoreMissingLlamaPresets, restoreMissingPresets, SettingsStore, settingsSchema, type SecretCodec } from "../src/settings.js";
 import { tempRoot } from "./helpers/temp-root.js";
@@ -19,6 +20,12 @@ describe("local provider settings", () => {
     expect([ollama.enabled, ollama.baseUrl, ollama.maxConcurrent]).toEqual([true, "http://127.0.0.1:11434", 1]);
     expect(settingsSchema.parse({ providers: { ollama: { baseUrl: " http://pc:11434/ " } } }).providers.ollama.baseUrl).toBe("http://pc:11434/");
     expect(() => settingsSchema.parse({ providers: { ollama: { baseUrl: "11434" } } })).toThrow(/http/);
+    // AAP-70: DeepSeek is off by default, https only (http for localhost), four requests at a time.
+    const deepseek = settingsSchema.parse({}).providers.deepseek;
+    expect([deepseek.enabled, deepseek.baseUrl, deepseek.maxConcurrent, deepseek.apiKey]).toEqual([false, "https://api.deepseek.com", 4, undefined]);
+    expect(() => settingsSchema.parse({ providers: { deepseek: { baseUrl: "http://example.com" } } })).toThrow(/https/);
+    expect(settingsSchema.parse({ providers: { deepseek: { baseUrl: "http://127.0.0.1:9" } } }).providers.deepseek.baseUrl).toBe("http://127.0.0.1:9");
+    expect(deepseekBaseUrl("https://api.deepseek.com/v1/")).toBe("https://api.deepseek.com");
   });
 
   it("keeps and defaults the gufo and strata keys", () => {
@@ -200,13 +207,14 @@ describe("SettingsStore", () => {
     const file = fresh();
     const codec: SecretCodec = { encode: (plain) => Buffer.from(plain).toString("base64"), decode: (stored) => Buffer.from(stored, "base64").toString() };
     const store = new SettingsStore(file, codec);
-    await store.save(mergeSettings(defaultSettings(), { server: { apiKey: "sekret" }, providers: { antigravity: { apiKey: "gem" }, claude: { apiKey: "sk-ant-key", oauthToken: "oauth-tok" }, llama: { hfToken: "hf_tok" } } }));
+    await store.save(mergeSettings(defaultSettings(), { server: { apiKey: "sekret" }, providers: { antigravity: { apiKey: "gem" }, claude: { apiKey: "sk-ant-key", oauthToken: "oauth-tok" }, llama: { hfToken: "hf_tok" }, deepseek: { apiKey: "sk-deep" } } }));
     const onDisk = readFileSync(file, "utf8");
     expect(onDisk).not.toContain("hf_tok");
     expect(JSON.parse(onDisk).providers.llama.hfToken).toMatch(/^enc:/);
     expect(onDisk).not.toContain("sekret");
     expect(onDisk).not.toContain("sk-ant-key");
     expect(onDisk).not.toContain("oauth-tok");
+    expect(onDisk).not.toContain("sk-deep");
     expect(onDisk).toContain("enc:");
     const loaded = await store.load();
     expect(loaded.server.apiKey).toBe("sekret");
@@ -214,6 +222,11 @@ describe("SettingsStore", () => {
     expect(loaded.providers.claude.apiKey).toBe("sk-ant-key");
     expect(loaded.providers.claude.oauthToken).toBe("oauth-tok");
     expect(loaded.providers.llama.hfToken).toBe("hf_tok");
+    expect(loaded.providers.deepseek.apiKey).toBe("sk-deep");
+    // The env key wins over the file's and is listed as an override (it is never written back).
+    const withEnv = resolveConfig(loaded, { PROXY_DEEPSEEK_API_KEY: "from-env" });
+    expect(withEnv.settings.providers.deepseek.apiKey).toBe("from-env");
+    expect(withEnv.overridden).toContain("providers.deepseek.apiKey");
     expect((await new SettingsStore(file, undefined, logger).load()).server.apiKey).toBeUndefined();
   });
 });

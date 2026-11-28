@@ -25,6 +25,8 @@ export interface AcpLike {
   canGenerateImages?(model: string): boolean;
   /** Throws a 400 `context_length_exceeded` before anything starts when the prompt is over the model's provider limit. */
   checkPrompt?(model: string, messages: Message[], options?: GenerateOptions): void;
+  /** Whether the model's provider sends the output limit upstream and reports the real stop and usage (the server then does not cut the text). */
+  forwardsOutputLimit?(model: string): boolean;
   /** Whether the model's provider can search the web (a bridge without this method is asked and answers 400 itself). */
   canSearchWeb?(model: string): boolean;
   /** Whether the model's provider accepts image input: `undefined` until the provider has started and said so (a bridge without this method never knows). */

@@ -23,7 +23,7 @@ import type { ImagePassthrough } from "./provider.js";
 const startedAt = Date.now();
 
 /** What a request tells the activity log (metadata only: the prompt, the answer and the headers never get here). */
-interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; refused?: true; inputTokens?: number; outputTokens?: number; estimated?: boolean; reasoningTokens?: number; reasoningEstimated?: boolean; ignoredParams?: string[]; }
+interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; refused?: true; inputTokens?: number; outputTokens?: number; estimated?: boolean; cachedTokens?: number; reasoningTokens?: number; reasoningEstimated?: boolean; ignoredParams?: string[]; }
 
 /** The proxy's error code of a failure (what the client sees as `error.code`). */
 function errorCode(error: unknown): string {
@@ -56,6 +56,7 @@ function traceUsage(trace: Trace, result: GenerationResult, promptText: string):
   trace.inputTokens = usage.prompt;
   trace.outputTokens = usage.completion;
   trace.estimated = usageEstimated(result);
+  trace.cachedTokens = Number.isFinite(usage.cached) && usage.cached > 0 ? usage.cached : undefined;
   trace.reasoningTokens = Number.isFinite(usage.reasoning) && usage.reasoning > 0 ? usage.reasoning : undefined;
   trace.reasoningEstimated = result.reasoningEstimated === true;
 }
@@ -153,7 +154,9 @@ export function mapStopReason(stopReason: GenerationResult["stopReason"]): { cha
 }
 
 /** Runs one generation and enforces the client's output limit on the raw text: the part that fits is emitted, the agent turn is cancelled and the result is a "max_tokens" stop with usage left to the estimate. */
-async function runGeneration(bridge: AcpLike, model: string, messages: Message[], options: GenerateOptions, limit: number | undefined, emit: ((text: string) => void) | undefined, signal: AbortSignal, emitReasoning?: (text: string) => void): Promise<GenerationResult> {
+async function runGeneration(bridge: AcpLike, model: string, messages: Message[], options: GenerateOptions, requestedLimit: number | undefined, emit: ((text: string) => void) | undefined, signal: AbortSignal, emitReasoning?: (text: string) => void): Promise<GenerationResult> {
+  // A provider that forwards the limit upstream reports the real stop and usage: the proxy does not cut its text (D10).
+  const limit = requestedLimit !== undefined && bridge.forwardsOutputLimit?.(model) !== true ? requestedLimit : undefined;
   if (limit === undefined && !emit && !emitReasoning) return await bridge.generate(model, messages, {}, signal, options);
   const controller = new AbortController();
   const link = () => controller.abort();
@@ -505,6 +508,7 @@ function track(activity: ActivityLog, bridge: AcpLike, response: ServerResponse,
       time, endpoint, stream: trace.stream, features: [...trace.features], durationMs: Date.now() - time, status: response.statusCode,
       ...(trace.model ? { model: trace.model } : {}), ...(error ? { error } : {}), ...(trace.refused ? { refused: true as const } : {}),
       ...(trace.inputTokens !== undefined ? { inputTokens: trace.inputTokens } : {}), ...(trace.outputTokens !== undefined ? { outputTokens: trace.outputTokens } : {}),
+      ...(trace.cachedTokens !== undefined ? { cachedTokens: trace.cachedTokens } : {}),
       ...(trace.reasoningTokens !== undefined ? { reasoningTokens: trace.reasoningTokens } : {}),
       ...(trace.reasoningTokens !== undefined && trace.reasoningEstimated ? { reasoningEstimated: true as const } : {}),
       ...(trace.estimated && (trace.inputTokens !== undefined || trace.outputTokens !== undefined) ? { estimated: true as const } : {}),
