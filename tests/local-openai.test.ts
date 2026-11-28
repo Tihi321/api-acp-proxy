@@ -518,9 +518,15 @@ describe("DeepSeek", () => {
     const streamed = await (await ask(denied.base, { stream: true })).text();
     expect(streamed).toContain('"code":"provider_auth_required"');
     expect(streamed).not.toContain("internal_error");
-    const legacy = await fetch(`${keyless.base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "deepseek/deepseek-v4-flash", messages: [{ role: "user", content: "hi" }] }) });
+    // List first so the router knows the static ids; only then does the acceptsModel hook decide the legacy id (503) versus an unknown one (404).
+    await fetch(`${keyless.base}/models`);
+    const chatWith = (model: string) => fetch(`${keyless.base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }) });
+    const legacy = await chatWith("deepseek/deepseek-v4-flash");
     expect(legacy.status).toBe(503);
     expect(await legacy.json()).toMatchObject({ error: { code: "provider_auth_required" } });
+    const unknown = await chatWith("deepseek/not-a-model");
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toMatchObject({ error: { code: "model_not_found" } });
     keyed.fake.chat = reply(400, { message: "This model's maximum context length is 1048576 tokens." });
     const tooLong = await ask(keyed.base);
     expect(tooLong.status).toBe(400);
