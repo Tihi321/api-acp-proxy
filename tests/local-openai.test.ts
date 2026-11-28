@@ -372,7 +372,9 @@ describe("LocalOpenAiProvider", () => {
     expect(await late.text()).toContain('"code":"context_length_exceeded"');
     expect(loadBodies).toHaveLength(5);
     expect(chatCalls).toBe(3);
-    expect(capture.recent().filter((entry) => entry.level === "warn" && entry.message.includes("may have dropped the start of the prompt"))).toHaveLength(1);
+    const nearLimit = capture.recent().filter((entry) => entry.level === "warn" && entry.message.includes("leaves little room for the answer"));
+    expect(nearLimit).toHaveLength(1);
+    expect(nearLimit[0]?.message.startsWith("Ollama")).toBe(false);
     expect([...nativeAuth]).toEqual(["Bearer k"]);
   });
 

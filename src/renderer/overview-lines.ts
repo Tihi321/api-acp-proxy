@@ -39,3 +39,12 @@ export function localProviderLine(input: {
   if (status.error) return status.error;
   return "Not checked yet.";
 }
+
+/** The data-ov-focus key to focus after the Overview rows are rebuilt: the same button when it is still enabled, else that row's Settings button, else none. Keys are "<id>:login" | "<id>:logout" | "<id>:settings". */
+export function overviewFocusTarget(previous: string | undefined, buttons: ReadonlyArray<{ key: string; disabled: boolean }>): string | undefined {
+  if (!previous) return undefined;
+  const enabled = (key: string): boolean => buttons.some((button) => button.key === key && !button.disabled);
+  if (enabled(previous)) return previous;
+  const settings = `${previous.slice(0, previous.lastIndexOf(":"))}:settings`;
+  return enabled(settings) ? settings : undefined;
+}

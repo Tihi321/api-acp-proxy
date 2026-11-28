@@ -1,7 +1,7 @@
 import { nextExpiryDelay, usageLimitLine } from "./usage-limit-line.js";
 import { mcpAddCommand, mcpEndpointUrl } from "./mcp-command.js";
 import { initUsageView } from "./usage-view.js";
-import { localProviderLine, todayUsageLine } from "./overview-lines.js";
+import { localProviderLine, overviewFocusTarget, todayUsageLine } from "./overview-lines.js";
 import { formatUsd, formatUsdFull } from "./cost-format.js";
 import { initLlamaView } from "./llama-view.js";
 import { fields, fieldValue, type Scope } from "./settings-fields.js";
@@ -53,6 +53,8 @@ const providerOrder = ["codex", "claude", "antigravity"] as const;
 /** The Overview lists the key-based DeepSeek provider after the three that sign in, then the local providers. */
 const overviewOrder = [...providerOrder, "deepseek", "gufo", "strata", "llama", "ollama"] as const;
 const overviewLocalIds = ["gufo", "strata", "llama", "ollama"] as const;
+/** The markup of the Overview rows now in the DOM; an equal rebuild is not applied. */
+let overviewMarkup = "";
 /** The local servers that have a page; `embed` (the embedding server) is a card of the Llama.cpp page. */
 type PageServerId = Exclude<LocalServerId, "embed">;
 const localOrder: readonly PageServerId[] = ["gufo", "strata", "llama"];
@@ -474,16 +476,19 @@ function renderOverview(current: StateView): void {
     const signedIn = usable && isSignedIn(status);
     const login = make("button", "small", loginLabel(id, signedIn));
     login.type = "button";
+    login.dataset.ovFocus = `${id}:login`;
     login.disabled = !usable || signedIn || loggingIn.has(id) || loggingOut.has(id);
     login.title = !usable ? "Enable and save the provider (and start the server) first." : signedIn ? SIGNED_IN_HINT : "Sign in with the method picked on its page.";
     login.onclick = () => void startLogin(id);
     const logout = make("button", "small", loggingOut.has(id) ? "Logging out…" : "Log out");
     logout.type = "button";
+    logout.dataset.ovFocus = `${id}:logout`;
     logout.disabled = !usable || status?.state === "needs_login" || loggingOut.has(id) || loggingIn.has(id);
     logout.title = status?.state === "needs_login" ? "Not signed in." : "";
     logout.onclick = () => void startLogout(id);
     const settingsButton = make("button", "small", "Settings");
     settingsButton.type = "button";
+    settingsButton.dataset.ovFocus = `${id}:settings`;
     settingsButton.title = `Open the ${status?.name ?? id} page`;
     settingsButton.onclick = () => showView(id);
     if (id === "deepseek" || localId) actions.append(settingsButton);
@@ -502,7 +507,7 @@ function renderOverview(current: StateView): void {
     if (status?.balance) row.append(make("p", "ov-line muted", `Balance: ${status.balance}`));
     const limitLine = usageLimitLine(status?.exhaustedUntil, Date.now());
     if (limitLine) row.append(make("p", "ov-line usage-limit", limitLine));
-    const todayCounts = id === "deepseek" || localId ? usage.todayOf(id) : undefined;
+    const todayCounts = usage.todayOf(id);
     const today = todayUsageLine(todayCounts);
     if (today && todayCounts) {
       const todayNode = make("p", "ov-line muted", today);
@@ -518,7 +523,18 @@ function renderOverview(current: StateView): void {
     if (status?.loginHome) row.append(make("p", "ov-home muted small-text", `Login kept in ${status.loginHome.path}${status.loginHome.shared ? " (your own folder, shared with the tool)" : ""}`));
     return row;
   });
-  el("ov-providers").replaceChildren(...rows);
+  const list = el("ov-providers");
+  // Equal markup means equal behaviour: the handlers close over `id` only. A future handler that closes over data that changes needs a key in the markup.
+  const markup = rows.map((row) => row.outerHTML).join("");
+  if (markup !== overviewMarkup) {
+    overviewMarkup = markup;
+    const active = document.activeElement;
+    const previous = active instanceof HTMLElement && list.contains(active) ? active.dataset.ovFocus : undefined;
+    list.replaceChildren(...rows);
+    const buttons = [...list.querySelectorAll<HTMLButtonElement>("button[data-ov-focus]")].map((button) => ({ key: button.dataset.ovFocus!, disabled: button.disabled }));
+    const target = overviewFocusTarget(previous, buttons);
+    if (target) list.querySelector<HTMLElement>(`button[data-ov-focus="${target}"]`)?.focus({ preventScroll: true });
+  }
   const servers = current.mcpServers;
   el("ov-mcp-count").textContent = servers.length ? `(${servers.length})` : "";
   el("ov-mcp").replaceChildren(...(servers.length ? servers.map((entry) => {
