@@ -15,7 +15,7 @@ export class AcpBridge extends AcpProvider {
   }
 }
 
-export interface ModelEntry { id: string; ownedBy?: string; /** Limit on the prompt text in characters, when the provider has one. */ maxPromptChars?: number; /** ISO time the provider's usage limit resets; present only while it is exhausted. */ exhaustedUntil?: string; /** Gufo profile models: what the model is and whether it accepts image input. */ kind?: "llm" | "image" | "embedding"; vision?: boolean; }
+export interface ModelEntry { id: string; ownedBy?: string; /** Limit on the prompt text in characters, when the provider has one. */ maxPromptChars?: number; /** The output limit in tokens, when the provider knows it. */ maxOutputTokens?: number; /** ISO time the provider's usage limit resets; present only while it is exhausted. */ exhaustedUntil?: string; /** Gufo profile models: what the model is and whether it accepts image input. */ kind?: "llm" | "image" | "embedding"; vision?: boolean; }
 export interface AcpLike {
   generate(model: ModelId, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult>;
   close?(): Promise<void>;

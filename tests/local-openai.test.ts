@@ -9,7 +9,7 @@ import type { LocalModelCoordinator } from "../src/local-models.js";
 import { createLogger } from "../src/logger.js";
 import { LLAMA_PRESETS, type GufoProfile } from "../src/settings.js";
 import { DeepSeekProvider, deepseekRegistration } from "../src/providers/deepseek.js";
-import { createLlamaRegistration, LocalOpenAiProvider, ollamaBaseUrl, ollamaRegistration } from "../src/providers/local-openai.js";
+import { createLlamaRegistration, LocalOpenAiProvider, ollamaBaseUrl, ollamaLoadedContext, ollamaRegistration, PsUnsupportedError } from "../src/providers/local-openai.js";
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
 import { tempRoot } from "./helpers/temp-root.js";
@@ -276,7 +276,9 @@ describe("LocalOpenAiProvider", () => {
 
     // The model list's max_output_tokens caps a bigger request (one info line); a model without one is unchanged.
     const askFor = (model: string, max: number) => fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, max_tokens: max, messages: [{ role: "user", content: "hi" }] }) });
-    await fetch(`${base}/models`);
+    const listed = (await (await fetch(`${base}/models`)).json()) as { data: Array<{ id: string; max_output_tokens?: number }> };
+    expect(listed.data.find((entry) => entry.id === "ollama/m:latest")?.max_output_tokens).toBe(50);
+    expect(listed.data.find((entry) => entry.id === "ollama/n:latest")).not.toHaveProperty("max_output_tokens");
     expect((await askFor("ollama/m:latest", 80)).status).toBe(200);
     expect((await askFor("ollama/n:latest", 80)).status).toBe(200);
     expect(bodies.map((body) => body.max_tokens)).toEqual([2, 50, 80]);
@@ -285,7 +287,7 @@ describe("LocalOpenAiProvider", () => {
 
   it("limits an Ollama prompt by the default context the proxy's own load measured, loads the model first and sends the key on native calls", async () => {
     // `context`: what /api/ps reports while loaded; `/api/generate` (the proxy's load at default options) loads at `defaultCtx`.
-    let loaded = false; let context = 32; let defaultCtx = 32; let psCalls = 0; let chatCalls = 0; const loadBodies: string[] = []; const nativeAuth = new Set<string | undefined>();
+    let loaded = false; let context = 32; let defaultCtx = 32; let psCalls = 0; let chatCalls = 0; let promptTokens: number | undefined; const loadBodies: string[] = []; const nativeAuth = new Set<string | undefined>();
     const upstream = createServer((request, response) => {
       let raw = ""; request.on("data", (part) => { raw += part; });
       request.on("end", () => {
@@ -299,6 +301,7 @@ describe("LocalOpenAiProvider", () => {
           response.setHeader("content-type", "text/event-stream");
           response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Hi" } }] })}\n\n`);
           response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+          if (promptTokens !== undefined) response.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: 1, total_tokens: promptTokens + 1 } })}\n\n`);
           response.end("data: [DONE]\n\n"); return;
         }
         response.statusCode = 404; response.end();
@@ -329,23 +332,37 @@ describe("LocalOpenAiProvider", () => {
     expect(loadBodies).toHaveLength(1);
     expect(chatCalls).toBe(0);
     const psBefore = psCalls;
+    promptTokens = 30; // 30 of 32 tokens is at least 90%: one warn line
     expect((await ask(80, false)).status).toBe(200);
+    promptTokens = undefined;
     expect(chatCalls).toBe(1);
     expect(loadBodies).toHaveLength(1);
     await vi.waitFor(() => expect(psCalls).toBe(psBefore + 2)); // prepare's read and the read after the chat
     expect(await limitListed()).toBe(96);
 
-    // Another client loads the model with a bigger num_ctx: the proxy's own /v1 request would run at the default, so the limit stays 96.
+    // Another client loads the model with a bigger num_ctx: the proxy loads it back at its default (its own /v1 request would reload it anyway) and keeps 96.
     context = 1000;
-    expect((await ask(200, true)).status).toBe(400);
+    const foreign = await ask(200, false);
+    expect(foreign.status).toBe(400);
+    expect(await foreign.json()).toMatchObject({ error: { code: "context_length_exceeded" } });
+    expect(loadBodies).toHaveLength(2);
+    expect(context).toBe(32);
     expect(await limitListed()).toBe(96);
+
+    // The default was raised and another client loaded the model first at the new default: the stored 32 differs from the 100 /api/ps shows, so it is measured again.
+    defaultCtx = 100; context = 100; promptTokens = 20;
+    expect((await ask(250, false)).status).toBe(200);
+    expect(loadBodies).toHaveLength(3);
+    expect(chatCalls).toBe(2);
+    await vi.waitFor(async () => expect(await limitListed()).toBe(300));
+    promptTokens = undefined;
 
     // Ollama restarted with a bigger default and the model is unloaded: prepare forgets the old value, the load measures 200 tokens again (600 characters).
     loaded = false; defaultCtx = 200;
     const bigger = await ask(500, false);
     expect(bigger.status).toBe(200);
-    expect(loadBodies).toHaveLength(2);
-    expect(chatCalls).toBe(2);
+    expect(loadBodies).toHaveLength(4);
+    expect(chatCalls).toBe(3);
 
     // Unloaded and restarted smaller: the stream has started when the load-first step refuses, so the refusal is an SSE error.
     await vi.waitFor(async () => expect(await limitListed()).toBe(600));
@@ -353,9 +370,19 @@ describe("LocalOpenAiProvider", () => {
     const late = await ask(200, true);
     expect(late.status).toBe(200);
     expect(await late.text()).toContain('"code":"context_length_exceeded"');
-    expect(loadBodies).toHaveLength(3);
-    expect(chatCalls).toBe(2);
+    expect(loadBodies).toHaveLength(5);
+    expect(chatCalls).toBe(3);
+    expect(capture.recent().filter((entry) => entry.level === "warn" && entry.message.includes("may have dropped the start of the prompt"))).toHaveLength(1);
     expect([...nativeAuth]).toEqual(["Bearer k"]);
+  });
+
+  it("maps /api/ps answers: an entry without context_length is unsupported, a missing model is not loaded", async () => {
+    const read = (answer: () => Response) => ollamaLoadedContext("http://ollama.test", (async () => answer()) as unknown as typeof fetch)("m:latest", new AbortController().signal);
+    await expect(read(() => Response.json({ models: [{ name: "m:latest" }] }))).rejects.toBeInstanceOf(PsUnsupportedError);
+    await expect(read(() => Response.json({ models: [] }))).resolves.toBeUndefined();
+    const failure = await read(() => new Response("boom", { status: 500 })).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(PsUnsupportedError);
   });
 
   const profile = (id: string, kind: "llm" | "image", vision = false, extra: Partial<GufoProfile> = {}): GufoProfile => ({ id, label: id, model: id, kind, vision, args: "", ...extra });
@@ -561,7 +588,10 @@ describe("DeepSeek", () => {
       response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1000, prompt_cache_hit_tokens: 400, completion_tokens: 200, total_tokens: 1200 } })}\n\n`);
       response.end("data: [DONE]\n\n");
     };
-    await fetch(`${priced.base}/models`);
+    const pricedList = (await (await fetch(`${priced.base}/models`)).json()) as { data: Array<{ id: string; max_output_tokens?: number; max_prompt_chars?: number }> };
+    const flashEntry = pricedList.data.find((entry) => entry.id === "deepseek/deepseek-flash"); const proEntry = pricedList.data.find((entry) => entry.id === "deepseek/deepseek-v4-pro");
+    expect(flashEntry?.max_output_tokens).toBe(1000); expect(proEntry?.max_output_tokens).toBe(393216);
+    expect(flashEntry?.max_prompt_chars).toBeGreaterThan(0); expect(proEntry?.max_prompt_chars).toBeGreaterThan(0);
     expect((await ask(priced.base, { max_tokens: 500000, thinking: { type: "disabled", budget_tokens: 5 } })).status).toBe(200);
     expect(priced.fake.chatBodies[0]).toMatchObject({ max_tokens: 1000, thinking: { type: "disabled" } });
     expect(priced.fake.chatBodies[0]?.thinking).toEqual({ type: "disabled" });

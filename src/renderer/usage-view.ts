@@ -1,15 +1,17 @@
 import { formatUsd, formatUsdFull } from "./cost-format.js";
 import type { PlanLimitsView, ProviderStatusView, ProxyApi, RateLimitHintView, StateView, UsageCountsView, UsageRangeKey, UsageView } from "../shared/ipc.js";
 
-export interface UsageViewDeps { api: ProxyApi; showView(name: string): void; }
+export interface UsageViewDeps { api: ProxyApi; showView(name: string): void; /** Called at the end of every usage render (the Overview rows show today's counts). */ onUsageChange?(): void; }
 export interface UsageViewHandle {
   /** The Usage view became visible: refetch usage; for providers in state "ready" whose plan limits are `idle` or older than 60 s, call refreshPlanLimits(id, false). */
   shown(): void;
   /** Called on every state push: provider names and states (enables or disables Refresh, labels). */
   setState(state: StateView): void;
+  /** Today's counts of one provider, from the last usage data. */
+  todayOf(id: string): UsageCountsView | undefined;
 }
 
-type Metric = "requests" | "tokens";
+type Metric = "requests" | "tokens" | "cost";
 const RANGE_KEY = "acp-proxy.usageRange";
 const METRIC_KEY = "acp-proxy.usageMetric";
 const RANGES: readonly UsageRangeKey[] = ["today", "last7", "last30", "allTime"];
@@ -88,7 +90,8 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
   let states = new Map<string, ProviderStatusView["state"]>();
   const pending = new Set<string>();
   let range: UsageRangeKey = (RANGES as readonly string[]).includes(readStored(RANGE_KEY) ?? "") ? (readStored(RANGE_KEY) as UsageRangeKey) : "today";
-  let metric: Metric = readStored(METRIC_KEY) === "tokens" ? "tokens" : "requests";
+  const storedMetric = readStored(METRIC_KEY);
+  let metric: Metric = storedMetric === "tokens" || storedMetric === "cost" ? storedMetric : "requests";
   let resetError = "";
 
   const nameOf = (id: string): string => names.get(id) ?? id;
@@ -162,15 +165,16 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
   function renderChart(): void {
     const chart = el("usage-chart");
     const legend = el("usage-legend");
-    chart.setAttribute("aria-label", `${metric === "tokens" ? "Tokens" : "Requests"} per day, last 30 days`);
+    chart.setAttribute("aria-label", metric === "cost" ? "Cost (USD) per day, last 30 days" : `${metric === "tokens" ? "Tokens" : "Requests"} per day, last 30 days`);
     if (!usage) { chart.replaceChildren(); legend.replaceChildren(); return; }
     const ids = orderIds(usage.providers.map((entry) => entry.id));
     legend.replaceChildren(...ids.map((id) => { const item = make("li"); item.append(swatch(id), document.createTextNode(nameOf(id))); return item; }));
-    const valueOf = (counts: UsageCountsView | undefined): number => !counts ? 0 : metric === "tokens" ? totalTokens(counts) : counts.requests;
+    const valueOf = (counts: UsageCountsView | undefined): number => !counts ? 0 : metric === "tokens" ? totalTokens(counts) : metric === "cost" ? counts.costUsd : counts.requests;
+    const shown = (value: number): string => metric === "cost" ? formatUsd(value) : full.format(value);
     const dayTotals = usage.days.map((day) => ids.reduce((sum, id) => sum + valueOf(day.byProvider[id]), 0));
     const max = Math.max(0, ...dayTotals);
     if (max === 0) {
-      chart.replaceChildren(make("p", "empty-state", metric === "tokens" ? "No tokens in the last 30 days." : "No requests in the last 30 days."));
+      chart.replaceChildren(make("p", "empty-state", metric === "cost" ? "No priced requests in the last 30 days (only DeepSeek has prices)." : metric === "tokens" ? "No tokens in the last 30 days." : "No requests in the last 30 days."));
       return;
     }
     const bars = make("div", "chart-bars");
@@ -199,10 +203,10 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
         segment.setAttribute("height", String(cursor - y));
         svg.append(segment);
         cursor = y;
-        parts.push(`${nameOf(id)} ${full.format(value)}`);
+        parts.push(`${nameOf(id)} ${shown(value)}`);
       }
       column.append(svg);
-      column.title = `${dayLong.format(parseDay(day.day))} · ${parts.length ? parts.join(" · ") : metric === "tokens" ? "no tokens" : "no requests"}`;
+      column.title = `${dayLong.format(parseDay(day.day))} · ${parts.length ? parts.join(" · ") : metric === "cost" ? "no cost" : metric === "tokens" ? "no tokens" : "no requests"}`;
       bars.append(column);
       const tick = make("div", "chart-tick");
       const fromToday = last - index;
@@ -233,6 +237,7 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
     renderTable();
     renderChart();
     renderNote();
+    deps.onUsageChange?.();
   }
 
   function windowBadge(view: PlanLimitsView, name: string): HTMLElement {
@@ -379,7 +384,7 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
   }
   for (const button of el("usage-metric").querySelectorAll<HTMLButtonElement>("button")) {
     button.addEventListener("click", () => {
-      metric = button.dataset.metric === "tokens" ? "tokens" : "requests";
+      metric = button.dataset.metric === "tokens" || button.dataset.metric === "cost" ? button.dataset.metric : "requests";
       writeStored(METRIC_KEY, metric); renderControls(); renderChart();
     });
   }
@@ -395,6 +400,7 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
   void loadLimits();
 
   return {
+    todayOf(id: string): UsageCountsView | undefined { return usage?.providers.find((entry) => entry.id === id)?.today; },
     shown(): void {
       void loadUsage();
       void api.getPlanLimits().then((current) => {

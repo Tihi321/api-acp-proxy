@@ -1,6 +1,7 @@
 import { nextExpiryDelay, usageLimitLine } from "./usage-limit-line.js";
 import { mcpAddCommand, mcpEndpointUrl } from "./mcp-command.js";
 import { initUsageView } from "./usage-view.js";
+import { localProviderLine, todayUsageLine } from "./overview-lines.js";
 import { formatUsd, formatUsdFull } from "./cost-format.js";
 import { initLlamaView } from "./llama-view.js";
 import { fields, fieldValue, type Scope } from "./settings-fields.js";
@@ -49,8 +50,9 @@ const badgeText: Record<string, string> = { needs_login: "needs login", not_inst
 /** The tool a provider's shared login folder belongs to (named in the log-out confirmation). */
 const toolName: Record<string, string> = { codex: "Codex (the Codex app and CLI)", antigravity: "Google Antigravity and the Gemini tools", claude: "Claude Code" };
 const providerOrder = ["codex", "claude", "antigravity"] as const;
-/** The Overview lists the key-based DeepSeek provider after the three that sign in. */
-const overviewOrder = [...providerOrder, "deepseek"] as const;
+/** The Overview lists the key-based DeepSeek provider after the three that sign in, then the local providers. */
+const overviewOrder = [...providerOrder, "deepseek", "gufo", "strata", "llama", "ollama"] as const;
+const overviewLocalIds = ["gufo", "strata", "llama", "ollama"] as const;
 /** The local servers that have a page; `embed` (the embedding server) is a card of the Llama.cpp page. */
 type PageServerId = Exclude<LocalServerId, "embed">;
 const localOrder: readonly PageServerId[] = ["gufo", "strata", "llama"];
@@ -70,7 +72,7 @@ let activity: ActivityView[] = [];
 const dirty: Record<Scope, boolean> = { server: false, codex: false, antigravity: false, deepseek: false, claude: false, gufo: false, strata: false, llama: false, ollama: false };
 /** Launcher state of the local model servers, in the order gufo, strata, llama. */
 let localServers: LocalServerStatusView[] = [];
-const usage = initUsageView({ api, showView: (name) => showView(name) });
+const usage = initUsageView({ api, showView: (name) => showView(name), onUsageChange: () => { if (state) renderOverview(state); } });
 const llama = initLlamaView({
   api,
   markDirty: (value) => markDirty("llama", value),
@@ -296,6 +298,7 @@ function renderLocalServers(list: LocalServerStatusView[]): void {
     if (atBottom) log.scrollTop = log.scrollHeight;
   }
   for (const id of localOrder) setNavDot(id, localDotState(id));
+  if (state) renderOverview(state);
 }
 
 /** The profiles being edited on the Gufo page (a copy of the saved ones until the user saves). */
@@ -463,7 +466,8 @@ function renderOverview(current: StateView): void {
     const head = make("div", "ov-head");
     head.append(make("strong", "", status?.name ?? id));
     const badge = make("span", "badge");
-    setBadge(badge, status?.state ?? "disabled");
+    const localId = overviewLocalIds.find((entry) => entry === id);
+    setBadge(badge, localId && localId !== "ollama" ? localDotState(localId) : status?.state ?? "disabled");
     head.append(badge);
     if (status?.agentVersion) head.append(make("span", "muted mono", `v${status.agentVersion}`));
     const actions = make("div", "ov-actions");
@@ -482,13 +486,30 @@ function renderOverview(current: StateView): void {
     settingsButton.type = "button";
     settingsButton.title = `Open the ${status?.name ?? id} page`;
     settingsButton.onclick = () => showView(id);
-    if (id === "deepseek") actions.append(settingsButton);
+    if (id === "deepseek" || localId) actions.append(settingsButton);
     else actions.append(login, logout, settingsButton);
     head.append(actions);
-    row.append(head, make("p", "ov-line muted", describeSignIn(status, current)));
+    let line: string;
+    if (localId) {
+      const launcher = localId === "ollama" ? undefined : localServers.find((entry) => entry.id === localId);
+      const profileLabel = !launcher?.profile ? undefined
+        : localId === "gufo" ? gufoDraft.find((profile) => profile.id === launcher.profile)?.label ?? launcher.profile
+        : localId === "llama" ? current.settings.providers.llama.profiles.find((profile) => profile.id === launcher.profile)?.label ?? launcher.profile
+        : undefined;
+      line = localProviderLine({ id: localId, status, launcher, profileLabel, serverRunning: server.state === "running", ollamaUrl: current.settings.providers.ollama.baseUrl });
+    } else line = describeSignIn(status, current);
+    row.append(head, make("p", "ov-line muted", line));
     if (status?.balance) row.append(make("p", "ov-line muted", `Balance: ${status.balance}`));
     const limitLine = usageLimitLine(status?.exhaustedUntil, Date.now());
     if (limitLine) row.append(make("p", "ov-line usage-limit", limitLine));
+    const todayCounts = id === "deepseek" || localId ? usage.todayOf(id) : undefined;
+    const today = todayUsageLine(todayCounts);
+    if (today && todayCounts) {
+      const todayNode = make("p", "ov-line muted", today);
+      const total = todayCounts.inputTokens + todayCounts.outputTokens;
+      todayNode.title = `${todayCounts.requests.toLocaleString()} requests, ${total.toLocaleString()} tokens${todayCounts.estimated > 0 ? ` (${todayCounts.estimated.toLocaleString()} estimated)` : ""}, ${todayCounts.errors.toLocaleString()} errors${todayCounts.costUsd > 0 ? `, ${formatUsdFull(todayCounts.costUsd)}` : ""}`;
+      row.append(todayNode);
+    }
     const chips = make("ul", "chips");
     const count = status?.models.length ?? 0;
     if (status && usable) for (const chip of featureChips) if (chip.on(status)) chips.append(make("li", "", chip.label));
