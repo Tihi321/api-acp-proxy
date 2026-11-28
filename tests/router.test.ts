@@ -171,4 +171,31 @@ describe("ProviderRouter usage limit", () => {
     await expect(router.generate("a/m", msgs)).rejects.toMatchObject({ retryAfterSeconds: 300 });
     expect(router.exhaustedProviders()).toEqual({ a: new Date(now + 300_000).toISOString() });
   });
+
+  it("keeps the usage-limit state across a restart", async () => {
+    let now = new Date(2026, 10, 26, 12, 0).getTime();
+    const exhaustedPath = path.join(tmp, "exhausted-restart", "exhausted.json");
+    const make = (providers: Provider[]): ProviderRouter => new ProviderRouter({ providers, logger: createLogger({ console: false }), now: () => now, exhaustedPath, usageLimit: { cooldownMs: 5 * 60_000 } });
+    const first = make([{ ...fake("a", ["m"]), async generate() { throw new UsageLimitError("limit"); } }]);
+    await expect(first.generate("a/m", msgs)).rejects.toMatchObject({ code: "usage_limit_exceeded" });
+    await first.close();
+    const until = new Date(now + 300_000).toISOString();
+    expect(JSON.parse(readFileSync(exhaustedPath, "utf8"))).toEqual({ version: 1, providers: { a: { until } } });
+
+    // Router B: a passed entry is dropped, an entry of a provider that is not in this run is kept.
+    const other = new Date(now + 600_000).toISOString();
+    writeFileSync(exhaustedPath, JSON.stringify({ version: 1, providers: { a: { until }, gone: { until: new Date(now - 60_000).toISOString() }, off: { until: other } } }));
+    const calls = { n: 0 }, fail = { on: false };
+    const probe = { available: false };
+    const second = make([{ ...limited("a", calls, fail), usageLimitState: () => (probe.available ? null : undefined) }]);
+    expect(second.exhaustedProviders()).toEqual({ a: until });
+    await expect(second.generate("a/m", msgs)).rejects.toMatchObject({ status: 429, code: "usage_limit_exceeded" });
+    expect(calls.n).toBe(0);
+    // A probe that reports the limit is not used up any more clears the mark and rewrites the file (a passed time alone does not write).
+    probe.available = true;
+    await second.listModels({ force: true });
+    expect(second.exhaustedProviders()).toEqual({});
+    await second.close();
+    expect(JSON.parse(readFileSync(exhaustedPath, "utf8"))).toEqual({ version: 1, providers: { off: { until: other } } });
+  });
 });

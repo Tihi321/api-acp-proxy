@@ -14,6 +14,8 @@ export interface RouterOptions {
   logger?: Logger;
   /** Persisted discovered models (models-cache.json). */
   cachePath?: string;
+  /** Where the usage-limit state is kept (exhausted.json) so a restart does not forget it; absent: memory only. */
+  exhaustedPath?: string;
   modelsWaitMs?: number;
   /** List unprefixed ids in listModels (default true). Unprefixed ids still resolve either way. */
   listBareAliases?: boolean;
@@ -44,6 +46,8 @@ export class ProviderRouter implements AcpLike {
   private writeQueue: Promise<void> = Promise.resolve();
   /** Providers that said their usage limit is used up: id -> epoch ms they are refused until (memory only). */
   private readonly exhausted = new Map<string, number>();
+  /** Entries of exhausted.json for provider ids that are not in this run: kept and written back until they expire. */
+  private readonly dormant = new Map<string, number>();
 
   constructor(private readonly options: RouterOptions) {
     this.providers = options.providers;
@@ -59,6 +63,47 @@ export class ProviderRouter implements AcpLike {
       }
       this.known.set(provider.id, provider.staticModels ?? cache[provider.id] ?? []);
     }
+    this.readExhausted();
+  }
+
+  /** Reads exhausted.json (synchronously, like the models cache): passed, too-far or invalid entries are dropped; entries of ids not in this run stay dormant. */
+  private readExhausted(): void {
+    const file = this.options.exhaustedPath;
+    if (!file) return;
+    let providers: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { providers?: unknown };
+      if (!parsed.providers || typeof parsed.providers !== "object" || Array.isArray(parsed.providers)) return;
+      providers = parsed.providers as Record<string, unknown>;
+    } catch { return; }
+    const now = this.now();
+    const maxMs = this.options.usageLimit?.maxMs ?? MAX_RESET_MS;
+    for (const [id, value] of Object.entries(providers)) {
+      const text = (value as { until?: unknown } | null)?.until;
+      const until = typeof text === "string" ? Date.parse(text) : Number.NaN;
+      if (!Number.isFinite(until) || until <= now || until > now + maxMs) continue;
+      if (!this.byId.has(id)) { this.dormant.set(id, until); continue; }
+      this.exhausted.set(id, until);
+      this.log.info(`'${id}' is still at its usage limit until ${new Date(until).toISOString()} (restored).`);
+    }
+  }
+
+  /** Writes the current usage-limit state (live marks plus dormant entries) to exhausted.json: atomic, queued behind other writes. */
+  private persistExhausted(): void {
+    const file = this.options.exhaustedPath;
+    if (!file) return;
+    const now = this.now();
+    const providers: Record<string, { until: string }> = {};
+    for (const [id, until] of this.dormant) if (until > now) providers[id] = { until: new Date(until).toISOString() };
+    for (const [id, until] of this.exhausted) if (until > now) providers[id] = { until: new Date(until).toISOString() };
+    this.writeQueue = this.writeQueue.then(async () => {
+      try {
+        await mkdir(path.dirname(file), { recursive: true });
+        const tmp = `${file}.tmp-${process.pid}`;
+        await writeFile(tmp, JSON.stringify({ version: 1, providers }, null, 2));
+        await rename(tmp, file);
+      } catch (error) { this.log.debug(`Could not write the usage-limit state: ${error instanceof Error ? error.message : String(error)}`); }
+    });
   }
 
   private readCache(): Record<string, ModelInfo[]> {
@@ -199,7 +244,7 @@ export class ProviderRouter implements AcpLike {
       this.update(provider, models);
       const known = provider.usageLimitState?.();
       if (known instanceof UsageLimitError) { if (this.exhaustedUntilMs(provider.id) === undefined) this.markExhausted(provider, known); }
-      else if (known === null && this.exhausted.delete(provider.id)) this.options.onExhaustedChange?.();
+      else if (known === null && this.exhausted.delete(provider.id)) { this.persistExhausted(); this.options.onExhaustedChange?.(); }
     }, (error) => this.log.debug(`Listing models for '${provider.id}' failed: ${error instanceof Error ? error.message : String(error)}`));
     if (waitMs <= 0) { await task; return; }
     let timer: NodeJS.Timeout | undefined;
@@ -250,7 +295,7 @@ export class ProviderRouter implements AcpLike {
   private async track<T extends GenerationResult>(provider: Provider, run: () => Promise<T>): Promise<T> {
     try {
       const result = await run();
-      if (result.stopReason !== "cancelled" && this.exhausted.delete(provider.id)) this.options.onExhaustedChange?.();
+      if (result.stopReason !== "cancelled" && this.exhausted.delete(provider.id)) { this.persistExhausted(); this.options.onExhaustedChange?.(); }
       return result;
     } catch (error) {
       if (!(error instanceof UsageLimitError)) throw error;
@@ -264,6 +309,8 @@ export class ProviderRouter implements AcpLike {
     const settings = this.options.usageLimit;
     const until = exhaustedUntil(error.resetText, this.now(), settings?.cooldownMs ?? DEFAULT_COOLDOWN_MS, settings?.maxMs ?? MAX_RESET_MS, error.resetAt);
     this.exhausted.set(provider.id, until);
+    this.dormant.delete(provider.id);
+    this.persistExhausted();
     this.options.onExhaustedChange?.();
     this.log.warn(`'${provider.id}' has hit its usage limit; requests are refused until ${new Date(until).toISOString()}.`);
     return until;

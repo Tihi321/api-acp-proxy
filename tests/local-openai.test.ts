@@ -8,7 +8,7 @@ import type { ProxyConfig } from "../src/config.js";
 import type { LocalModelCoordinator } from "../src/local-models.js";
 import { createLogger } from "../src/logger.js";
 import { LLAMA_PRESETS, type GufoProfile } from "../src/settings.js";
-import { deepseekRegistration } from "../src/providers/deepseek.js";
+import { DeepSeekProvider, deepseekRegistration } from "../src/providers/deepseek.js";
 import { createLlamaRegistration, LocalOpenAiProvider, ollamaBaseUrl, ollamaRegistration } from "../src/providers/local-openai.js";
 import { ProviderRouter } from "../src/router.js";
 import { createProxyServer } from "../src/server.js";
@@ -238,7 +238,9 @@ describe("LocalOpenAiProvider", () => {
     const unlimited = ollamaRegistration.create({ providerSettings: { enabled: true, baseUrl: `http://127.0.0.1:${port}`, maxPromptChars: 0 } as never, ctx: { logger } as never } as never);
     const open = await serve(new ProviderRouter({ providers: [unlimited] }));
     await fetch(`${open}/models`);
-    expect((await ask(open)).status).toBe(200);
+    const allowed = await ask(open);
+    expect(allowed.status).toBe(200);
+    await allowed.text(); // the stream headers go out before the upstream is called (the model load comes first), so wait for the end
     expect(seen.length).toBe(sent + 1);
 
     const probe = createServer();
@@ -251,9 +253,10 @@ describe("LocalOpenAiProvider", () => {
 
   it("passes a forwarded output limit through: upstream text, length stop and usage win", async () => {
     const bodies: Array<{ max_tokens?: number }> = [];
+    const capture = createLogger({ console: false });
     const long = "word ".repeat(40); // 200 chars, far over max_tokens 2 * 4
     const upstream = createServer((request, response) => {
-      if (request.method === "GET" && request.url === "/v1/models") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ data: [{ id: "m:latest" }] })); return; }
+      if (request.method === "GET" && request.url === "/v1/models") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ data: [{ id: "m:latest", max_output_tokens: 50 }, { id: "n:latest" }] })); return; }
       let raw = ""; request.on("data", (part) => { raw += part; });
       request.on("end", () => {
         bodies.push(JSON.parse(raw) as { max_tokens?: number });
@@ -263,13 +266,68 @@ describe("LocalOpenAiProvider", () => {
       });
     });
     const port = await listen(upstream);
-    const base = await serve(new ProviderRouter({ providers: [new LocalOpenAiProvider({ id: "ollama", displayName: "Ollama", baseUrl: `http://127.0.0.1:${port}/v1`, logger })] }));
+    const base = await serve(new ProviderRouter({ providers: [new LocalOpenAiProvider({ id: "ollama", displayName: "Ollama", baseUrl: `http://127.0.0.1:${port}/v1`, logger: capture })] }));
     const res = await fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "ollama/m:latest", stream: true, max_tokens: 2, stream_options: { include_usage: true }, messages: [{ role: "user", content: "hi" }] }) });
     const chunks = (await res.text()).split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)) as { choices: Array<{ delta: { content?: string }; finish_reason: string | null }>; usage?: { completion_tokens: number } | null });
     expect(bodies[0]?.max_tokens).toBe(2);
     expect(chunks.map((chunk) => chunk.choices[0]?.delta?.content ?? "").join("")).toBe(long);
     expect(chunks.find((chunk) => chunk.choices[0]?.finish_reason)?.choices[0]?.finish_reason).toBe("length");
     expect(chunks.at(-1)?.usage?.completion_tokens).toBe(2);
+
+    // The model list's max_output_tokens caps a bigger request (one info line); a model without one is unchanged.
+    const askFor = (model: string, max: number) => fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, max_tokens: max, messages: [{ role: "user", content: "hi" }] }) });
+    await fetch(`${base}/models`);
+    expect((await askFor("ollama/m:latest", 80)).status).toBe(200);
+    expect((await askFor("ollama/n:latest", 80)).status).toBe(200);
+    expect(bodies.map((body) => body.max_tokens)).toEqual([2, 50, 80]);
+    expect(capture.recent().filter((entry) => entry.level === "info" && entry.message.includes("output limit")).map((entry) => entry.message)).toEqual(["max_tokens 80 is over m:latest's output limit of 50; sent 50."]);
+  });
+
+  it("limits an Ollama prompt by the loaded num_ctx from /api/ps and loads the model first", async () => {
+    let loaded = false; let psCalls = 0; let chatCalls = 0; const loadBodies: string[] = [];
+    const upstream = createServer((request, response) => {
+      let raw = ""; request.on("data", (part) => { raw += part; });
+      request.on("end", () => {
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/v1/models") { response.end(JSON.stringify({ data: [{ id: "qwen3.8:latest" }] })); return; }
+        if (request.url === "/api/ps") { psCalls++; response.end(JSON.stringify({ models: loaded ? [{ name: "qwen3.8:latest", model: "qwen3.8:latest", context_length: 32 }] : [] })); return; }
+        if (request.method === "POST" && request.url === "/api/generate") { loadBodies.push(raw); loaded = true; response.end(JSON.stringify({ model: "qwen3.8:latest", done: true })); return; }
+        if (request.method === "POST" && request.url === "/v1/chat/completions") {
+          chatCalls++;
+          response.setHeader("content-type", "text/event-stream");
+          response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Hi" } }] })}\n\n`);
+          response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+          response.end("data: [DONE]\n\n"); return;
+        }
+        response.statusCode = 404; response.end();
+      });
+    });
+    const port = await listen(upstream);
+    const provider = ollamaRegistration.create({ providerSettings: { enabled: true, baseUrl: `http://127.0.0.1:${port}` } as never, ctx: { logger } as never } as never);
+    const base = await serve(new ProviderRouter({ providers: [provider] }));
+    await fetch(`${base}/models`);
+    const ask = (chars: number, stream: boolean) => fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "ollama/qwen3.8:latest", stream, messages: [{ role: "user", content: "x".repeat(chars) }] }) });
+
+    // Not loaded: one load (the model only, no prompt, no keep_alive), then the prompt is checked against 32 tokens x 3 = 96 characters.
+    const refused = await ask(200, false);
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ error: { code: "context_length_exceeded", message: expect.stringMatching(/^The prompt is too long for Ollama: 200 characters, the limit is 96\..*num_ctx/) } });
+    expect(loadBodies).toEqual(['{"model":"qwen3.8:latest"}']);
+    expect(psCalls).toBeGreaterThanOrEqual(2);
+    expect(chatCalls).toBe(0);
+
+    // Loaded now: a stream request is a real HTTP 400 (not SSE) and loads nothing; a prompt within the limit goes through.
+    const streamed = await ask(200, true);
+    expect(streamed.status).toBe(400);
+    expect(streamed.headers.get("content-type")).toContain("application/json");
+    expect(await streamed.json()).toMatchObject({ error: { code: "context_length_exceeded" } });
+    expect(loadBodies).toHaveLength(1);
+    expect(chatCalls).toBe(0);
+    expect((await ask(80, false)).status).toBe(200);
+    expect(chatCalls).toBe(1);
+    expect(loadBodies).toHaveLength(1);
+    const listed = (await (await fetch(`${base}/models`)).json() as { data: Array<{ id: string; max_prompt_chars?: number }> }).data;
+    expect(listed.find((model) => model.id === "ollama/qwen3.8:latest")?.max_prompt_chars).toBe(96);
   });
 
   const profile = (id: string, kind: "llm" | "image", vision = false, extra: Partial<GufoProfile> = {}): GufoProfile => ({ id, label: id, model: id, kind, vision, args: "", ...extra });
@@ -413,7 +471,7 @@ data: [DONE]
 });
 
 describe("DeepSeek", () => {
-  interface Fake { chatCalls: number; otherCalls: number; chatBodies: Array<Record<string, unknown>>; auth: Array<string | undefined>; balance: { is_available: boolean }; modelsStatus?: number; chat: (response: ServerResponse) => void }
+  interface Fake { models: unknown[]; chatCalls: number; otherCalls: number; chatBodies: Array<Record<string, unknown>>; auth: Array<string | undefined>; balance: { is_available: boolean }; modelsStatus?: number; chat: (response: ServerResponse) => void }
   const sseOk = (response: ServerResponse): void => {
     response.setHeader("content-type", "text/event-stream");
     const usage = { prompt_tokens: 20, completion_tokens: 9, total_tokens: 29, prompt_cache_hit_tokens: 12, prompt_cache_miss_tokens: 8, completion_tokens_details: { reasoning_tokens: 5 } };
@@ -423,11 +481,11 @@ describe("DeepSeek", () => {
   const reply = (status: number, error: unknown, headers: Record<string, string> = {}) => (response: ServerResponse): void => { response.statusCode = status; response.setHeader("content-type", "application/json"); for (const [name, value] of Object.entries(headers)) response.setHeader(name, value); response.end(JSON.stringify({ error })); };
 
   /** A fake DeepSeek on 127.0.0.1 (no /v1 in its paths) behind a DeepSeek provider built by the registration. */
-  async function setup(settings: Record<string, unknown> = { apiKey: "sk-test" }) {
-    const fake: Fake = { chatCalls: 0, otherCalls: 0, chatBodies: [], auth: [], balance: { is_available: true }, chat: sseOk };
+  async function setup(settings: Record<string, unknown> = { apiKey: "sk-test" }, now?: () => number) {
+    const fake: Fake = { models: [{ id: "deepseek-flash" }, { id: "deepseek-v4-pro" }], chatCalls: 0, otherCalls: 0, chatBodies: [], auth: [], balance: { is_available: true }, chat: sseOk };
     const upstream = createServer((request, response) => {
       fake.auth.push(request.headers.authorization);
-      if (request.method === "GET" && request.url === "/models") { fake.otherCalls++; if (fake.modelsStatus) { response.statusCode = fake.modelsStatus; response.end(); return; } response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ object: "list", data: [{ id: "deepseek-flash" }, { id: "deepseek-v4-pro" }] })); return; }
+      if (request.method === "GET" && request.url === "/models") { fake.otherCalls++; if (fake.modelsStatus) { response.statusCode = fake.modelsStatus; response.end(); return; } response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ object: "list", data: fake.models })); return; }
       if (request.method === "GET" && request.url === "/user/balance") { fake.otherCalls++; response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ ...fake.balance, balance_infos: [{ currency: "USD", total_balance: fake.balance.is_available ? "110.00" : "0.00" }] })); return; }
       if (request.method === "POST" && request.url === "/chat/completions") {
         let raw = ""; request.on("data", (part) => { raw += part; });
@@ -437,7 +495,7 @@ describe("DeepSeek", () => {
       response.statusCode = 404; response.end();
     });
     const port = await listen(upstream);
-    const provider = deepseekRegistration.create({ providerSettings: { enabled: true, baseUrl: `http://127.0.0.1:${port}/v1/`, ...settings } as never, ctx: { logger } as never } as never);
+    const provider = now ? new DeepSeekProvider({ baseUrl: `http://127.0.0.1:${port}`, apiKey: "sk-test", logger, now }) : deepseekRegistration.create({ providerSettings: { enabled: true, baseUrl: `http://127.0.0.1:${port}/v1/`, ...settings } as never, ctx: { logger } as never } as never);
     const router = new ProviderRouter({ providers: [provider] });
     const activity = new ActivityLog();
     return { fake, router, provider, base: await serve(router, activity), activity };
@@ -465,6 +523,25 @@ describe("DeepSeek", () => {
     const chats = activity.list().filter((entry) => entry.provider === "deepseek");
     expect(chats).toHaveLength(2);
     for (const entry of chats) { expect(entry).toMatchObject({ inputTokens: 20, outputTokens: 9, cachedTokens: 12, reasoningTokens: 5 }); expect(entry).not.toHaveProperty("estimated"); }
+
+    // Cost at a fixed peak time (Tuesday 02:00 UTC), thinking forwarded as {type} only, and the max_tokens clamp from /models (flash: 1000) or the 393216 default (pro).
+    const priced = await setup({ apiKey: "sk-test" }, () => Date.UTC(2026, 11, 1, 2, 0, 0));
+    priced.fake.models = [{ id: "deepseek-flash", max_output_tokens: 1000 }, { id: "deepseek-v4-pro" }];
+    priced.fake.chat = (response) => {
+      response.setHeader("content-type", "text/event-stream");
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Hi" } }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1000, prompt_cache_hit_tokens: 400, completion_tokens: 200, total_tokens: 1200 } })}\n\n`);
+      response.end("data: [DONE]\n\n");
+    };
+    await fetch(`${priced.base}/models`);
+    expect((await ask(priced.base, { max_tokens: 500000, thinking: { type: "disabled", budget_tokens: 5 } })).status).toBe(200);
+    expect(priced.fake.chatBodies[0]).toMatchObject({ max_tokens: 1000, thinking: { type: "disabled" } });
+    expect(priced.fake.chatBodies[0]?.thinking).toEqual({ type: "disabled" });
+    for (let wait = 0; wait < 20 && priced.activity.list().length < 1; wait++) await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(priced.activity.list()[0]?.costUsd).toBeCloseTo((400 * 0.006 + 600 * 0.3 + 200 * 1.2) / 1e6, 10);
+    expect((await ask(priced.base, { model: "deepseek/deepseek-v4-pro", max_tokens: 500000 })).status).toBe(200);
+    expect(priced.fake.chatBodies[1]).toMatchObject({ model: "deepseek-v4-pro", max_tokens: 393216 });
+    expect(priced.fake.chatBodies[1]).not.toHaveProperty("thinking");
   });
 
   it("maps 402 to the usage-limit 429 and 429 to a transient rate limit", async () => {
@@ -542,6 +619,15 @@ describe("DeepSeek", () => {
       expect(await refused.json()).toMatchObject({ error: { code: "context_length_exceeded", message: expect.stringMatching(/^The prompt is too long for DeepSeek: 200 characters, the limit is 100/) } });
     }
     expect(small.fake.chatCalls).toBe(0);
+
+    // A bad thinking value is a 400 on the proxy side (param thinking), never sent upstream.
+    const before = keyed.fake.chatCalls;
+    for (const thinking of [{ type: "on" }, "enabled"]) {
+      const bad = await ask(keyed.base, { thinking });
+      expect(bad.status).toBe(400);
+      expect(await bad.json()).toMatchObject({ error: { code: "invalid_request", param: "thinking" } });
+    }
+    expect(keyed.fake.chatCalls).toBe(before);
   });
 
   it("reads the balance on refresh: unavailable marks exhausted, available clears it", async () => {

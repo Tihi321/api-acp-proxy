@@ -155,7 +155,7 @@ function rejectUnsupported(obj: Record<string, unknown>, fields: readonly string
 }
 
 /** `generateImages`: the request asked the agent for images (chat `modalities` with "image", Responses `image_generation` tool). */
-type NormalizedRequest = { /** The sampling fields the request sent and the proxy dropped (see `droppedChatFields`). */ ignoredParams: string[]; model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; /** The chat `reasoning_effort` / `chat_template_kwargs` the client sent (forwarded to local providers only). */ reasoningEffort?: string; chatTemplateKwargs?: Record<string, unknown>; generateImages: boolean; /** Set when the request asked for web search (chat `web_search_options`, a Responses `web_search` tool). */ webSearch?: WebSearchRequest; /** The function tools to hand the agent (absent without tools or with `tool_choice: "none"`). */ functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** The Responses `mcp` tools (matched with the settings by `resolveMcpServers`). */ mcpTools?: McpToolRequest[] };
+type NormalizedRequest = { /** The sampling fields the request sent and the proxy dropped (see `droppedChatFields`). */ ignoredParams: string[]; model: string; conversation: Message[]; format: OutputFormat; maxOutputTokens?: number; /** The chat `reasoning_effort` / `chat_template_kwargs` the client sent (forwarded to local providers only). */ reasoningEffort?: string; chatTemplateKwargs?: Record<string, unknown>; /** The chat `thinking.type` (forwarded to DeepSeek only). */ thinking?: "enabled" | "disabled"; generateImages: boolean; /** Set when the request asked for web search (chat `web_search_options`, a Responses `web_search` tool). */ webSearch?: WebSearchRequest; /** The function tools to hand the agent (absent without tools or with `tool_choice: "none"`). */ functionTools?: ToolDef[]; toolChoice?: ToolChoice; parallelToolCalls?: boolean; /** The Responses `mcp` tools (matched with the settings by `resolveMcpServers`). */ mcpTools?: McpToolRequest[] };
 
 function unsupportedContent(message: string, param: string): ApiError { return new ApiError(400, "unsupported_content", message, param); }
 
@@ -404,8 +404,15 @@ export async function normalizeChat(raw: unknown, isKnownModel?: ModelCheck, opt
   const effort = parsed.data.reasoning_effort;
   const templateKwargs = parsed.data.chat_template_kwargs;
   const reasoningEffort = typeof effort === "string" && effort !== "" ? effort : undefined;
+  const thinkingRaw = parsed.data.thinking;
+  let thinking: "enabled" | "disabled" | undefined;
+  if (thinkingRaw !== undefined && thinkingRaw !== null) {
+    const type = typeof thinkingRaw === "object" && !Array.isArray(thinkingRaw) ? (thinkingRaw as Record<string, unknown>).type : undefined;
+    if (type !== "enabled" && type !== "disabled") throw new ApiError(400, "invalid_request", 'thinking must be {"type": "enabled"} or {"type": "disabled"}.', "thinking");
+    thinking = type;
+  }
   const chatTemplateKwargs = typeof templateKwargs === "object" && templateKwargs !== null && !Array.isArray(templateKwargs) ? templateKwargs as Record<string, unknown> : undefined;
-  return { ...parsed.data, model: parsed.data.model, conversation, format, generateImages, ignoredParams, ...toolSpec, ...(webSearch && !(parsed.data.tools != null && toolSpec.functionTools === undefined) ? { webSearch } : {}), ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}), ...(reasoningEffort !== undefined ? { reasoningEffort } : {}), ...(chatTemplateKwargs !== undefined ? { chatTemplateKwargs } : {}) };
+  return { ...parsed.data, model: parsed.data.model, conversation, format, generateImages, ignoredParams, ...toolSpec, ...(webSearch && !(parsed.data.tools != null && toolSpec.functionTools === undefined) ? { webSearch } : {}), ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}), ...(reasoningEffort !== undefined ? { reasoningEffort } : {}), ...(thinking !== undefined ? { thinking } : {}), ...(chatTemplateKwargs !== undefined ? { chatTemplateKwargs } : {}) };
 }
 
 /** Responses input items: messages, and `function_call` / `function_call_output` items. A `function_call` joins the assistant message right before it (its text, in the same response), else it is an assistant message of its own. */
@@ -585,8 +592,8 @@ export function promptChars(blocks: PromptBlock[]): number {
 }
 
 /** The 400 for a prompt over a provider's limit; the message starts "The prompt is too long" so clients can tell a size problem from other errors. */
-export function promptTooLong(displayName: string, chars: number, limit: number, param = "messages"): ApiError {
-  return new ApiError(400, "context_length_exceeded", `The prompt is too long for ${displayName}: ${chars} characters, the limit is ${limit}. The proxy refused it rather than let the model cut or drop part of it. Shorten the prompt or use another model.`, param);
+export function promptTooLong(displayName: string, chars: number, limit: number, param = "messages", hint?: string): ApiError {
+  return new ApiError(400, "context_length_exceeded", `The prompt is too long for ${displayName}: ${chars} characters, the limit is ${limit}. The proxy refused it rather than let the model cut or drop part of it. Shorten the prompt or use another model.${hint ? ` ${hint}` : ""}`, param);
 }
 
 /** The 400 for an upstream that refused the prompt as larger than the model's context; same code and prefix as `promptTooLong`. */

@@ -29,17 +29,19 @@ export function localDayKey(time: number): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-const zero = (): UsageCounts => ({ requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, estimated: 0, cachedTokens: 0, reasoningTokens: 0 });
+const zero = (): UsageCounts => ({ requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, estimated: 0, cachedTokens: 0, reasoningTokens: 0, costUsd: 0 });
 function addInto(target: UsageCounts, source: UsageCounts): void {
   target.requests += source.requests; target.errors += source.errors;
   target.inputTokens += source.inputTokens; target.outputTokens += source.outputTokens; target.estimated += source.estimated;
-  target.cachedTokens += source.cachedTokens; target.reasoningTokens += source.reasoningTokens;
+  target.cachedTokens += source.cachedTokens; target.reasoningTokens += source.reasoningTokens; target.costUsd += source.costUsd;
 }
 const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+/** A money amount: finite and not negative, not floored. */
+const amount = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 function sanitize(value: unknown): UsageCounts {
   const raw = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   return { requests: count(raw.requests), errors: count(raw.errors), inputTokens: count(raw.inputTokens), outputTokens: count(raw.outputTokens), estimated: count(raw.estimated),
-    cachedTokens: count(raw.cachedTokens), reasoningTokens: count(raw.reasoningTokens) };
+    cachedTokens: count(raw.cachedTokens), reasoningTokens: count(raw.reasoningTokens), costUsd: amount(raw.costUsd) };
 }
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
@@ -77,7 +79,7 @@ export class UsageStore extends EventEmitter {
     const delta: UsageCounts = {
       requests: 1, errors: entry.status >= 400 || entry.error !== undefined ? 1 : 0,
       inputTokens: count(entry.inputTokens), outputTokens: count(entry.outputTokens), estimated: entry.estimated ? 1 : 0,
-      cachedTokens: count(entry.cachedTokens), reasoningTokens: count(entry.reasoningTokens),
+      cachedTokens: count(entry.cachedTokens), reasoningTokens: count(entry.reasoningTokens), costUsd: amount(entry.costUsd),
     };
     addInto((this.days[day] ??= {})[entry.provider] ??= zero(), delta);
     addInto(this.totals[entry.provider] ??= zero(), delta);
