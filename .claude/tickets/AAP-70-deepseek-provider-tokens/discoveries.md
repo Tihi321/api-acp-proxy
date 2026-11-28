@@ -1,0 +1,2 @@
+- 2026-11-28 implementer: npm run typecheck chains three tsc projects with &&, so a failure in the first hides errors in the renderer and tests projects (package.json) - suggested: run all three and report every failure
+- 2026-11-28 implement: D15 says any id routes once /models failed, but T4's fallback list makes the router know only the static ids, so legacy ids stop routing after a failed listing (src/providers/deepseek.ts) - suggested: decide D15 vs T4; throw on listing failure if D15 wins
