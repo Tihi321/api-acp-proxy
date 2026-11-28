@@ -57,7 +57,7 @@ function toEntry(profile: GufoProfile | LlamaProfile): ProfileEntry {
 const DEFAULT_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
 /** The measured context counts 3 characters per token, not the usual 4: older Ollama versions cut a too long prompt silently (0.40.19 refuses it with HTTP 400, which maps to the same 400), and some text, such as digits, runs at about 1 token per character. */
 const LOADED_CHARS_PER_TOKEN = 3;
-/** An Ollama answer whose prompt used at least this share of the measured context logs a warning: little room is left for the answer, and an older Ollama may have cut the prompt. */
+/** An Ollama answer whose prompt used at least this share of the measured context logs a warning: little room is left for the answer, and an older Ollama that cut a longer prompt reports about this size. */
 const NEAR_CONTEXT_SHARE = 0.9;
 const LOADED_CONTEXT_TIMEOUT_MS = 2000;
 export const OLLAMA_LOAD_TIMEOUT_MS = 300_000;
@@ -432,15 +432,15 @@ export class LocalOpenAiProvider implements Provider {
         throw new AcpUnavailableError(`${this.displayName} stream failed: ${error instanceof Error ? error.message : String(error)}`, error, "upstream_error");
       }
       if (controller.signal.aborted) return cancelled();
-      if (finish === "insufficient_system_resource") this.logger.warn(`${this.displayName} stopped ${model} early: insufficient_system_resource.`);
+      if (finish === "insufficient_system_resource") this.logger.warn(`stopped ${model} early: insufficient_system_resource.`);
       const stopReason: StopReason = finish === "length" ? "max_tokens" : finish === "content_filter" ? "refusal" : "end_turn";
       // llama-server streams reasoning_content but reports no reasoning_tokens: estimate them from the text.
       const reported = usage as Usage | null; // assigned inside handle(), which the compiler cannot see
       const estimate = reported !== null && reasoning !== "" && !reported.thoughtTokens;
       if (estimate) reported.thoughtTokens = Math.min(reported.outputTokens, estimateTokens(reasoning));
-      // A prompt near the measured context leaves little room for the answer, and an older Ollama cuts such a prompt without an error: warn.
+      // A prompt at 90% or more of the measured context leaves little room for the answer. An older Ollama cuts a prompt only when it is longer than the whole context, so a cut prompt reports about the full context; a newer one refuses it with HTTP 400. Warn.
       const measured = this.loadedContext ? this.defaultContext.get(model) : undefined;
-      if (reported && measured) { const promptTokens = reported.inputTokens + (reported.cachedReadTokens ?? 0); if (promptTokens >= Math.ceil(measured * NEAR_CONTEXT_SHARE)) this.logger.warn(`the prompt of ${model} used ${promptTokens} of the ${measured} tokens of its context (num_ctx), which leaves little room for the answer (older Ollama versions also cut such a prompt without an error). Raise num_ctx in Ollama for longer prompts.`); }
+      if (reported && measured) { const promptTokens = reported.inputTokens + (reported.cachedReadTokens ?? 0); if (promptTokens >= Math.ceil(measured * NEAR_CONTEXT_SHARE)) this.logger.warn(`the prompt of ${model} used ${promptTokens} of the ${measured} tokens of its context (num_ctx), which leaves little room for the answer; an older Ollama that cut a longer prompt also reports about this size. Raise num_ctx in Ollama for longer prompts.`); }
       // Ollama: the runner this chat used runs at the default context (`/v1` ignores num_ctx); note it in the background.
       if (this.psSupported()) void this.measureDefault(model);
       return { text, stopReason, usage, ...(reasoning ? { reasoning } : {}), ...(estimate ? { reasoningEstimated: true as const } : {}) };
