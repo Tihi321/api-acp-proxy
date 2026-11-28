@@ -1,0 +1,12 @@
+{"ts":"2026-11-28T15:35:00Z","actor":"director-scribe","type":"plan.created","request":"REQ-0028","ticket":"AAP-73-aap72-optional-steps","detail":"planner returned the plan (draft)"}
+{"ts":"2026-11-28T15:35:00Z","actor":"director-scribe","type":"plan.approved","request":"REQ-0028","ticket":"AAP-73-aap72-optional-steps","detail":"user approved recommended OD1-OD3 (warning reworded and kept, exact counting dropped: no tokenize endpoint); merge and push after a PASS"}
+{"ts":"2026-11-28T15:30:05Z","actor":"implement","type":"implement.started","request":"REQ-0028","ticket":"AAP-73-aap72-optional-steps","detail":"branch AAP-73_aap72-optional-steps from master 51d9bac"}
+{"ts":"2026-11-28T15:30:32Z","actor":"implement","type":"slice.started","request":"REQ-0028","ticket":"AAP-73-aap72-optional-steps","detail":"T1 warning text, comments, README","data":{"tasks":["T1"]}}
+{"ts":"2026-11-28T15:30:32Z","actor":"implement","type":"slice.started","request":"REQ-0028","ticket":"AAP-73-aap72-optional-steps","detail":"T2 Overview focus and ACP Today line","data":{"tasks":["T2"]}}
+{"ts":"2026-11-28T15:31:33Z","actor":"implement","type":"slice.done","request":"REQ-0028","ticket":"AAP-73-aap72-optional-steps","detail":"T2 done; tests green","data":{"tasks":["T2"]}}
+{"ts":"2026-11-28T15:32:25Z","actor":"implement","type":"slice.done","request":"REQ-0028","ticket":"AAP-73-aap72-optional-steps","detail":"T1 done; tests green","data":{"tasks":["T1"]}}
+{"ts":"2026-11-28T16:39:22Z","actor":"implement","type":"verify.passed","request":"REQ-0028","ticket":"AAP-73-aap72-optional-steps","detail":"tests, typecheck, greps and live step 3 pass; AC5/AC6 untested"}
+{"ts":"2026-11-28T16:39:22Z","actor":"implement","type":"changelog.written","request":"REQ-0028","ticket":"AAP-73-aap72-optional-steps","detail":"changelog.md written; commit 90db8a1"}
+{"ts":"2026-11-28T16:43:15Z","actor":"director-scribe","type":"checker.verdict","request":"REQ-0028","ticket":"AAP-73-aap72-optional-steps","detail":"PASS with unchecked items, commit 90db8a1; AC5/AC6 Settings window UNTESTED"}
+{"ts":"2026-11-28T16:43:15Z","actor":"director-scribe","type":"merged","request":"REQ-0028","ticket":"AAP-73-aap72-optional-steps","detail":"merged to master at 011e1b5 and pushed","data":{"branch":"master","commit":"011e1b5"}}
+{"ts":"2026-11-28T16:43:15Z","actor":"director-scribe","type":"ticket.done","request":"REQ-0028","ticket":"AAP-73-aap72-optional-steps","detail":"ticket done after PASS; REQ-0028 closed"}
