@@ -222,8 +222,8 @@ export interface Provider {
   readonly maxPromptChars?: number;
   /** The effective limit for one model (a model-specific limit, e.g. from its context size); wins over `maxPromptChars` in /v1/models. */
   maxPromptCharsFor?(model: string): number | undefined;
-  /** Throws a 400 `context_length_exceeded` when the prompt built from these messages is over the limit (`model` selects a per-model limit; ACP ignores it). Synchronous, no side effects. */
-  checkPrompt?(messages: Message[], options?: GenerateOptions, model?: string): void;
+  /** Throws a 400 `context_length_exceeded` when the prompt built from these messages is over the limit (`model` selects a per-model limit; ACP ignores it). `beforePrepare`: the check before `prepareModel`, which skips a limit `prepareModel` may still find stale (Ollama's measured default context). Synchronous, no side effects. */
+  checkPrompt?(messages: Message[], options?: GenerateOptions, model?: string, beforePrepare?: boolean): void;
   /** The provider sends the output limit upstream and reports the real stop and usage; the server does not cut its text. */
   readonly forwardsOutputLimit?: boolean;
   /** What the provider last learned outside a request (a balance probe): an error = exhausted now, `null` = known available, `undefined` = unknown. */

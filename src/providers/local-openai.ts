@@ -32,11 +32,11 @@ export interface LocalOpenAiOptions {
   maxPromptChars?: number;
   /** Ollama: the context length in tokens of a model, asked once per listed model (see `ollamaContextLookup`). */
   contextLookup?: (model: string, signal: AbortSignal) => Promise<number | undefined>;
-  /** Ollama: the context in tokens the upstream runs the model with now, or undefined when the model is not loaded (`GET /api/ps`). */
+  /** Ollama: the context in tokens the upstream runs the model with now, or undefined when the model is not loaded (`GET /api/ps`). Rejects with `PsUnsupportedError` when the upstream has no `/api/ps`. */
   loadedContext?: (model: string, signal: AbortSignal) => Promise<number | undefined>;
-  /** Ollama: loads the model (`POST /api/generate {"model"}`), so its loaded context is known before the prompt is sent. */
+  /** Ollama: loads the model at its default options (`POST /api/generate {"model"}`), so the context the proxy's own requests run at can be measured before the prompt is sent. */
   loadModel?: (model: string, signal: AbortSignal) => Promise<void>;
-  /** Ollama: the text appended to a refusal that is based on the loaded context. */
+  /** Ollama: the text appended to a refusal that is based on the measured default context. */
   contextHint?: (tokens: number) => string;
 }
 
@@ -55,10 +55,14 @@ function toEntry(profile: GufoProfile | LlamaProfile): ProfileEntry {
 }
 
 const DEFAULT_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
-/** Ollama truncates a too long prompt silently, so the loaded context counts 3 characters per token (the usual 4 would let about 1.15 x num_ctx through). */
+/** Ollama truncates a too long prompt silently, so the measured context counts 3 characters per token (the usual 4 would let about 1.15 x num_ctx through). */
 const LOADED_CHARS_PER_TOKEN = 3;
 const LOADED_CONTEXT_TIMEOUT_MS = 2000;
 export const OLLAMA_LOAD_TIMEOUT_MS = 300_000;
+/** After `/api/ps` answered as unsupported, how long the load-first step and the `/api/ps` reads are skipped before they are tried again. */
+const PS_RETRY_MS = 10 * 60 * 1000;
+/** `/api/ps` does not exist upstream (404/405/501, or an answer without a `models` list). */
+export class PsUnsupportedError extends Error {}
 const GENERATION_FIELDS = ["prompt", "size", "steps", "seed", "negative_prompt", "guidance_scale", "n"] as const;
 export type WireContent = string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
 export interface WireMessage { role: "system" | "user" | "assistant"; content: WireContent }
@@ -103,8 +107,10 @@ export class LocalOpenAiProvider implements Provider {
   private readonly listeners = new Set<(status: ProviderStatus) => void>();
   protected readonly inflight = new Set<AbortController>();
   private readonly contexts = new Map<string, number>();
-  /** Ollama: the context each currently loaded model runs with (`loadedContext`). */
-  private readonly loaded = new Map<string, number>();
+  /** Ollama: the context the proxy's own `/v1` requests run each model at (Ollama's default for it; `/v1` ignores `num_ctx`), measured only by `/api/ps` right after a load or chat the proxy itself made. A `/api/ps` value another client caused is never used as the limit. */
+  private readonly defaultContext = new Map<string, number>();
+  /** Ollama: until when `/api/ps` counts as unsupported (0 = supported or not tried). */
+  private psUnsupportedUntil = 0;
   /** The `max_output_tokens` the upstream's model list reports per model. */
   protected readonly outputLimits = new Map<string, number>();
   private readonly promptCharsSetting?: number;
@@ -198,59 +204,76 @@ export class LocalOpenAiProvider implements Provider {
       await this.listModels().catch(() => undefined); // Strata is ready once the lease resolved
       if (!this.acceptsImages(model)) { lease?.release(); throw refuseImages(); }
     }
-    if (!this.profiles && this.loadedContext) await this.readLoadedContext(model, signal);
+    // Ollama: a model that is not loaded any more is measured again by the next load (e.g. a raised OLLAMA_CONTEXT_LENGTH after a restart).
+    if (!this.profiles && this.psSupported() && (await this.readLoadedContext(model, signal)) === null) this.defaultContext.delete(model);
     return lease;
   }
 
-  /** Asks the upstream which context it runs `model` with now (2 s): a number is kept, `undefined` (not loaded) forgets it, an error leaves it as it was. */
-  private async readLoadedContext(model: string, signal?: AbortSignal): Promise<void> {
+  /** Ollama: whether `/api/ps` is to be used now (false for 10 minutes after it answered as unsupported). */
+  private psSupported(): boolean { return this.loadedContext !== undefined && Date.now() >= this.psUnsupportedUntil; }
+
+  /** Asks the upstream which context it runs `model` with now (2 s): the tokens, `null` when the model is not loaded, `undefined` when the answer is unknown (an error or a timeout). An unsupported `/api/ps` turns the reads and the load-first step off for a while. */
+  private async readLoadedContext(model: string, signal?: AbortSignal): Promise<number | null | undefined> {
     const controller = new AbortController(); this.inflight.add(controller);
     const onAbort = (): void => controller.abort();
     if (signal?.aborted) controller.abort(); else signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), LOADED_CONTEXT_TIMEOUT_MS);
     try {
       const tokens = await this.loadedContext!(model, controller.signal);
-      if (typeof tokens === "number" && tokens > 0) this.loaded.set(model, tokens); else this.loaded.delete(model);
-    } catch { /* keep what was known */ }
-    finally { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); this.inflight.delete(controller); }
+      return typeof tokens === "number" && tokens > 0 ? tokens : null;
+    } catch (error) {
+      if (error instanceof PsUnsupportedError) {
+        this.psUnsupportedUntil = Date.now() + PS_RETRY_MS; this.defaultContext.clear();
+        this.logger.info(`${this.displayName} has no /api/ps (${error.message}); the prompt limit comes from /api/show for the next 10 minutes.`);
+      }
+      return undefined;
+    } finally { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); this.inflight.delete(controller); }
   }
 
-  /** Ollama: loads a model that is not loaded yet (bounded by the request and `OLLAMA_LOAD_TIMEOUT_MS`), reads its context and checks the prompt against it. A failed load is only a warning: the request goes on with the `/api/show` limit. */
+  /** Ollama: notes the context `/api/ps` reports right after a load or chat the proxy made at default options; a model reported as not loaded is forgotten. */
+  private async measureDefault(model: string, signal?: AbortSignal): Promise<void> {
+    const tokens = await this.readLoadedContext(model, signal);
+    if (typeof tokens === "number") this.defaultContext.set(model, tokens); else if (tokens === null) this.defaultContext.delete(model);
+  }
+
+  /** Ollama: loads the model at its default options (bounded by the request and `OLLAMA_LOAD_TIMEOUT_MS`), measures the context it runs at and checks the prompt against it. A failed load is only a warning: the request goes on with the `/api/show` limit. */
   private async loadFirst(model: string, messages: Message[], signal: AbortSignal | undefined, options: GenerateOptions | undefined): Promise<void> {
     const controller = new AbortController(); this.inflight.add(controller);
     const onAbort = (): void => controller.abort();
     if (signal?.aborted) controller.abort(); else signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), OLLAMA_LOAD_TIMEOUT_MS);
+    const started = Date.now();
     let ok = false;
     try { await this.loadModel!(model, controller.signal); ok = true; }
     catch (error) { if (!signal?.aborted) this.logger.warn(`Could not load ${model} before the request (${error instanceof Error ? error.message : String(error)}); going on without the loaded context.`); }
     finally { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); this.inflight.delete(controller); }
     if (!ok || signal?.aborted) return;
-    if (this.loadedContext) await this.readLoadedContext(model, signal);
+    this.logger.info(`loading '${model}' before the first request: done in ${Date.now() - started} ms`);
+    await this.measureDefault(model, signal);
     this.checkPrompt(messages, options, model);
   }
 
   /** The model's context size in tokens, when known (Ollama: from `/api/show`). */
   protected contextTokens(model: string): number | undefined { return this.contexts.get(model); }
 
-  /** The prompt limit in characters for `model`: the setting (0 = none), else the loaded context x 3, else the context size x 4, else none. `loadedTokens` is set when the limit came from the loaded context. */
-  private promptLimit(model: string): { limit: number; loadedTokens?: number } | undefined {
+  /** The prompt limit in characters for `model`: the setting (0 = none), else the measured default context x 3 (not `beforePrepare`: it may be stale until `prepareModel` has checked it), else the context size x 4, else none. `defaultTokens` is set when the limit came from the measured default context. */
+  private promptLimit(model: string, beforePrepare = false): { limit: number; defaultTokens?: number } | undefined {
     if (this.promptCharsSetting === 0) return undefined;
     if (this.promptCharsSetting !== undefined && this.promptCharsSetting > 0) return { limit: this.promptCharsSetting };
-    const loadedTokens = this.loaded.get(model);
-    if (loadedTokens) return { limit: loadedTokens * LOADED_CHARS_PER_TOKEN, loadedTokens };
+    const defaultTokens = beforePrepare ? undefined : this.defaultContext.get(model);
+    if (defaultTokens) return { limit: defaultTokens * LOADED_CHARS_PER_TOKEN, defaultTokens };
     const tokens = this.contextTokens(model);
     return tokens ? { limit: tokens * CHARS_PER_TOKEN } : undefined;
   }
 
   maxPromptCharsFor(model: string): number | undefined { return this.promptLimit(model)?.limit; }
 
-  /** Throws the 400 `context_length_exceeded` when instructions plus message text are over the model's limit. */
-  checkPrompt(messages: Message[], options?: GenerateOptions, model?: string): void {
-    const found = model === undefined ? undefined : this.promptLimit(model);
+  /** Throws the 400 `context_length_exceeded` when instructions plus message text are over the model's limit (`beforePrepare`: only the limits that cannot be stale). */
+  checkPrompt(messages: Message[], options?: GenerateOptions, model?: string, beforePrepare?: boolean): void {
+    const found = model === undefined ? undefined : this.promptLimit(model, beforePrepare);
     if (!found?.limit) return;
     const chars = (options?.instructions?.length ?? 0) + messages.reduce((sum, message) => sum + messageText(message).length, 0);
-    if (chars > found.limit) throw promptTooLong(this.displayName, chars, found.limit, "messages", found.loadedTokens !== undefined ? this.contextHint?.(found.loadedTokens) : undefined);
+    if (chars > found.limit) throw promptTooLong(this.displayName, chars, found.limit, "messages", found.defaultTokens !== undefined ? this.contextHint?.(found.defaultTokens) : undefined);
   }
 
   status(): ProviderStatus {
@@ -335,7 +358,7 @@ export class LocalOpenAiProvider implements Provider {
   }
 
   async generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
-    if (this.loadModel && !this.loaded.has(model)) await this.loadFirst(model, messages, signal, options);
+    if (this.loadModel && this.psSupported() && !this.defaultContext.has(model)) await this.loadFirst(model, messages, signal, options);
     const wire: WireMessage[] = [];
     const vision = this.acceptsImages(model);
     if (options?.instructions) wire.push({ role: "system", content: options.instructions });
@@ -409,6 +432,8 @@ export class LocalOpenAiProvider implements Provider {
       const reported = usage as Usage | null; // assigned inside handle(), which the compiler cannot see
       const estimate = reported !== null && reasoning !== "" && !reported.thoughtTokens;
       if (estimate) reported.thoughtTokens = Math.min(reported.outputTokens, estimateTokens(reasoning));
+      // Ollama: the runner this chat used runs at the default context (`/v1` ignores num_ctx); note it in the background.
+      if (this.psSupported()) void this.measureDefault(model);
       return { text, stopReason, usage, ...(reasoning ? { reasoning } : {}), ...(estimate ? { reasoningEstimated: true as const } : {}) };
     } finally {
       signal?.removeEventListener("abort", onAbort);
@@ -545,9 +570,9 @@ export const strataRegistration: ProviderRegistration = createStrataRegistration
 /** Ollama (AAP-69): `providers.ollama.baseUrl` plus `/v1`, no coordinator lease (the proxy neither starts nor stops Ollama), models listed from Ollama as `ollama/<name>:<tag>`. */
 export function ollamaBaseUrl(baseUrl: string): string { const trimmed = baseUrl.trim().replace(/\/+$/, "").replace(/\/v1$/, ""); return `${trimmed}/v1`; }
 /** The model's context length in tokens from Ollama's `POST <root>/api/show` (`model_info["<arch>.context_length"]`); `rootUrl` is the Ollama base URL without `/v1`. Undefined when Ollama does not say. */
-export function ollamaContextLookup(rootUrl: string, fetchImpl: typeof fetch): (model: string, signal: AbortSignal) => Promise<number | undefined> {
+export function ollamaContextLookup(rootUrl: string, fetchImpl: typeof fetch, apiKey?: string): (model: string, signal: AbortSignal) => Promise<number | undefined> {
   return async (model, signal) => {
-    const response = await fetchImpl(`${rootUrl.replace(/\/+$/, "")}/api/show`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ model }), signal });
+    const response = await fetchImpl(`${rootUrl.replace(/\/+$/, "")}/api/show`, { method: "POST", headers: ollamaHeaders(apiKey, true), body: JSON.stringify({ model }), signal });
     if (!response.ok) { await response.body?.cancel().catch(() => undefined); return undefined; }
     const body = await response.json().catch(() => undefined) as { model_info?: Record<string, unknown> } | undefined;
     const info = body?.model_info;
@@ -556,20 +581,25 @@ export function ollamaContextLookup(rootUrl: string, fetchImpl: typeof fetch): (
     return undefined;
   };
 }
+/** The headers of Ollama's native API calls: JSON, plus the same Bearer key the chat sends when one is set. */
+function ollamaHeaders(apiKey: string | undefined, body: boolean): Record<string, string> {
+  return { ...(body ? { "content-type": "application/json" } : {}), accept: "application/json", ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) };
+}
 /** The context in tokens Ollama runs a loaded model with, from `GET <root>/api/ps` (`context_length`); undefined when the model is not loaded or Ollama does not say. */
-export function ollamaLoadedContext(rootUrl: string, fetchImpl: typeof fetch): (model: string, signal: AbortSignal) => Promise<number | undefined> {
+export function ollamaLoadedContext(rootUrl: string, fetchImpl: typeof fetch, apiKey?: string): (model: string, signal: AbortSignal) => Promise<number | undefined> {
   return async (model, signal) => {
-    const response = await fetchImpl(`${rootUrl.replace(/\/+$/, "")}/api/ps`, { headers: { accept: "application/json" }, signal });
-    if (!response.ok) { await response.body?.cancel().catch(() => undefined); throw new Error(`HTTP ${response.status}`); }
+    const response = await fetchImpl(`${rootUrl.replace(/\/+$/, "")}/api/ps`, { headers: ollamaHeaders(apiKey, false), signal });
+    if (!response.ok) { await response.body?.cancel().catch(() => undefined); const message = `HTTP ${response.status}`; throw [404, 405, 501].includes(response.status) ? new PsUnsupportedError(message) : new Error(message); }
     const body = await response.json().catch(() => undefined) as { models?: Array<{ name?: unknown; model?: unknown; context_length?: unknown }> } | undefined;
-    const entry = Array.isArray(body?.models) ? body.models.find((item) => item.name === model || item.model === model) : undefined;
+    if (!Array.isArray(body?.models)) throw new PsUnsupportedError("no models list");
+    const entry = body.models.find((item) => item.name === model || item.model === model);
     return typeof entry?.context_length === "number" && entry.context_length > 0 ? entry.context_length : undefined;
   };
 }
 /** Loads a model into Ollama's memory: `POST <root>/api/generate` with the model and nothing else (no `keep_alive`: Ollama's own applies). */
-export function ollamaLoadModel(rootUrl: string, fetchImpl: typeof fetch): (model: string, signal: AbortSignal) => Promise<void> {
+export function ollamaLoadModel(rootUrl: string, fetchImpl: typeof fetch, apiKey?: string): (model: string, signal: AbortSignal) => Promise<void> {
   return async (model, signal) => {
-    const response = await fetchImpl(`${rootUrl.replace(/\/+$/, "")}/api/generate`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ model }), signal });
+    const response = await fetchImpl(`${rootUrl.replace(/\/+$/, "")}/api/generate`, { method: "POST", headers: ollamaHeaders(apiKey, true), body: JSON.stringify({ model }), signal });
     await response.text().catch(() => "");
     if (!response.ok) throw new Error(`Ollama answered HTTP ${response.status} to the load`);
   };
@@ -580,7 +610,8 @@ export const ollamaRegistration: ProviderRegistration = {
     const baseUrl = ollamaBaseUrl(typeof providerSettings.baseUrl === "string" ? providerSettings.baseUrl : OLLAMA_DEFAULT_URL);
     const root = baseUrl.replace(/\/v1$/, "");
     const fetchImpl: typeof fetch = (input, init) => globalThis.fetch(input, init);
-    return new LocalOpenAiProvider({ id: "ollama", displayName: "Ollama", baseUrl, ...(typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? { apiKey: providerSettings.apiKey } : {}), ...(typeof providerSettings.maxPromptChars === "number" ? { maxPromptChars: providerSettings.maxPromptChars } : {}), contextLookup: ollamaContextLookup(root, fetchImpl), loadedContext: ollamaLoadedContext(root, fetchImpl), loadModel: ollamaLoadModel(root, fetchImpl), contextHint: (tokens) => `Ollama runs this model with a context of ${tokens} tokens (num_ctx); raise it in Ollama (the app's context length setting, OLLAMA_CONTEXT_LENGTH, or PARAMETER num_ctx in a Modelfile) to allow a longer prompt.`, logger: ctx.logger.child("ollama") });
+    const apiKey = typeof providerSettings.apiKey === "string" && providerSettings.apiKey ? providerSettings.apiKey : undefined;
+    return new LocalOpenAiProvider({ id: "ollama", displayName: "Ollama", baseUrl, ...(apiKey ? { apiKey } : {}), ...(typeof providerSettings.maxPromptChars === "number" ? { maxPromptChars: providerSettings.maxPromptChars } : {}), contextLookup: ollamaContextLookup(root, fetchImpl, apiKey), loadedContext: ollamaLoadedContext(root, fetchImpl, apiKey), loadModel: ollamaLoadModel(root, fetchImpl, apiKey), contextHint: (tokens) => `Ollama runs this model with a context of ${tokens} tokens (num_ctx); raise it in Ollama (the app's context length setting, OLLAMA_CONTEXT_LENGTH, or PARAMETER num_ctx in a Modelfile) to allow a longer prompt.`, logger: ctx.logger.child("ollama") });
   },
 };
 /** Llama.cpp with its profiles; `host.coordinator` (the app) switches the single server to the model a request names. */

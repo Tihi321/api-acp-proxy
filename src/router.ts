@@ -265,11 +265,11 @@ export class ProviderRouter implements AcpLike {
   }
 
   /** Throws the provider's 400 when the prompt is over its limit; an unknown model passes (`generate` answers the 404). */
-  checkPrompt(model: string, messages: Message[], options?: GenerateOptions): void {
+  checkPrompt(model: string, messages: Message[], options?: GenerateOptions, beforePrepare?: boolean): void {
     const provider = this.resolve(model)?.provider;
     if (!provider) return;
     this.refuseIfExhausted(provider);
-    provider.checkPrompt?.(messages, options, this.resolve(model)?.model);
+    provider.checkPrompt?.(messages, options, this.resolve(model)?.model, beforePrepare);
   }
 
   /** Whether the model's provider forwards the output limit upstream (the server then does not cut the text). */

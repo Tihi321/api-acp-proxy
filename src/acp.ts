@@ -23,8 +23,8 @@ export interface AcpLike {
   hasModel?(model: string): boolean;
   /** Whether the model's provider can generate images (a bridge without this method is asked and answers 400 itself). */
   canGenerateImages?(model: string): boolean;
-  /** Throws a 400 `context_length_exceeded` before anything starts when the prompt is over the model's provider limit. */
-  checkPrompt?(model: string, messages: Message[], options?: GenerateOptions): void;
+  /** Throws a 400 `context_length_exceeded` before anything starts when the prompt is over the model's provider limit (`beforePrepare`: the check before `prepareModel`, see `Provider.checkPrompt`). */
+  checkPrompt?(model: string, messages: Message[], options?: GenerateOptions, beforePrepare?: boolean): void;
   /** Whether the model's provider sends the output limit upstream and reports the real stop and usage (the server then does not cut the text). */
   forwardsOutputLimit?(model: string): boolean;
   /** Whether the model's provider can search the web (a bridge without this method is asked and answers 400 itself). */

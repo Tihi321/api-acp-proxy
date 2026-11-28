@@ -1,4 +1,4 @@
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -283,15 +283,17 @@ describe("LocalOpenAiProvider", () => {
     expect(capture.recent().filter((entry) => entry.level === "info" && entry.message.includes("output limit")).map((entry) => entry.message)).toEqual(["max_tokens 80 is over m:latest's output limit of 50; sent 50."]);
   });
 
-  it("limits an Ollama prompt by the loaded num_ctx from /api/ps and loads the model first", async () => {
-    let loaded = false; let psCalls = 0; let chatCalls = 0; const loadBodies: string[] = [];
+  it("limits an Ollama prompt by the default context the proxy's own load measured, loads the model first and sends the key on native calls", async () => {
+    // `context`: what /api/ps reports while loaded; `/api/generate` (the proxy's load at default options) loads at `defaultCtx`.
+    let loaded = false; let context = 32; let defaultCtx = 32; let psCalls = 0; let chatCalls = 0; const loadBodies: string[] = []; const nativeAuth = new Set<string | undefined>();
     const upstream = createServer((request, response) => {
       let raw = ""; request.on("data", (part) => { raw += part; });
       request.on("end", () => {
         response.setHeader("content-type", "application/json");
+        if (request.url?.startsWith("/api/")) nativeAuth.add(request.headers.authorization);
         if (request.url === "/v1/models") { response.end(JSON.stringify({ data: [{ id: "qwen3.8:latest" }] })); return; }
-        if (request.url === "/api/ps") { psCalls++; response.end(JSON.stringify({ models: loaded ? [{ name: "qwen3.8:latest", model: "qwen3.8:latest", context_length: 32 }] : [] })); return; }
-        if (request.method === "POST" && request.url === "/api/generate") { loadBodies.push(raw); loaded = true; response.end(JSON.stringify({ model: "qwen3.8:latest", done: true })); return; }
+        if (request.url === "/api/ps") { psCalls++; response.end(JSON.stringify({ models: loaded ? [{ name: "qwen3.8:latest", model: "qwen3.8:latest", context_length: context }] : [] })); return; }
+        if (request.method === "POST" && request.url === "/api/generate") { loadBodies.push(raw); loaded = true; context = defaultCtx; response.end(JSON.stringify({ model: "qwen3.8:latest", done: true })); return; }
         if (request.method === "POST" && request.url === "/v1/chat/completions") {
           chatCalls++;
           response.setHeader("content-type", "text/event-stream");
@@ -303,31 +305,57 @@ describe("LocalOpenAiProvider", () => {
       });
     });
     const port = await listen(upstream);
-    const provider = ollamaRegistration.create({ providerSettings: { enabled: true, baseUrl: `http://127.0.0.1:${port}` } as never, ctx: { logger } as never } as never);
+    const capture = createLogger({ console: false });
+    const provider = ollamaRegistration.create({ providerSettings: { enabled: true, baseUrl: `http://127.0.0.1:${port}`, apiKey: "k" } as never, ctx: { logger: capture } as never } as never);
     const base = await serve(new ProviderRouter({ providers: [provider] }));
     await fetch(`${base}/models`);
     const ask = (chars: number, stream: boolean) => fetch(`${base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "ollama/qwen3.8:latest", stream, messages: [{ role: "user", content: "x".repeat(chars) }] }) });
+    const limitListed = async () => (await (await fetch(`${base}/models`)).json() as { data: Array<{ id: string; max_prompt_chars?: number }> }).data.find((model) => model.id === "ollama/qwen3.8:latest")?.max_prompt_chars;
 
-    // Not loaded: one load (the model only, no prompt, no keep_alive), then the prompt is checked against 32 tokens x 3 = 96 characters.
+    // Not loaded: one load (the model only, no prompt, no keep_alive, with the key), then the prompt is checked against 32 tokens x 3 = 96 characters.
     const refused = await ask(200, false);
     expect(refused.status).toBe(400);
-    expect(await refused.json()).toMatchObject({ error: { code: "context_length_exceeded", message: expect.stringMatching(/^The prompt is too long for Ollama: 200 characters, the limit is 96\..*num_ctx/) } });
+    expect(await refused.json()).toMatchObject({ error: { code: "context_length_exceeded", message: expect.stringMatching(/^The prompt is too long for Ollama: 200 characters, the limit is 96\..*a context of 32 tokens.*num_ctx/) } });
     expect(loadBodies).toEqual(['{"model":"qwen3.8:latest"}']);
     expect(psCalls).toBeGreaterThanOrEqual(2);
     expect(chatCalls).toBe(0);
+    expect(capture.recent().some((entry) => entry.level === "info" && entry.message.startsWith("loading 'qwen3.8:latest' before the first request"))).toBe(true);
 
-    // Loaded now: a stream request is a real HTTP 400 (not SSE) and loads nothing; a prompt within the limit goes through.
+    // Measured and still loaded: the check after prepare makes a stream request a real HTTP 400 (not SSE) and loads nothing; a prompt within the limit goes through.
     const streamed = await ask(200, true);
     expect(streamed.status).toBe(400);
     expect(streamed.headers.get("content-type")).toContain("application/json");
     expect(await streamed.json()).toMatchObject({ error: { code: "context_length_exceeded" } });
     expect(loadBodies).toHaveLength(1);
     expect(chatCalls).toBe(0);
+    const psBefore = psCalls;
     expect((await ask(80, false)).status).toBe(200);
     expect(chatCalls).toBe(1);
     expect(loadBodies).toHaveLength(1);
-    const listed = (await (await fetch(`${base}/models`)).json() as { data: Array<{ id: string; max_prompt_chars?: number }> }).data;
-    expect(listed.find((model) => model.id === "ollama/qwen3.8:latest")?.max_prompt_chars).toBe(96);
+    await vi.waitFor(() => expect(psCalls).toBe(psBefore + 2)); // prepare's read and the read after the chat
+    expect(await limitListed()).toBe(96);
+
+    // Another client loads the model with a bigger num_ctx: the proxy's own /v1 request would run at the default, so the limit stays 96.
+    context = 1000;
+    expect((await ask(200, true)).status).toBe(400);
+    expect(await limitListed()).toBe(96);
+
+    // Ollama restarted with a bigger default and the model is unloaded: prepare forgets the old value, the load measures 200 tokens again (600 characters).
+    loaded = false; defaultCtx = 200;
+    const bigger = await ask(500, false);
+    expect(bigger.status).toBe(200);
+    expect(loadBodies).toHaveLength(2);
+    expect(chatCalls).toBe(2);
+
+    // Unloaded and restarted smaller: the stream has started when the load-first step refuses, so the refusal is an SSE error.
+    await vi.waitFor(async () => expect(await limitListed()).toBe(600));
+    loaded = false; defaultCtx = 32;
+    const late = await ask(200, true);
+    expect(late.status).toBe(200);
+    expect(await late.text()).toContain('"code":"context_length_exceeded"');
+    expect(loadBodies).toHaveLength(3);
+    expect(chatCalls).toBe(2);
+    expect([...nativeAuth]).toEqual(["Bearer k"]);
   });
 
   const profile = (id: string, kind: "llm" | "image", vision = false, extra: Partial<GufoProfile> = {}): GufoProfile => ({ id, label: id, model: id, kind, vision, args: "", ...extra });
