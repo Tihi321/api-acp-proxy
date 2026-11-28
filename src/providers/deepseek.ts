@@ -13,6 +13,8 @@ export const DEEPSEEK_CONTEXT_TOKENS = 1_048_576;
 const AUTH_MESSAGE = "DeepSeek API key missing or rejected — enter a valid key in Settings > DeepSeek and save.";
 const UNREACHABLE_MESSAGE = "DeepSeek API is not reachable — check the network and the base URL in Settings > DeepSeek.";
 const BALANCE_MESSAGE = "DeepSeek has hit its usage limit: insufficient balance. Top up at platform.deepseek.com.";
+/** Ids older clients use; they always route to DeepSeek but are not listed unless its `/models` lists them. */
+const LEGACY_MODELS = new Set(["deepseek-v4-flash", "deepseek-v4-flash-vision-exp"]);
 const REFRESH_MS = 60_000;
 const CONTEXT_FIELDS = ["context_length", "context_window", "max_context_length"] as const;
 
@@ -34,6 +36,8 @@ export class DeepSeekProvider extends LocalOpenAiProvider {
     if (!this.apiKey) this.setState("needs_login", AUTH_MESSAGE);
   }
 
+  acceptsModel(model: string): boolean { return LEGACY_MODELS.has(model); }
+
   protected override contextTokens(model: string): number | undefined { return this.deepseekContexts.get(model) ?? DEEPSEEK_CONTEXT_TOKENS; }
 
   protected override chatBody(model: string, wire: WireMessage[], options?: GenerateOptions): Record<string, unknown> {
@@ -44,7 +48,7 @@ export class DeepSeekProvider extends LocalOpenAiProvider {
 
   protected override httpError(status: number, detail: string, response: Response): Error {
     if (status === 401 || status === 403) { this.setState("needs_login", AUTH_MESSAGE); return new ProviderAuthRequiredError(AUTH_MESSAGE); }
-    if (status === 402) return new UsageLimitError(BALANCE_MESSAGE, "balance");
+    if (status === 402) { const limit = new UsageLimitError(BALANCE_MESSAGE, "balance"); this.availability = limit; return limit; }
     if (status === 429) {
       const seconds = Number(response.headers.get("retry-after"));
       return new ApiError(429, "rate_limit_exceeded", `DeepSeek is rate limiting requests (HTTP 429); retry shortly. ${detail}`, undefined, { retryAfterSeconds: Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : 10 });
@@ -83,7 +87,7 @@ export class DeepSeekProvider extends LocalOpenAiProvider {
     const [list, balance] = await Promise.all([this.get("/models"), this.get("/user/balance")]);
     if ("status" in balance && balance.status === 200) this.readBalance(balance.body);
     if ("failure" in list) { this.unreachable(list.failure); return this.models; }
-    if (list.status === 401 || list.status === 403) { this.setState("needs_login", AUTH_MESSAGE); throw new ProviderAuthRequiredError(AUTH_MESSAGE); }
+    if (list.status === 401 || list.status === 403) { this.setState("needs_login", AUTH_MESSAGE); this.models = DEEPSEEK_MODELS; return this.models; }
     if (list.status !== 200) return this.models;
     const data = (list.body as { data?: Array<Record<string, unknown>> } | undefined)?.data;
     if (!Array.isArray(data)) return this.models;

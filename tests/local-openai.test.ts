@@ -413,7 +413,7 @@ data: [DONE]
 });
 
 describe("DeepSeek", () => {
-  interface Fake { chatCalls: number; otherCalls: number; chatBodies: Array<Record<string, unknown>>; auth: Array<string | undefined>; balance: { is_available: boolean }; chat: (response: ServerResponse) => void }
+  interface Fake { chatCalls: number; otherCalls: number; chatBodies: Array<Record<string, unknown>>; auth: Array<string | undefined>; balance: { is_available: boolean }; modelsStatus?: number; chat: (response: ServerResponse) => void }
   const sseOk = (response: ServerResponse): void => {
     response.setHeader("content-type", "text/event-stream");
     const usage = { prompt_tokens: 20, completion_tokens: 9, total_tokens: 29, prompt_cache_hit_tokens: 12, prompt_cache_miss_tokens: 8, completion_tokens_details: { reasoning_tokens: 5 } };
@@ -427,7 +427,7 @@ describe("DeepSeek", () => {
     const fake: Fake = { chatCalls: 0, otherCalls: 0, chatBodies: [], auth: [], balance: { is_available: true }, chat: sseOk };
     const upstream = createServer((request, response) => {
       fake.auth.push(request.headers.authorization);
-      if (request.method === "GET" && request.url === "/models") { fake.otherCalls++; response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ object: "list", data: [{ id: "deepseek-flash" }, { id: "deepseek-v4-pro" }] })); return; }
+      if (request.method === "GET" && request.url === "/models") { fake.otherCalls++; if (fake.modelsStatus) { response.statusCode = fake.modelsStatus; response.end(); return; } response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ object: "list", data: [{ id: "deepseek-flash" }, { id: "deepseek-v4-pro" }] })); return; }
       if (request.method === "GET" && request.url === "/user/balance") { fake.otherCalls++; response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ ...fake.balance, balance_infos: [{ currency: "USD", total_balance: fake.balance.is_available ? "110.00" : "0.00" }] })); return; }
       if (request.method === "POST" && request.url === "/chat/completions") {
         let raw = ""; request.on("data", (part) => { raw += part; });
@@ -470,6 +470,7 @@ describe("DeepSeek", () => {
   it("maps 402 to the usage-limit 429 and 429 to a transient rate limit", async () => {
     const out = await setup();
     out.fake.chat = reply(402, { message: "Insufficient Balance" });
+    await fetch(`${out.base}/models`); // lists (and probes: available) before the 402
     const first = await ask(out.base);
     expect(first.status).toBe(429);
     expect(first.headers.get("retry-after")).toMatch(/^\d+$/);
@@ -478,6 +479,10 @@ describe("DeepSeek", () => {
     expect(health.providers.deepseek?.exhausted_until).toEqual(expect.any(String));
     expect((await ask(out.base)).status).toBe(429);
     expect(out.fake.chatCalls).toBe(1);
+    // A models refresh within 60 s (the cached list, availability set by the 402) neither clears the mark nor moves its end.
+    const until = out.router.exhaustedProviders().deepseek;
+    await fetch(`${out.base}/models`);
+    expect(out.router.exhaustedProviders().deepseek).toBe(until);
 
     const rate = await setup();
     rate.fake.chat = reply(429, { message: "Rate limit reached" }, { "retry-after": "7" });
@@ -504,6 +509,18 @@ describe("DeepSeek", () => {
     expect(rejected.status).toBe(503);
     expect(await rejected.json()).toMatchObject({ error: { code: "provider_auth_required" } });
     expect(keyed.provider.status().state).toBe("needs_login");
+
+    // A rejected key on /models keeps the static models listed; a stream error keeps its typed code; the legacy id routes (503, not 404).
+    const denied = await setup();
+    denied.fake.modelsStatus = 401; denied.fake.chat = reply(401, { message: "Authentication Fails" });
+    expect((await (await fetch(`${denied.base}/models`)).json() as { data: Array<{ id: string }> }).data.map((model) => model.id)).toEqual(["deepseek/deepseek-flash", "deepseek/deepseek-v4-pro"]);
+    expect(denied.provider.status().state).toBe("needs_login");
+    const streamed = await (await ask(denied.base, { stream: true })).text();
+    expect(streamed).toContain('"code":"provider_auth_required"');
+    expect(streamed).not.toContain("internal_error");
+    const legacy = await fetch(`${keyless.base}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "deepseek/deepseek-v4-flash", messages: [{ role: "user", content: "hi" }] }) });
+    expect(legacy.status).toBe(503);
+    expect(await legacy.json()).toMatchObject({ error: { code: "provider_auth_required" } });
     keyed.fake.chat = reply(400, { message: "This model's maximum context length is 1048576 tokens." });
     const tooLong = await ask(keyed.base);
     expect(tooLong.status).toBe(400);

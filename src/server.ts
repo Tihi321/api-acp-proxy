@@ -32,6 +32,13 @@ function errorCode(error: unknown): string {
   return "internal_error";
 }
 
+/** The error body of a failure (JSON answer or SSE error event): typed codes of an unavailable provider are kept. */
+function errorBody(error: unknown): { error: Record<string, unknown> } {
+  const failure = error instanceof Error ? error : new Error(String(error));
+  if (failure instanceof AcpUnavailableError) return { error: { message: failure.message, type: "server_error", code: failure.code ?? "backend_unavailable", param: null } };
+  return errorEnvelope(failure);
+}
+
 /** Notes what a parsed request asks for. */
 function traceRequest(trace: Trace, parsed: { model: string; stream?: unknown; conversation: Message[]; generateImages: boolean; functionTools?: ToolDef[]; webSearch?: unknown }, mcp = false): void {
   trace.model = parsed.model;
@@ -240,7 +247,7 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
       endSse(response);
     } catch (error) {
       Object.assign(trace, refusedMark(error), { error: errorCode(error) });
-      writeSse(response, errorEnvelope(error instanceof Error ? error : new Error(String(error))));
+      writeSse(response, errorBody(error));
       endSse(response);
     } finally { clearTimeout(timer); lease?.release(); }
     return;
@@ -364,7 +371,7 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
       const terminalEvent = status === "completed" ? "response.completed" : "response.incomplete";
       event(terminalEvent, { response: base(result, status, items, calls) });
       endSse(response);
-    } catch (error) { Object.assign(trace, refusedMark(error), { error: errorCode(error) }); const mapped = forResponses(error); writeSse(response, errorEnvelope(mapped instanceof Error ? mapped : new Error(String(mapped)))); endSse(response); }
+    } catch (error) { Object.assign(trace, refusedMark(error), { error: errorCode(error) }); const mapped = forResponses(error); writeSse(response, errorBody(mapped)); endSse(response); }
     finally { clearTimeout(timer); lease?.release(); }
     return;
   }
@@ -564,7 +571,7 @@ export function createProxyServer(config: ProxyConfig, bridge: AcpLike, options:
       Object.assign(trace, refusedMark(error), { error: errorCode(error) });
       if (response.headersSent) { response.end(); return; }
       if (error instanceof ApiError) { if (error.retryAfterSeconds) response.setHeader("Retry-After", String(error.retryAfterSeconds)); json(response, error.status, errorEnvelope(error)); return; }
-      if (error instanceof AcpUnavailableError) { if (error.retryAfterSeconds) response.setHeader("Retry-After", String(error.retryAfterSeconds)); json(response, 503, { error: { message: error.message, type: "server_error", code: error.code ?? "backend_unavailable", param: null } }); return; }
+      if (error instanceof AcpUnavailableError) { if (error.retryAfterSeconds) response.setHeader("Retry-After", String(error.retryAfterSeconds)); json(response, 503, errorBody(error)); return; }
       json(response, 500, errorEnvelope(error instanceof Error ? error : new Error(String(error))));
     }
   });

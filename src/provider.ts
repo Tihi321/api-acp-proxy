@@ -228,6 +228,8 @@ export interface Provider {
   readonly forwardsOutputLimit?: boolean;
   /** What the provider last learned outside a request (a balance probe): an error = exhausted now, `null` = known available, `undefined` = unknown. */
   usageLimitState?(): UsageLimitError | null | undefined;
+  /** Extra ids this provider routes although its model list does not show them (legacy aliases); the router resolves `<provider>/<id>` for them. */
+  acceptsModel?(model: string): boolean;
   /** Whether this model accepts image input; the router prefers it over `status().capabilities.image`. `undefined` = not known yet (callers refuse only on an explicit `false`). */
   acceptsImages?(model: string): boolean | undefined;
   /** Whether this model generates images; the router prefers it over `imageGeneration`. */

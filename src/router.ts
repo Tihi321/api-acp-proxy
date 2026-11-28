@@ -131,7 +131,7 @@ export class ProviderRouter implements AcpLike {
       if (provider) {
         const model = id.slice(slash + 1);
         const models = this.known.get(provider.id) ?? [];
-        if (model && (!models.length || models.some((m) => m.id === model))) return { provider, model };
+        if (model && (!models.length || models.some((m) => m.id === model) || provider.acceptsModel?.(model) === true)) return { provider, model };
       }
     }
     const owner = this.unprefixedOwners().get(id) ?? (slash < 0 && id ? this.providers.find((provider) => provider.exposeUnprefixed && !this.known.get(provider.id)?.length) : undefined);
@@ -198,7 +198,7 @@ export class ProviderRouter implements AcpLike {
     const task = provider.listModels({ force }).then((models) => {
       this.update(provider, models);
       const known = provider.usageLimitState?.();
-      if (known instanceof UsageLimitError) this.markExhausted(provider, known);
+      if (known instanceof UsageLimitError) { if (this.exhaustedUntilMs(provider.id) === undefined) this.markExhausted(provider, known); }
       else if (known === null && this.exhausted.delete(provider.id)) this.options.onExhaustedChange?.();
     }, (error) => this.log.debug(`Listing models for '${provider.id}' failed: ${error instanceof Error ? error.message : String(error)}`));
     if (waitMs <= 0) { await task; return; }
