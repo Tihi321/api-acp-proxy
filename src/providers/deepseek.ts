@@ -3,12 +3,15 @@ import type { ProviderRegistration } from "../controller.js";
 import { AcpUnavailableError, ProviderAuthRequiredError, type GenerateOptions, type GenerationCallbacks, type GenerationResult, type ModelInfo, type ProviderStatus } from "../provider.js";
 import { DEEPSEEK_DEFAULT_URL } from "../settings.js";
 import { UsageLimitError } from "../usage-limit.js";
+import { deepseekCostUsd } from "./deepseek-pricing.js";
 import { CONTEXT_ERROR, LocalOpenAiProvider, type LocalOpenAiOptions, type WireMessage } from "./local-openai.js";
 
 /** The models offered while `/models` cannot be read (no key, no network): the flash model sees images, the pro model is text only. */
 export const DEEPSEEK_MODELS: ModelInfo[] = [{ id: "deepseek-flash", name: "DeepSeek V4.1 Flash", vision: true }, { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", vision: false }];
 /** The context size of both models in tokens, used when `/models` does not state one. */
 export const DEEPSEEK_CONTEXT_TOKENS = 1_048_576;
+/** The largest `max_tokens` DeepSeek takes when `/models` states no `max_output_tokens`. */
+export const DEEPSEEK_MAX_OUTPUT_TOKENS = 393_216;
 
 const AUTH_MESSAGE = "DeepSeek API key missing or rejected — enter a valid key in Settings > DeepSeek and save.";
 const UNREACHABLE_MESSAGE = "DeepSeek API is not reachable — check the network and the base URL in Settings > DeepSeek.";
@@ -29,9 +32,12 @@ export class DeepSeekProvider extends LocalOpenAiProvider {
   private availability: UsageLimitError | null | undefined;
   private readonly deepseekContexts = new Map<string, number>();
   private listedAt = 0;
+  private readonly now: () => number;
+  private readonly unpriced = new Set<string>();
 
-  constructor(options: Omit<LocalOpenAiOptions, "id" | "displayName">) {
+  constructor(options: Omit<LocalOpenAiOptions, "id" | "displayName"> & { now?: () => number }) {
     super({ ...options, id: "deepseek", displayName: "DeepSeek" });
+    this.now = options.now ?? Date.now;
     this.models = DEEPSEEK_MODELS; this.listed = true;
     if (!this.apiKey) this.setState("needs_login", AUTH_MESSAGE);
   }
@@ -43,8 +49,11 @@ export class DeepSeekProvider extends LocalOpenAiProvider {
   protected override chatBody(model: string, wire: WireMessage[], options?: GenerateOptions): Record<string, unknown> {
     const body = super.chatBody(model, wire, options);
     delete body.chat_template_kwargs; // llama-server only
+    if (options?.thinking !== undefined) body.thinking = { type: options.thinking };
     return body;
   }
+
+  protected override maxOutputTokensFor(model: string): number | undefined { return this.outputLimits.get(model) ?? DEEPSEEK_MAX_OUTPUT_TOKENS; }
 
   protected override httpError(status: number, detail: string, response: Response): Error {
     if (status === 401 || status === 403) { this.setState("needs_login", AUTH_MESSAGE); return new ProviderAuthRequiredError(AUTH_MESSAGE); }
@@ -64,8 +73,16 @@ export class DeepSeekProvider extends LocalOpenAiProvider {
 
   override async generate(model: string, messages: Message[], callbacks?: GenerationCallbacks, signal?: AbortSignal, options?: GenerateOptions): Promise<GenerationResult> {
     if (!this.apiKey) throw new ProviderAuthRequiredError(AUTH_MESSAGE);
+    const started = new Date(this.now());
     const result = await super.generate(model, messages, callbacks, signal, options);
-    if (result.stopReason !== "cancelled") this.availability = null;
+    if (result.stopReason !== "cancelled") {
+      this.availability = null;
+      if (result.usage) {
+        const cost = deepseekCostUsd(model, result.usage, started);
+        if (cost !== undefined) result.costUsd = cost;
+        else if (!this.unpriced.has(model)) { this.unpriced.add(model); this.logger.debug(`No price for ${model}; the cost of its calls is not counted.`); }
+      }
+    }
     return result;
   }
 
@@ -91,8 +108,10 @@ export class DeepSeekProvider extends LocalOpenAiProvider {
     if (list.status !== 200) return this.models;
     const data = (list.body as { data?: Array<Record<string, unknown>> } | undefined)?.data;
     if (!Array.isArray(data)) return this.models;
+    this.outputLimits.clear();
     this.models = data.flatMap((entry) => {
       if (typeof entry.id !== "string") return [];
+      if (typeof entry.max_output_tokens === "number" && entry.max_output_tokens > 0) this.outputLimits.set(entry.id, entry.max_output_tokens);
       const field = CONTEXT_FIELDS.map((name) => entry[name]).find((value): value is number => typeof value === "number" && value > 0);
       if (field !== undefined) this.deepseekContexts.set(entry.id, field);
       return [{ id: entry.id, vision: DEEPSEEK_MODELS.find((known) => known.id === entry.id)?.vision ?? false }];

@@ -1,3 +1,4 @@
+import { formatUsd, formatUsdFull } from "./cost-format.js";
 import type { PlanLimitsView, ProviderStatusView, ProxyApi, RateLimitHintView, StateView, UsageCountsView, UsageRangeKey, UsageView } from "../shared/ipc.js";
 
 export interface UsageViewDeps { api: ProxyApi; showView(name: string): void; }
@@ -113,6 +114,7 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
       tokenTile("Input tokens", counts.inputTokens, counts),
       tokenTile("Output tokens", counts.outputTokens, counts),
       stat("Errors", compact.format(counts.errors), { sub: rate, title: full.format(counts.errors) }),
+      ...(counts.costUsd > 0 ? [stat("Cost", formatUsd(counts.costUsd), { title: formatUsdFull(counts.costUsd) })] : []),
     );
   }
 
@@ -130,6 +132,13 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
     return cell;
   }
 
+  /** The cost cell: "-" when nothing was priced, the exact amount in the tooltip. */
+  function costCell(value: number): HTMLTableCellElement {
+    const cell = make("td", "num", value > 0 ? formatUsd(value) : "-");
+    if (value > 0) cell.title = formatUsdFull(value);
+    return cell;
+  }
+
   function renderTable(): void {
     const body = el("usage-body");
     const foot = el("usage-foot");
@@ -139,14 +148,14 @@ export function initUsageView(deps: UsageViewDeps): UsageViewHandle {
       const row = make("tr", counts.requests === 0 ? "is-zero" : "");
       const first = make("td");
       first.append(swatch(id), document.createTextNode(nameOf(id)));
-      row.append(first, numberCell(counts.requests), numberCell(counts.errors, false, counts.errors > 0 ? "bad" : ""), tokenCell(counts.inputTokens, counts.estimated > 0, counts.cachedTokens, "cached"), tokenCell(counts.outputTokens, counts.estimated > 0, counts.reasoningTokens, "thinking"));
+      row.append(first, numberCell(counts.requests), numberCell(counts.errors, false, counts.errors > 0 ? "bad" : ""), tokenCell(counts.inputTokens, counts.estimated > 0, counts.cachedTokens, "cached"), tokenCell(counts.outputTokens, counts.estimated > 0, counts.reasoningTokens, "thinking"), costCell(counts.costUsd));
       if (counts.estimated > 0) row.title = approxNote(counts);
       return row;
     });
     body.replaceChildren(...rows);
     const total = usage.total[range];
     const totalRow = make("tr", "total");
-    totalRow.append(make("td", "", "All providers"), numberCell(total.requests), numberCell(total.errors, false, total.errors > 0 ? "bad" : ""), tokenCell(total.inputTokens, total.estimated > 0, total.cachedTokens, "cached"), tokenCell(total.outputTokens, total.estimated > 0, total.reasoningTokens, "thinking"));
+    totalRow.append(make("td", "", "All providers"), numberCell(total.requests), numberCell(total.errors, false, total.errors > 0 ? "bad" : ""), tokenCell(total.inputTokens, total.estimated > 0, total.cachedTokens, "cached"), tokenCell(total.outputTokens, total.estimated > 0, total.reasoningTokens, "thinking"), costCell(total.costUsd));
     foot.replaceChildren(totalRow);
   }
 

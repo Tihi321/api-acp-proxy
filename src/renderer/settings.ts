@@ -1,6 +1,7 @@
 import { nextExpiryDelay, usageLimitLine } from "./usage-limit-line.js";
 import { mcpAddCommand, mcpEndpointUrl } from "./mcp-command.js";
 import { initUsageView } from "./usage-view.js";
+import { formatUsd, formatUsdFull } from "./cost-format.js";
 import { initLlamaView } from "./llama-view.js";
 import { fields, fieldValue, type Scope } from "./settings-fields.js";
 import { initMonitorView } from "./monitor-view.js";
@@ -48,6 +49,8 @@ const badgeText: Record<string, string> = { needs_login: "needs login", not_inst
 /** The tool a provider's shared login folder belongs to (named in the log-out confirmation). */
 const toolName: Record<string, string> = { codex: "Codex (the Codex app and CLI)", antigravity: "Google Antigravity and the Gemini tools", claude: "Claude Code" };
 const providerOrder = ["codex", "claude", "antigravity"] as const;
+/** The Overview lists the key-based DeepSeek provider after the three that sign in. */
+const overviewOrder = [...providerOrder, "deepseek"] as const;
 /** The local servers that have a page; `embed` (the embedding server) is a card of the Llama.cpp page. */
 type PageServerId = Exclude<LocalServerId, "embed">;
 const localOrder: readonly PageServerId[] = ["gufo", "strata", "llama"];
@@ -453,7 +456,7 @@ function renderOverview(current: StateView): void {
   el("ov-playground").hidden = !server.baseUrl;
   el("ov-mcp-url").textContent = server.baseUrl ? mcpEndpointUrl(server.baseUrl) : server.state === "error" ? "Not listening" : "Not running";
   el("ov-mcp-copy").hidden = !server.baseUrl;
-  const rows = providerOrder.map((id) => {
+  const rows = overviewOrder.map((id) => {
     const status = current.status.providers.find((entry) => entry.id === id);
     const usable = providerUsable(status, current);
     const row = make("li", "ov-row");
@@ -479,9 +482,11 @@ function renderOverview(current: StateView): void {
     settingsButton.type = "button";
     settingsButton.title = `Open the ${status?.name ?? id} page`;
     settingsButton.onclick = () => showView(id);
-    actions.append(login, logout, settingsButton);
+    if (id === "deepseek") actions.append(settingsButton);
+    else actions.append(login, logout, settingsButton);
     head.append(actions);
     row.append(head, make("p", "ov-line muted", describeSignIn(status, current)));
+    if (status?.balance) row.append(make("p", "ov-line muted", `Balance: ${status.balance}`));
     const limitLine = usageLimitLine(status?.exhaustedUntil, Date.now());
     if (limitLine) row.append(make("p", "ov-line usage-limit", limitLine));
     const chips = make("ul", "chips");
@@ -520,6 +525,10 @@ function renderActivity(): void {
     const hasTokens = entry.inputTokens !== undefined || entry.outputTokens !== undefined;
     const tokenCell = cell(hasTokens ? `${entry.estimated ? "≈ " : ""}${entry.inputTokens ?? 0} in / ${entry.outputTokens ?? 0} out${entry.reasoningTokens !== undefined ? ` (${entry.reasoningEstimated && !entry.estimated ? "≈ " : ""}${entry.reasoningTokens} thinking)` : ""}` : "-", "num");
     if (hasTokens && entry.estimated) tokenCell.title = "Estimated: about 4 characters per token";
+    if (entry.costUsd !== undefined && entry.costUsd > 0) {
+      tokenCell.textContent = `${tokenCell.textContent} · ${formatUsd(entry.costUsd)}`;
+      tokenCell.title = `${tokenCell.title ? `${tokenCell.title}. ` : ""}Cost ${formatUsdFull(entry.costUsd)}`;
+    }
     row.append(
       cell(clock.format(entry.time), "mono"),
       cell(`${ENDPOINT_LABELS[entry.endpoint] ?? entry.endpoint}${entry.stream ? " (stream)" : ""}`),

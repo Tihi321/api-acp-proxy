@@ -149,9 +149,11 @@ export interface ActivityView {
   reasoningTokens?: number;
   /** True when reasoningTokens is the chars/4 estimate from the reasoning text (the server reported usage without reasoning_tokens). */
   reasoningEstimated?: boolean;
+  /** Provider-computed price in USD (DeepSeek). */
+  costUsd?: number;
 }
 /** One provider's (or the total's) counts over a range. `estimated`: requests whose token counts are the chars/4 estimate. */
-export interface UsageCountsView { requests: number; errors: number; inputTokens: number; outputTokens: number; estimated: number; cachedTokens: number; reasoningTokens: number }
+export interface UsageCountsView { requests: number; errors: number; inputTokens: number; outputTokens: number; estimated: number; cachedTokens: number; reasoningTokens: number; /** USD, provider-computed (DeepSeek); 0 when unknown. */ costUsd: number }
 export type UsageRangeKey = "today" | "last7" | "last30" | "allTime";
 export interface UsageProviderView { id: string; today: UsageCountsView; last7: UsageCountsView; last30: UsageCountsView; allTime: UsageCountsView }
 /** One local day; `byProvider` has an entry for every provider of `UsageView.providers` (zeros included). */

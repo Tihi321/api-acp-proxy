@@ -1,4 +1,5 @@
 import type { GenerationResult } from "./provider.js";
+import type { ActivityEntry } from "./activity.js";
 
 export const CHARS_PER_TOKEN = 4;
 
@@ -25,4 +26,31 @@ export function chatUsage(result: GenerationResult, promptText: string): Record<
 export function responsesUsage(result: GenerationResult, promptText: string): Record<string, unknown> {
   const u = openAiUsage(result, promptText);
   return { input_tokens: u.prompt, input_tokens_details: { cached_tokens: u.cached }, output_tokens: u.completion, output_tokens_details: { reasoning_tokens: u.reasoning }, total_tokens: u.total };
+}
+
+/** The token and cost fields of one call that the activity log keeps; a count of zero or an unknown cost is `undefined`. */
+export interface UsageTrace { inputTokens: number; outputTokens: number; estimated: boolean; cachedTokens: number | undefined; reasoningTokens: number | undefined; reasoningEstimated: boolean; costUsd: number | undefined }
+
+/** What the client is told about one call's usage (the agent's own counts, or the estimate), for the activity log. */
+export function usageTrace(result: GenerationResult, promptText: string): UsageTrace {
+  const usage = openAiUsage(result, promptText);
+  return {
+    inputTokens: usage.prompt, outputTokens: usage.completion, estimated: usageEstimated(result),
+    cachedTokens: Number.isFinite(usage.cached) && usage.cached > 0 ? usage.cached : undefined,
+    reasoningTokens: Number.isFinite(usage.reasoning) && usage.reasoning > 0 ? usage.reasoning : undefined,
+    reasoningEstimated: result.reasoningEstimated === true,
+    costUsd: typeof result.costUsd === "number" && Number.isFinite(result.costUsd) && result.costUsd > 0 ? result.costUsd : undefined,
+  };
+}
+
+/** The activity entry fields of a traced usage (absent ones left out). */
+export function usageEntryFields(trace: Partial<UsageTrace>): Pick<ActivityEntry, "inputTokens" | "outputTokens" | "cachedTokens" | "costUsd" | "reasoningTokens" | "reasoningEstimated" | "estimated"> {
+  return {
+    ...(trace.inputTokens !== undefined ? { inputTokens: trace.inputTokens } : {}), ...(trace.outputTokens !== undefined ? { outputTokens: trace.outputTokens } : {}),
+    ...(trace.cachedTokens !== undefined ? { cachedTokens: trace.cachedTokens } : {}),
+    ...(trace.costUsd !== undefined ? { costUsd: trace.costUsd } : {}),
+    ...(trace.reasoningTokens !== undefined ? { reasoningTokens: trace.reasoningTokens } : {}),
+    ...(trace.reasoningTokens !== undefined && trace.reasoningEstimated ? { reasoningEstimated: true as const } : {}),
+    ...(trace.estimated && (trace.inputTokens !== undefined || trace.outputTokens !== undefined) ? { estimated: true as const } : {}),
+  };
 }

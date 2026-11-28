@@ -29,6 +29,8 @@ export interface ActivityEntry {
   reasoningTokens?: number;
   /** Of inputTokens, the part read from the provider's prompt cache. */
   cachedTokens?: number;
+  /** Provider-computed price in USD (DeepSeek). */
+  costUsd?: number;
   /** reasoningTokens is the chars/4 estimate from the reasoning text. */
   reasoningEstimated?: true;
   /** Names (never values) of the sampling fields the request sent and the proxy dropped. */

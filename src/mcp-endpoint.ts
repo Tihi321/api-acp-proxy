@@ -10,7 +10,7 @@ import { ApiError, imageGenerationText, serializePrompt, textMessage, type Messa
 import type { ProxyConfig } from "./config.js";
 import { checkAbsolutePath, decodeDataUrl, IMAGE_MIME_TYPES, ImageError, loadImage, loadImageFile, sniffImage, type LoadedImage } from "./images.js";
 import { refusedMark } from "./usage-limit.js";
-import { openAiUsage, usageEstimated } from "./usage.js";
+import { openAiUsage, usageEntryFields, usageTrace, type UsageTrace } from "./usage.js";
 
 /** The MCP endpoint `POST /v1/mcp` (Streamable HTTP, stateless): tools to ask another model, with images, and to generate images. Hand-written JSON-RPC, like the tool bridge. */
 
@@ -52,7 +52,7 @@ interface ToolOutput { content: ContentBlock[]; structuredContent?: Record<strin
 interface Failure { code: string; status: number; message: string; }
 /** A listed model: the router also says which provider it belongs to. */
 interface Listed { id: string; provider?: string; ownedBy?: string; }
-interface Trace { model?: string; features: Set<ActivityFeature>; refused?: true; inputTokens?: number; outputTokens?: number; estimated?: boolean; }
+interface Trace extends Partial<UsageTrace> { model?: string; features: Set<ActivityFeature>; refused?: true; }
 
 /** A bad argument shape: a JSON-RPC `-32602` error (never a tool result). The message names fields only, never values. */
 class InvalidParams extends Error {}
@@ -620,8 +620,7 @@ export class McpEndpoint {
     const entry: ActivityEntry = {
       time: started, endpoint: `MCP ${tool}`, stream: false, features: [...trace.features], durationMs: Date.now() - started, status,
       ...(trace.model ? { model: trace.model } : {}), ...(provider ? { provider } : {}), ...(error ? { error } : {}), ...(trace.refused ? { refused: true as const } : {}),
-      ...(trace.inputTokens !== undefined ? { inputTokens: trace.inputTokens } : {}), ...(trace.outputTokens !== undefined ? { outputTokens: trace.outputTokens } : {}),
-      ...(trace.estimated && (trace.inputTokens !== undefined || trace.outputTokens !== undefined) ? { estimated: true as const } : {}),
+      ...usageEntryFields(trace),
     };
     try { activity.record(entry); } catch { /* a listener of the log must not break the call */ }
   }
@@ -717,10 +716,9 @@ export class McpEndpoint {
       try { result = await raceAbort(bridge.generate(args.model, messages, { onText: () => context.onText() }, context.signal, args.webSearch ? { webSearch: {} } : {}), context.signal); }
       finally { lease?.release(); }
       if (context.signal.aborted) throw new Aborted();
-      const usage = openAiUsage(result, serializePrompt(messages));
-      context.trace.inputTokens = usage.prompt;
-      context.trace.outputTokens = usage.completion;
-      context.trace.estimated = usageEstimated(result);
+      const promptText = serializePrompt(messages);
+      const usage = openAiUsage(result, promptText);
+      Object.assign(context.trace, usageTrace(result, promptText));
       const threadId = this.threads.commit(thread, args.threadId, args.model, [...messages, textMessage("assistant", result.text)], parts.length, bytes);
       return {
         content: [{ type: "text", text: result.text }, { type: "text", text: `thread_id: ${threadId} (pass it to continue this conversation)` }],
@@ -757,10 +755,9 @@ export class McpEndpoint {
     try { result = await raceAbort(bridge.generate(args.model, [user], { onText: () => context.onText() }, context.signal, { images: true }), context.signal); }
     finally { lease?.release(); }
     if (context.signal.aborted) throw new Aborted();
-    const usage = openAiUsage(result, serializePrompt([user]));
-    context.trace.inputTokens = usage.prompt;
-    context.trace.outputTokens = usage.completion;
-    context.trace.estimated = usageEstimated(result);
+    const promptText = serializePrompt([user]);
+    const usage = openAiUsage(result, promptText);
+    Object.assign(context.trace, usageTrace(result, promptText));
     const found: Array<{ bytes: Buffer; mimeType: string; revisedPrompt?: string }> = [];
     for (const image of (result.images ?? []).slice(0, RESULT_MAX_IMAGES)) {
       const bytes = Buffer.from(image.data, "base64");

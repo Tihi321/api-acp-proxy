@@ -15,7 +15,7 @@ import { resolveMcpServers } from "./mcp-servers.js";
 import { ToolBridgeHub } from "./tool-bridge.js";
 import { McpEndpoint, type McpEndpointTuning } from "./mcp-endpoint.js";
 import { servePlayground } from "./playground-files.js";
-import { CHARS_PER_TOKEN, chatUsage, openAiUsage, responsesUsage, usageEstimated } from "./usage.js";
+import { CHARS_PER_TOKEN, chatUsage, responsesUsage, usageEntryFields, usageTrace } from "./usage.js";
 import type { ActivityEntry, ActivityFeature, ActivityLog } from "./activity.js";
 import { QueueAbortedError } from "./limiter.js";
 import type { ImagePassthrough } from "./provider.js";
@@ -23,7 +23,7 @@ import type { ImagePassthrough } from "./provider.js";
 const startedAt = Date.now();
 
 /** What a request tells the activity log (metadata only: the prompt, the answer and the headers never get here). */
-interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; refused?: true; inputTokens?: number; outputTokens?: number; estimated?: boolean; cachedTokens?: number; reasoningTokens?: number; reasoningEstimated?: boolean; ignoredParams?: string[]; }
+interface Trace { model?: string; stream: boolean; features: Set<ActivityFeature>; error?: string; refused?: true; inputTokens?: number; outputTokens?: number; estimated?: boolean; cachedTokens?: number; reasoningTokens?: number; reasoningEstimated?: boolean; costUsd?: number; ignoredParams?: string[]; }
 
 /** The proxy's error code of a failure (what the client sees as `error.code`). */
 function errorCode(error: unknown): string {
@@ -58,15 +58,7 @@ function reportIgnored(response: ServerResponse, trace: Trace, ignored: string[]
 }
 
 /** Notes the token counts the client is told (the agent's own, or the estimate). */
-function traceUsage(trace: Trace, result: GenerationResult, promptText: string): void {
-  const usage = openAiUsage(result, promptText);
-  trace.inputTokens = usage.prompt;
-  trace.outputTokens = usage.completion;
-  trace.estimated = usageEstimated(result);
-  trace.cachedTokens = Number.isFinite(usage.cached) && usage.cached > 0 ? usage.cached : undefined;
-  trace.reasoningTokens = Number.isFinite(usage.reasoning) && usage.reasoning > 0 ? usage.reasoning : undefined;
-  trace.reasoningEstimated = result.reasoningEstimated === true;
-}
+function traceUsage(trace: Trace, result: GenerationResult, promptText: string): void { Object.assign(trace, usageTrace(result, promptText)); }
 
 function json(response: ServerResponse, status: number, payload: unknown): void {
   if (!response.headersSent) response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -207,14 +199,16 @@ async function handleChat(request: IncomingMessage, response: ServerResponse, co
   request.once("aborted", () => abortController.abort());
   request.once("close", () => { if (!request.complete) abortController.abort(); });
   response.once("close", () => { if (!response.writableEnded) abortController.abort(); });
-  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}), ...(parsed.maxOutputTokens !== undefined ? { maxOutputTokens: parsed.maxOutputTokens } : {}), ...(parsed.reasoningEffort !== undefined ? { reasoningEffort: parsed.reasoningEffort } : {}), ...(parsed.chatTemplateKwargs !== undefined ? { chatTemplateKwargs: parsed.chatTemplateKwargs } : {}) };
-  // Refuse an oversized prompt with a real HTTP 400 before a stream starts.
-  bridge.checkPrompt?.(parsed.model, parsed.conversation, options);
+  const options: GenerateOptions = { instructions: formatInstructions(parsed.format), ...(parsed.generateImages ? { images: true } : {}), ...toolOptions(parsed), ...(parsed.webSearch ? { webSearch: parsed.webSearch } : {}), ...(parsed.maxOutputTokens !== undefined ? { maxOutputTokens: parsed.maxOutputTokens } : {}), ...(parsed.reasoningEffort !== undefined ? { reasoningEffort: parsed.reasoningEffort } : {}), ...(parsed.chatTemplateKwargs !== undefined ? { chatTemplateKwargs: parsed.chatTemplateKwargs } : {}), ...(parsed.thinking ? { thinking: parsed.thinking } : {}) };
+  // Refuse an oversized prompt with a real HTTP 400 before a stream starts (only by limits that cannot be stale; the check after `prepare` uses all).
+  bridge.checkPrompt?.(parsed.model, parsed.conversation, options, true);
   // Before the lease: a throw here must not leave a lease or timer behind.
   const promptText = serializePrompt(parsed.conversation, options.instructions);
   // A local model is switched to (and waited for) before the timer starts, so the wait does not count against it.
   const lease = await prepare(bridge, parsed.model, parsed.conversation, abortController.signal);
   if (lease === null) return;
+  // The limit may be known only now (Ollama: the loaded context): check again, so a refusal is still a real HTTP 400.
+  try { bridge.checkPrompt?.(parsed.model, parsed.conversation, options); } catch (error) { lease?.release(); throw error; }
   const timer = setTimeout(() => { timedOut = true; abortController.abort(); }, timeoutFor(bridge, parsed.model, config));
   const asJson = parsed.format.type === "json";
   /** `url_citation` annotations of the answer (only for a request with web search; none otherwise). */
@@ -290,8 +284,9 @@ async function handleResponses(request: IncomingMessage, response: ServerRespons
   const promptText = serializePrompt(parsed.conversation, options.instructions);
   let lease: { release(): void } | undefined | null;
   try {
-    bridge.checkPrompt?.(parsed.model, parsed.conversation, options);
+    bridge.checkPrompt?.(parsed.model, parsed.conversation, options, true);
     lease = await prepare(bridge, parsed.model, parsed.conversation, abortController.signal);
+    if (lease !== null) { try { bridge.checkPrompt?.(parsed.model, parsed.conversation, options); } catch (error) { lease?.release(); throw error; } }
   } catch (error) { throw forResponses(error); }
   if (lease === null) return;
   const timer = setTimeout(() => { timedOut = true; abortController.abort(); }, timeoutFor(bridge, parsed.model, config));
@@ -514,11 +509,7 @@ function track(activity: ActivityLog, bridge: AcpLike, response: ServerResponse,
     const entry: ActivityEntry = {
       time, endpoint, stream: trace.stream, features: [...trace.features], durationMs: Date.now() - time, status: response.statusCode,
       ...(trace.model ? { model: trace.model } : {}), ...(error ? { error } : {}), ...(trace.refused ? { refused: true as const } : {}),
-      ...(trace.inputTokens !== undefined ? { inputTokens: trace.inputTokens } : {}), ...(trace.outputTokens !== undefined ? { outputTokens: trace.outputTokens } : {}),
-      ...(trace.cachedTokens !== undefined ? { cachedTokens: trace.cachedTokens } : {}),
-      ...(trace.reasoningTokens !== undefined ? { reasoningTokens: trace.reasoningTokens } : {}),
-      ...(trace.reasoningTokens !== undefined && trace.reasoningEstimated ? { reasoningEstimated: true as const } : {}),
-      ...(trace.estimated && (trace.inputTokens !== undefined || trace.outputTokens !== undefined) ? { estimated: true as const } : {}),
+      ...usageEntryFields(trace),
       ...(trace.ignoredParams?.length ? { ignoredParams: trace.ignoredParams } : {}),
     };
     const provider = trace.model ? bridge.providerOf?.(trace.model) : undefined;
