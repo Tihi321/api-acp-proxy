@@ -57,6 +57,8 @@ function toEntry(profile: GufoProfile | LlamaProfile): ProfileEntry {
 const DEFAULT_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
 /** Ollama truncates a too long prompt silently, so the measured context counts 3 characters per token (the usual 4 would let about 1.15 x num_ctx through). */
 const LOADED_CHARS_PER_TOKEN = 3;
+/** An Ollama answer whose prompt used at least this share of the measured context logs a warning: Ollama may have cut the prompt. */
+const NEAR_CONTEXT_SHARE = 0.9;
 const LOADED_CONTEXT_TIMEOUT_MS = 2000;
 export const OLLAMA_LOAD_TIMEOUT_MS = 300_000;
 /** After `/api/ps` answered as unsupported, how long the load-first step and the `/api/ps` reads are skipped before they are tried again. */
@@ -204,8 +206,12 @@ export class LocalOpenAiProvider implements Provider {
       await this.listModels().catch(() => undefined); // Strata is ready once the lease resolved
       if (!this.acceptsImages(model)) { lease?.release(); throw refuseImages(); }
     }
-    // Ollama: a model that is not loaded any more is measured again by the next load (e.g. a raised OLLAMA_CONTEXT_LENGTH after a restart).
-    if (!this.profiles && this.psSupported() && (await this.readLoadedContext(model, signal)) === null) this.defaultContext.delete(model);
+    // Ollama: a model that is not loaded any more, or runs at another context than the one measured, is measured again by the next load.
+    if (!this.profiles && this.psSupported()) {
+      const current = await this.readLoadedContext(model, signal);
+      const stored = this.defaultContext.get(model);
+      if (current === null || (typeof current === "number" && stored !== undefined && current !== stored)) this.defaultContext.delete(model);
+    }
     return lease;
   }
 
@@ -315,7 +321,7 @@ export class LocalOpenAiProvider implements Provider {
   }
 
   /** The output limit the upstream reports for `model` (`max_output_tokens` of its model list), when known. */
-  protected maxOutputTokensFor(model: string): number | undefined { return this.outputLimits.get(model); }
+  maxOutputTokensFor(model: string): number | undefined { return this.outputLimits.get(model); }
 
   /** `requested` capped at the model's output limit; one info line per clamped request. */
   protected clampOutput(model: string, requested: number | undefined): number | undefined {
@@ -432,6 +438,9 @@ export class LocalOpenAiProvider implements Provider {
       const reported = usage as Usage | null; // assigned inside handle(), which the compiler cannot see
       const estimate = reported !== null && reasoning !== "" && !reported.thoughtTokens;
       if (estimate) reported.thoughtTokens = Math.min(reported.outputTokens, estimateTokens(reasoning));
+      // Ollama cuts an over-long prompt to about num_ctx without an error, so a prompt near the measured context is worth a warning.
+      const measured = this.loadedContext ? this.defaultContext.get(model) : undefined;
+      if (reported && measured) { const promptTokens = reported.inputTokens + (reported.cachedReadTokens ?? 0); if (promptTokens >= Math.ceil(measured * NEAR_CONTEXT_SHARE)) this.logger.warn(`${this.displayName}: the prompt of ${model} used ${promptTokens} of the ${measured} tokens of its context (num_ctx); Ollama may have dropped the start of the prompt without an error. Raise num_ctx in Ollama to be sure the whole prompt is read.`); }
       // Ollama: the runner this chat used runs at the default context (`/v1` ignores num_ctx); note it in the background.
       if (this.psSupported()) void this.measureDefault(model);
       return { text, stopReason, usage, ...(reasoning ? { reasoning } : {}), ...(estimate ? { reasoningEstimated: true as const } : {}) };
@@ -585,7 +594,7 @@ export function ollamaContextLookup(rootUrl: string, fetchImpl: typeof fetch, ap
 function ollamaHeaders(apiKey: string | undefined, body: boolean): Record<string, string> {
   return { ...(body ? { "content-type": "application/json" } : {}), accept: "application/json", ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) };
 }
-/** The context in tokens Ollama runs a loaded model with, from `GET <root>/api/ps` (`context_length`); undefined when the model is not loaded or Ollama does not say. */
+/** The context in tokens Ollama runs a loaded model with, from `GET <root>/api/ps` (`context_length`); undefined when the model is not listed. A listed model without a usable `context_length` rejects with `PsUnsupportedError`, like an Ollama without `/api/ps`. */
 export function ollamaLoadedContext(rootUrl: string, fetchImpl: typeof fetch, apiKey?: string): (model: string, signal: AbortSignal) => Promise<number | undefined> {
   return async (model, signal) => {
     const response = await fetchImpl(`${rootUrl.replace(/\/+$/, "")}/api/ps`, { headers: ollamaHeaders(apiKey, false), signal });
@@ -593,7 +602,9 @@ export function ollamaLoadedContext(rootUrl: string, fetchImpl: typeof fetch, ap
     const body = await response.json().catch(() => undefined) as { models?: Array<{ name?: unknown; model?: unknown; context_length?: unknown }> } | undefined;
     if (!Array.isArray(body?.models)) throw new PsUnsupportedError("no models list");
     const entry = body.models.find((item) => item.name === model || item.model === model);
-    return typeof entry?.context_length === "number" && entry.context_length > 0 ? entry.context_length : undefined;
+    if (!entry) return undefined;
+    if (typeof entry.context_length !== "number" || !(entry.context_length > 0)) throw new PsUnsupportedError("no context_length");
+    return entry.context_length;
   };
 }
 /** Loads a model into Ollama's memory: `POST <root>/api/generate` with the model and nothing else (no `keep_alive`: Ollama's own applies). */

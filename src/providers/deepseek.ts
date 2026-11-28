@@ -53,7 +53,7 @@ export class DeepSeekProvider extends LocalOpenAiProvider {
     return body;
   }
 
-  protected override maxOutputTokensFor(model: string): number | undefined { return this.outputLimits.get(model) ?? DEEPSEEK_MAX_OUTPUT_TOKENS; }
+  override maxOutputTokensFor(model: string): number | undefined { return this.outputLimits.get(model) ?? DEEPSEEK_MAX_OUTPUT_TOKENS; }
 
   protected override httpError(status: number, detail: string, response: Response): Error {
     if (status === 401 || status === 403) { this.setState("needs_login", AUTH_MESSAGE); return new ProviderAuthRequiredError(AUTH_MESSAGE); }

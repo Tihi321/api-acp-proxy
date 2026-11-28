@@ -230,7 +230,8 @@ export class ProviderRouter implements AcpLike {
       const until = this.exhaustedUntilMs(provider.id);
       for (const model of this.known.get(provider.id) ?? []) {
         const chars = provider.maxPromptCharsFor?.(model.id) ?? provider.maxPromptChars;
-        const limit = { ...(chars ? { maxPromptChars: chars } : {}), ...(until !== undefined ? { exhaustedUntil: new Date(until).toISOString() } : {}) };
+        const output = provider.maxOutputTokensFor?.(model.id);
+        const limit = { ...(chars ? { maxPromptChars: chars } : {}), ...(output ? { maxOutputTokens: output } : {}), ...(until !== undefined ? { exhaustedUntil: new Date(until).toISOString() } : {}) };
         const kind = { ...(model.kind ? { kind: model.kind } : {}), ...(model.vision !== undefined ? { vision: model.vision } : {}) };
         if (this.options.listBareAliases !== false && owners.get(model.id) === provider) out.push({ id: model.id, ownedBy: provider.ownedBy, provider: provider.id, ...kind, ...limit });
         out.push({ id: `${provider.id}/${model.id}`, ownedBy: provider.ownedBy, provider: provider.id, ...kind, ...limit });
